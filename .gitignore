@@ -128,3 +128,5 @@ Thumbs.db
 # Custom application files
 /src/config/api-keys.ts
 /src/config/secrets.ts
+
+cursorrules.md
