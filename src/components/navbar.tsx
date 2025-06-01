@@ -1,3 +1,5 @@
+import UserMenu from './UserMenu';
+
 interface NavbarProps {
   className?: string;
 }
@@ -8,24 +10,27 @@ export default function Navbar({ className = "" }: NavbarProps) {
       <div className="flex items-center justify-between">
         {/* Logo/Brand */}
         <div className="flex items-center space-x-2">
-          <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
-            <span className="text-white font-bold text-lg">I</span>
+          <div className="w-8 h-8 bg-gradient-to-r from-purple-600 to-blue-600 rounded-lg flex items-center justify-center">
+            <span className="text-white font-bold text-lg">IF</span>
           </div>
           <span className="text-xl font-bold text-gray-900">InfluencerFlowAI</span>
         </div>
 
         {/* Navigation Links - Desktop */}
         <div className="hidden md:flex items-center space-x-8">
-          <a href="#" className="text-gray-600 hover:text-blue-600 transition-colors">
+          <a href="/dashboard" className="text-gray-600 hover:text-blue-600 transition-colors">
             Dashboard
           </a>
-          <a href="#" className="text-gray-600 hover:text-blue-600 transition-colors">
+          <a href="/agentic-ai" className="text-gray-600 hover:text-blue-600 transition-colors">
+            🤖 Agentic AI
+          </a>
+          <a href="/creators" className="text-gray-600 hover:text-blue-600 transition-colors">
             Discover Creators
           </a>
-          <a href="#" className="text-gray-600 hover:text-blue-600 transition-colors">
+          <a href="/campaigns" className="text-gray-600 hover:text-blue-600 transition-colors">
             Campaigns
           </a>
-          <a href="#" className="text-gray-600 hover:text-blue-600 transition-colors">
+          <a href="/analytics" className="text-gray-600 hover:text-blue-600 transition-colors">
             Analytics
           </a>
         </div>
@@ -40,13 +45,8 @@ export default function Navbar({ className = "" }: NavbarProps) {
             </svg>
           </button>
 
-          {/* User Avatar */}
-          <div className="flex items-center space-x-3">
-            <div className="w-8 h-8 bg-gray-300 rounded-full flex items-center justify-center">
-              <span className="text-sm font-medium text-gray-600">U</span>
-            </div>
-            <span className="hidden md:block text-sm font-medium text-gray-700">Brand User</span>
-          </div>
+          {/* User Menu */}
+          <UserMenu />
         </div>
       </div>
     </nav>

@@ -1,5 +1,8 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
+import { AuthProvider } from './contexts/AuthContext'
+import ProtectedRoute from './components/ProtectedRoute'
 import Layout from './components/layout'
+import Login from './pages/login'
 import Dashboard from './pages/dashboard'
 import Creators from './pages/creators'
 import CreatorProfile from './pages/creator-profile'
@@ -14,22 +17,125 @@ import AgenticAI from './pages/agentic-ai'
 
 function App() {
   return (
-    <Layout>
+    <AuthProvider>
       <Routes>
+        {/* Public Routes */}
+        <Route path="/login" element={<Login />} />
+        
+        {/* Protected Routes */}
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
-        <Route path="/dashboard" element={<Dashboard />} />
-        <Route path="/agentic-ai" element={<AgenticAI />} />
-        <Route path="/creators" element={<Creators />} />
-        <Route path="/creators/:id" element={<CreatorProfile />} />
-        <Route path="/campaigns" element={<Campaigns />} />
-        <Route path="/campaigns/create" element={<CreateCampaign />} />
-        <Route path="/negotiations" element={<Negotiations />} />
-        <Route path="/contracts" element={<Contracts />} />
-        <Route path="/payments" element={<Payments />} />
-        <Route path="/analytics" element={<Analytics />} />
-        <Route path="/outreaches" element={<Outreaches />} />
+        <Route
+          path="/dashboard"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Dashboard />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/agentic-ai"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <AgenticAI />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/creators"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Creators />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/creators/:id"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <CreatorProfile />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/campaigns"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Campaigns />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/campaigns/create"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <CreateCampaign />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/negotiations"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Negotiations />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/contracts"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Contracts />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/payments"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Payments />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/analytics"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Analytics />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/outreaches"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Outreaches />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
       </Routes>
-    </Layout>
+    </AuthProvider>
   )
 }
 
