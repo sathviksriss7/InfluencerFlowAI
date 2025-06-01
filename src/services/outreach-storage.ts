@@ -1,6 +1,21 @@
 import { type Creator } from '../types';
 
 // Define interfaces for our outreach data structure
+export interface ConversationMessage {
+  id: string;
+  content: string;
+  sender: 'brand' | 'creator' | 'ai';
+  timestamp: Date;
+  type: 'outreach' | 'response' | 'negotiation' | 'update';
+  metadata?: {
+    aiMethod?: 'ai_generated' | 'algorithmic_fallback';
+    strategy?: string;
+    tactics?: string[];
+    suggestedOffer?: number;
+    phase?: string;
+  };
+}
+
 export interface StoredOutreach {
   id: string;
   creatorId: string;
@@ -20,6 +35,8 @@ export interface StoredOutreach {
   lastContact: Date;
   currentOffer?: number;
   notes: string;
+  // New conversation history
+  conversationHistory: ConversationMessage[];
 }
 
 export interface OutreachSummary {
@@ -48,6 +65,16 @@ class OutreachStorageService {
           lastContact: new Date() // Update last contact time
         };
       } else {
+        // Add initial outreach message to conversation history
+        const initialMessage: ConversationMessage = {
+          id: `msg-${Date.now()}-initial`,
+          content: outreach.body,
+          sender: 'brand',
+          timestamp: outreach.createdAt,
+          type: 'outreach'
+        };
+        
+        outreach.conversationHistory = [initialMessage];
         existingOutreaches.push(outreach);
       }
       
@@ -75,7 +102,11 @@ class OutreachStorageService {
       return outreaches.map((outreach: any) => ({
         ...outreach,
         createdAt: new Date(outreach.createdAt),
-        lastContact: new Date(outreach.lastContact)
+        lastContact: new Date(outreach.lastContact),
+        conversationHistory: (outreach.conversationHistory || []).map((msg: any) => ({
+          ...msg,
+          timestamp: new Date(msg.timestamp)
+        }))
       }));
     } catch (error) {
       console.error('❌ Error loading outreaches:', error);
@@ -91,6 +122,51 @@ class OutreachStorageService {
   }
 
   /**
+   * Add a new message to the conversation history
+   */
+  addConversationMessage(
+    outreachId: string, 
+    content: string, 
+    sender: 'brand' | 'creator' | 'ai',
+    type: 'response' | 'negotiation' | 'update',
+    metadata?: ConversationMessage['metadata']
+  ): void {
+    try {
+      const outreaches = this.getAllOutreaches();
+      const outreachIndex = outreaches.findIndex(o => o.id === outreachId);
+      
+      if (outreachIndex >= 0) {
+        const newMessage: ConversationMessage = {
+          id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          content,
+          sender,
+          timestamp: new Date(),
+          type,
+          metadata
+        };
+        
+        // Initialize conversation history if it doesn't exist
+        if (!outreaches[outreachIndex].conversationHistory) {
+          outreaches[outreachIndex].conversationHistory = [];
+        }
+        
+        outreaches[outreachIndex].conversationHistory.push(newMessage);
+        outreaches[outreachIndex].lastContact = new Date();
+        
+        // Update notes field for backward compatibility
+        if (sender === 'ai' || sender === 'brand') {
+          outreaches[outreachIndex].notes = content;
+        }
+        
+        localStorage.setItem(this.storageKey, JSON.stringify(outreaches));
+        console.log('✅ Conversation message added:', { sender, type, length: content.length });
+      }
+    } catch (error) {
+      console.error('❌ Error adding conversation message:', error);
+    }
+  }
+
+  /**
    * Update outreach status
    */
   updateOutreachStatus(outreachId: string, status: StoredOutreach['status'], notes?: string, currentOffer?: number): void {
@@ -103,9 +179,13 @@ class OutreachStorageService {
           ...outreaches[outreachIndex],
           status,
           lastContact: new Date(),
-          ...(notes && { notes: notes }),
           ...(currentOffer && { currentOffer })
         };
+        
+        // Add status update message if notes provided
+        if (notes) {
+          this.addConversationMessage(outreachId, notes, 'brand', 'update');
+        }
         
         localStorage.setItem(this.storageKey, JSON.stringify(outreaches));
         console.log('✅ Outreach status updated:', status);
@@ -113,6 +193,29 @@ class OutreachStorageService {
     } catch (error) {
       console.error('❌ Error updating outreach status:', error);
     }
+  }
+
+  /**
+   * Get conversation history for an outreach
+   */
+  getConversationHistory(outreachId: string): ConversationMessage[] {
+    const outreach = this.getAllOutreaches().find(o => o.id === outreachId);
+    return outreach?.conversationHistory || [];
+  }
+
+  /**
+   * Get conversation context for AI prompts
+   */
+  getConversationContext(outreachId: string): string {
+    const history = this.getConversationHistory(outreachId);
+    
+    if (history.length === 0) return '';
+    
+    return history.map(msg => {
+      const senderLabel = msg.sender === 'brand' ? 'You' : msg.sender === 'creator' ? 'Creator' : 'AI Assistant';
+      const timeStr = msg.timestamp.toLocaleDateString();
+      return `[${timeStr}] ${senderLabel}: ${msg.content}`;
+    }).join('\n\n');
   }
 
   /**

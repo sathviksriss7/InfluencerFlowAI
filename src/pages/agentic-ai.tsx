@@ -7,6 +7,7 @@ import {
   type CreatorMatch 
 } from '../services/ai-agents';
 import AIOutreachManager from '../components/ai-outreach-manager';
+import NegotiationAgent from '../components/negotiation-agent';
 
 interface WorkflowStep {
   id: string;
@@ -16,7 +17,10 @@ interface WorkflowStep {
   details?: string;
 }
 
+type TabType = 'campaign-builder' | 'negotiation-agent';
+
 export default function AgenticAI() {
+  const [activeTab, setActiveTab] = useState<TabType>('campaign-builder');
   const [requirements, setRequirements] = useState<BusinessRequirements>(createExampleRequirements());
   const [isProcessing, setIsProcessing] = useState(false);
   const [workflowResult, setWorkflowResult] = useState<AgentWorkflowResult | null>(null);
@@ -171,454 +175,491 @@ export default function AgenticAI() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="bg-gradient-to-r from-purple-600 via-blue-600 to-indigo-600 text-white rounded-lg shadow-lg p-6">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <div className="w-12 h-12 bg-white bg-opacity-20 rounded-full flex items-center justify-center">
-              <svg className="w-7 h-7" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
-              </svg>
-            </div>
-            <div>
-              <h1 className="text-2xl font-bold">🤖 Agentic AI Campaign Builder</h1>
-              <p className="text-purple-100">
-                Autonomous AI agents that build campaigns and find creators automatically
-              </p>
-            </div>
-          </div>
-          <div className="text-right">
-            <div className="text-sm text-purple-100">Powered by</div>
-            <div className="text-lg font-semibold">Multi-Agent AI System</div>
-          </div>
-        </div>
-      </div>
-
-      {/* API Key Warning */}
-      {!isAIAvailable && (
-        <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
-          <div className="flex items-start gap-3">
-            <svg className="w-5 h-5 text-amber-500 mt-0.5" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.232 16.5c-.77.833.192 2.5 1.732 2.5z"/>
-            </svg>
-            <div>
-              <h3 className="font-medium text-amber-800">Setup Required</h3>
-              <p className="text-amber-700 text-sm mt-1">
-                Add <code className="bg-amber-100 px-1 rounded">VITE_GROQ_API_KEY="your-key"</code> to your .env.local file.
-                Get your free API key from <a href="https://console.groq.com/" target="_blank" rel="noopener noreferrer" className="underline">console.groq.com</a>
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Rate Limiting Info */}
-      {isAIAvailable && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-          <div className="flex items-start gap-3">
-            <svg className="w-5 h-5 text-blue-500 mt-0.5" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-            </svg>
-            <div className="flex-1">
-              <div className="flex items-center justify-between">
-                <h3 className="font-medium text-blue-800">Smart Rate Limiting</h3>
-                <div className="flex items-center gap-2">
-                  <div className="text-sm font-medium text-blue-700">
-                    API Calls: {aiAgentsService.getRateLimitStatus().remaining}/3 available
-                  </div>
-                  <div className="flex gap-1">
-                    {[1,2,3].map(i => (
-                      <div 
-                        key={i} 
-                        className={`w-2 h-2 rounded-full ${
-                          i <= aiAgentsService.getRateLimitStatus().remaining 
-                            ? 'bg-green-400' 
-                            : 'bg-gray-300'
-                        }`} 
-                      />
-                    ))}
-                  </div>
-                </div>
+      {/* Header with Tabs */}
+      <div className="bg-gradient-to-r from-purple-600 via-blue-600 to-indigo-600 text-white rounded-lg shadow-lg">
+        <div className="p-6">
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 bg-white bg-opacity-20 rounded-full flex items-center justify-center">
+                <svg className="w-7 h-7" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+                </svg>
               </div>
-              <p className="text-blue-700 text-sm mt-1">
-                Our AI agents automatically manage API rate limits. If limits are reached, the system seamlessly switches to advanced algorithmic analysis to ensure you always get results. 
-                <span className="font-medium"> For best AI analysis, try spacing requests a few minutes apart.</span>
-              </p>
-              {aiAgentsService.getRateLimitStatus().remaining === 0 && (
-                <div className="mt-2 p-2 bg-amber-100 border border-amber-200 rounded text-amber-800 text-sm">
-                  ⏳ <strong>Rate limit reached:</strong> Next requests will use advanced algorithmic analysis. 
-                  API calls reset in ~1 minute for full AI capabilities.
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Input Form */}
-        <div className={`${workflowResult ? 'lg:col-span-1' : 'lg:col-span-2'} space-y-6`}>
-          <div className="bg-white rounded-lg shadow p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4">
-              📋 Business Requirements
-            </h2>
-            
-            <div className="space-y-4">
-              {/* Company & Industry */}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Company Name</label>
-                  <input
-                    type="text"
-                    value={requirements.companyName}
-                    onChange={(e) => updateRequirements('companyName', e.target.value)}
-                    className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Industry</label>
-                  <select
-                    value={requirements.industry}
-                    onChange={(e) => updateRequirements('industry', e.target.value)}
-                    className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
-                  >
-                    {industries.map(industry => (
-                      <option key={industry} value={industry}>{industry}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {/* Product/Service */}
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Product/Service</label>
-                <input
-                  type="text"
-                  value={requirements.productService}
-                  onChange={(e) => updateRequirements('productService', e.target.value)}
-                  className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
-                />
-              </div>
-
-              {/* Business Goals */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Business Goals</label>
-                <div className="grid grid-cols-2 gap-2">
-                  {goalOptions.map(goal => (
-                    <button
-                      key={goal}
-                      type="button"
-                      onClick={() => updateArrayField('businessGoals', goal)}
-                      className={`p-2 border rounded-lg text-sm transition-colors ${
-                        requirements.businessGoals.includes(goal)
-                          ? 'border-purple-500 bg-purple-50 text-purple-700'
-                          : 'border-gray-300 hover:border-gray-400'
-                      }`}
-                    >
-                      {goal}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Target Audience */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Target Audience</label>
-                <input
-                  type="text"
-                  value={requirements.targetAudience}
-                  onChange={(e) => updateRequirements('targetAudience', e.target.value)}
-                  className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
-                />
-              </div>
-
-              {/* Campaign Objective */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Campaign Objective</label>
-                <input
-                  type="text"
-                  value={requirements.campaignObjective}
-                  onChange={(e) => updateRequirements('campaignObjective', e.target.value)}
-                  className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
-                />
-              </div>
-
-              {/* Budget Range */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Budget Range (₹)</label>
-                <div className="grid grid-cols-2 gap-2">
-                  <input
-                    type="number"
-                    placeholder="Min"
-                    value={requirements.budgetRange.min}
-                    onChange={(e) => updateRequirements('budgetRange', { 
-                      ...requirements.budgetRange, 
-                      min: Number(e.target.value) 
-                    })}
-                    className="p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
-                  />
-                  <input
-                    type="number"
-                    placeholder="Max"
-                    value={requirements.budgetRange.max}
-                    onChange={(e) => updateRequirements('budgetRange', { 
-                      ...requirements.budgetRange, 
-                      max: Number(e.target.value) 
-                    })}
-                    className="p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
-                  />
-                </div>
-              </div>
-
-              {/* Preferred Platforms */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Preferred Platforms</label>
-                <div className="grid grid-cols-3 gap-2">
-                  {platforms.map(platform => (
-                    <button
-                      key={platform}
-                      type="button"
-                      onClick={() => updateArrayField('preferredPlatforms', platform)}
-                      className={`p-2 border rounded-lg text-sm capitalize transition-colors ${
-                        requirements.preferredPlatforms?.includes(platform)
-                          ? 'border-purple-500 bg-purple-50 text-purple-700'
-                          : 'border-gray-300 hover:border-gray-400'
-                      }`}
-                    >
-                      {platform}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Outreach Configuration */}
-              <div className="border-t border-gray-200 pt-4">
-                <h3 className="text-sm font-semibold text-gray-900 mb-3">🤖 Autonomous Outreach</h3>
-                
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Creators to Contact</label>
-                    <select
-                      value={requirements.outreachCount}
-                      onChange={(e) => updateRequirements('outreachCount', Number(e.target.value))}
-                      className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
-                    >
-                      <option value={3}>Top 3 creators</option>
-                      <option value={5}>Top 5 creators</option>
-                      <option value={7}>Top 7 creators</option>
-                      <option value={10}>Top 10 creators</option>
-                    </select>
-                  </div>
-                  
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Personalization</label>
-                    <button
-                      type="button"
-                      onClick={() => updateRequirements('personalizedOutreach', !requirements.personalizedOutreach)}
-                      className={`w-full p-2 border rounded-lg text-sm transition-colors ${
-                        requirements.personalizedOutreach
-                          ? 'border-green-500 bg-green-50 text-green-700'
-                          : 'border-gray-300 text-gray-700 hover:border-gray-400'
-                      }`}
-                    >
-                      {requirements.personalizedOutreach ? '✨ AI Personalized' : '📝 Template Based'}
-                    </button>
-                  </div>
-                </div>
-                
-                <p className="text-xs text-gray-500 mt-2">
-                  AI agents will automatically send personalized outreach messages to your top-ranked creators and save them to your outreach manager.
+                <h1 className="text-2xl font-bold">🤖 Agentic AI System</h1>
+                <p className="text-purple-100">
+                  Autonomous AI agents for campaign building and deal negotiation
                 </p>
               </div>
             </div>
-
-            {/* Action Buttons */}
-            <div className="flex gap-3 mt-6 pt-6 border-t border-gray-200">
-              <button
-                onClick={runAgenticWorkflow}
-                disabled={isProcessing || !isAIAvailable}
-                className={`flex-1 px-4 py-3 rounded-lg font-medium transition-all ${
-                  isProcessing || !isAIAvailable
-                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                    : 'bg-gradient-to-r from-purple-600 to-blue-600 text-white hover:from-purple-700 hover:to-blue-700'
-                } flex items-center justify-center gap-2`}
-              >
-                {isProcessing ? (
-                  <>
-                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                    Running AI Agents...
-                  </>
-                ) : (
-                  <>
-                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                      <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
-                    </svg>
-                    🚀 Launch AI Agents
-                  </>
-                )}
-              </button>
-              
-              {workflowResult && (
-                <button
-                  onClick={resetWorkflow}
-                  className="px-4 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-                >
-                  🔄 Reset
-                </button>
-              )}
+            <div className="text-right">
+              <div className="text-sm text-purple-100">Powered by</div>
+              <div className="text-lg font-semibold">Multi-Agent AI System</div>
             </div>
           </div>
-        </div>
 
-        {/* Workflow Progress */}
-        <div className={`${workflowResult ? 'lg:col-span-2' : 'lg:col-span-1'} space-y-6`}>
-          {/* Agent Progress */}
-          <div className="bg-white rounded-lg shadow p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4">
-              🤖 AI Agent Progress
-            </h2>
-            
-            <div className="space-y-4">
-              {workflowSteps.map((step, index) => (
-                <div key={step.id} className="flex items-center gap-3">
-                  <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
-                    step.status === 'completed' ? 'bg-green-100 text-green-600' :
-                    step.status === 'running' ? 'bg-blue-100 text-blue-600' :
-                    step.status === 'error' ? 'bg-red-100 text-red-600' :
-                    'bg-gray-100 text-gray-400'
-                  }`}>
-                    {step.status === 'completed' ? (
-                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                        <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
-                      </svg>
-                    ) : step.status === 'running' ? (
-                      <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-current"></div>
-                    ) : step.status === 'error' ? (
-                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                        <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
-                      </svg>
-                    ) : (
-                      <span className="text-xs font-medium">{index + 1}</span>
-                    )}
-                  </div>
-                  
-                  <div className="flex-1">
-                    <p className={`font-medium ${
-                      step.status === 'completed' ? 'text-green-600' :
-                      step.status === 'running' ? 'text-blue-600' :
-                      step.status === 'error' ? 'text-red-600' :
-                      'text-gray-500'
-                    }`}>
-                      {step.title}
-                    </p>
-                    {step.duration && (
-                      <p className="text-xs text-gray-500">
-                        Completed in {step.duration}ms
-                      </p>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {error && (
-              <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-                <p className="text-red-800 text-sm">❌ {error}</p>
-              </div>
-            )}
+          {/* Tab Navigation */}
+          <div className="flex space-x-1 bg-white bg-opacity-10 rounded-lg p-1">
+            <button
+              onClick={() => setActiveTab('campaign-builder')}
+              className={`flex-1 px-4 py-2 rounded-md font-medium transition-all ${
+                activeTab === 'campaign-builder'
+                  ? 'bg-white text-purple-600 shadow'
+                  : 'text-purple-100 hover:text-white hover:bg-white hover:bg-opacity-10'
+              }`}
+            >
+              🚀 Campaign Builder
+            </button>
+            <button
+              onClick={() => setActiveTab('negotiation-agent')}
+              className={`flex-1 px-4 py-2 rounded-md font-medium transition-all ${
+                activeTab === 'negotiation-agent'
+                  ? 'bg-white text-purple-600 shadow'
+                  : 'text-purple-100 hover:text-white hover:bg-white hover:bg-opacity-10'
+              }`}
+            >
+              🤝 Negotiation Agent
+            </button>
           </div>
-
-          {/* Results Preview */}
-          {workflowResult && (
-            <div className="bg-white rounded-lg shadow p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold text-gray-900">
-                  🎯 AI Generated Results
-                </h2>
-                <div className="text-right">
-                  <div className="text-2xl font-bold text-green-600">
-                    {Math.round(workflowResult.workflowInsights.confidenceScore * 100)}%
-                  </div>
-                  <div className="text-xs text-gray-500">Confidence</div>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4 mb-4">
-                <div className="bg-blue-50 p-3 rounded-lg">
-                  <div className="text-sm font-medium text-blue-900">Campaign Created</div>
-                  <div className="text-xl font-bold text-blue-600">{workflowResult.generatedCampaign.title}</div>
-                </div>
-                <div className="bg-green-50 p-3 rounded-lg">
-                  <div className="text-sm font-medium text-green-900">Creators Found</div>
-                  <div className="text-xl font-bold text-green-600">{workflowResult.creatorMatches.length}</div>
-                </div>
-              </div>
-
-              {workflowResult.outreachSummary && (
-                <div className="grid grid-cols-2 gap-4 mb-4">
-                  <div className="bg-purple-50 p-3 rounded-lg">
-                    <div className="text-sm font-medium text-purple-900">Outreach Sent</div>
-                    <div className="text-xl font-bold text-purple-600">{workflowResult.outreachSummary.totalSent}</div>
-                    <div className="text-xs text-purple-700">
-                      {workflowResult.outreachSummary.aiGenerated} AI + {workflowResult.outreachSummary.templateBased} Template
-                    </div>
-                  </div>
-                  <div className="bg-orange-50 p-3 rounded-lg">
-                    <div className="text-sm font-medium text-orange-900">Success Rate</div>
-                    <div className="text-xl font-bold text-orange-600">
-                      {workflowResult.outreachSummary.failed === 0 ? '100%' : 
-                        `${Math.round((workflowResult.outreachSummary.totalSent / (workflowResult.outreachSummary.totalSent + workflowResult.outreachSummary.failed)) * 100)}%`}
-                    </div>
-                    <div className="text-xs text-orange-700">
-                      {workflowResult.outreachSummary.failed} failed
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div className="space-y-3">
-                <div>
-                  <h4 className="font-medium text-gray-900">Campaign Strategy</h4>
-                  <p className="text-sm text-gray-600">{workflowResult.generatedCampaign.aiInsights.strategy}</p>
-                </div>
-                
-                <div>
-                  <h4 className="font-medium text-gray-900">Top Creator Matches</h4>
-                  <div className="space-y-2">
-                    {getTopCreators().slice(0, 3).map((match, index) => (
-                      <div key={match.creator.id} className="flex items-center justify-between p-2 bg-gray-50 rounded">
-                        <div className="flex items-center gap-2">
-                          <img
-                            src={match.creator.avatar}
-                            alt={match.creator.name}
-                            className="w-6 h-6 rounded-full"
-                          />
-                          <span className="text-sm font-medium">{match.creator.name}</span>
-                        </div>
-                        <div className="text-sm font-medium text-green-600">{match.score}% match</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <button
-                  onClick={() => setShowOutreachManager(true)}
-                  disabled={getTopCreators().length === 0}
-                  className="w-full mt-4 px-4 py-2 bg-gradient-to-r from-green-600 to-blue-600 text-white rounded-lg hover:from-green-700 hover:to-blue-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
-                >
-                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
-                  </svg>
-                  {workflowResult.outreachSummary ? '📧 View Outreach Manager' : '🚀 Launch Manual Outreach'}
-                </button>
-              </div>
-            </div>
-          )}
         </div>
       </div>
 
+      {/* Tab Content */}
+      {activeTab === 'campaign-builder' && (
+        <>
+          {/* API Key Warning */}
+          {!isAIAvailable && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+              <div className="flex items-start gap-3">
+                <svg className="w-5 h-5 text-amber-500 mt-0.5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.232 16.5c-.77.833.192 2.5 1.732 2.5z"/>
+                </svg>
+                <div>
+                  <h3 className="font-medium text-amber-800">Setup Required</h3>
+                  <p className="text-amber-700 text-sm mt-1">
+                    Add <code className="bg-amber-100 px-1 rounded">VITE_GROQ_API_KEY="your-key"</code> to your .env.local file.
+                    Get your free API key from <a href="https://console.groq.com/" target="_blank" rel="noopener noreferrer" className="underline">console.groq.com</a>
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Rate Limiting Info */}
+          {isAIAvailable && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+              <div className="flex items-start gap-3">
+                <svg className="w-5 h-5 text-blue-500 mt-0.5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <div className="flex-1">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-medium text-blue-800">Smart Rate Limiting</h3>
+                    <div className="flex items-center gap-2">
+                      <div className="text-sm font-medium text-blue-700">
+                        API Calls: {aiAgentsService.getGlobalStatus().remaining}/3 available
+                      </div>
+                      <div className="flex gap-1">
+                        {[1,2,3].map(i => (
+                          <div 
+                            key={i} 
+                            className={`w-2 h-2 rounded-full ${
+                              i <= aiAgentsService.getGlobalStatus().remaining 
+                                ? 'bg-green-400' 
+                                : 'bg-gray-300'
+                            }`} 
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-blue-700 text-sm mt-1">
+                    Our AI agents automatically manage API rate limits. If limits are reached, the system seamlessly switches to advanced algorithmic analysis to ensure you always get results. 
+                    <span className="font-medium"> For best AI analysis, try spacing requests a few minutes apart.</span>
+                  </p>
+                  {aiAgentsService.getGlobalStatus().remaining === 0 && (
+                    <div className="mt-2 p-2 bg-amber-100 border border-amber-200 rounded text-amber-800 text-sm">
+                      ⏳ <strong>Rate limit reached:</strong> Next requests will use advanced algorithmic analysis. 
+                      API calls reset in ~1 minute for full AI capabilities.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Campaign Builder Content */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Input Form */}
+            <div className={`${workflowResult ? 'lg:col-span-1' : 'lg:col-span-2'} space-y-6`}>
+              <div className="bg-white rounded-lg shadow p-6">
+                <h2 className="text-lg font-semibold text-gray-900 mb-4">
+                  📋 Business Requirements
+                </h2>
+                
+                <div className="space-y-4">
+                  {/* Company & Industry */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Company Name</label>
+                      <input
+                        type="text"
+                        value={requirements.companyName}
+                        onChange={(e) => updateRequirements('companyName', e.target.value)}
+                        className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Industry</label>
+                      <select
+                        value={requirements.industry}
+                        onChange={(e) => updateRequirements('industry', e.target.value)}
+                        className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
+                      >
+                        {industries.map(industry => (
+                          <option key={industry} value={industry}>{industry}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Product/Service */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Product/Service</label>
+                    <input
+                      type="text"
+                      value={requirements.productService}
+                      onChange={(e) => updateRequirements('productService', e.target.value)}
+                      className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
+
+                  {/* Business Goals */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Business Goals</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {goalOptions.map(goal => (
+                        <button
+                          key={goal}
+                          type="button"
+                          onClick={() => updateArrayField('businessGoals', goal)}
+                          className={`p-2 border rounded-lg text-sm transition-colors ${
+                            requirements.businessGoals.includes(goal)
+                              ? 'border-purple-500 bg-purple-50 text-purple-700'
+                              : 'border-gray-300 hover:border-gray-400'
+                          }`}
+                        >
+                          {goal}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Target Audience */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Target Audience</label>
+                    <input
+                      type="text"
+                      value={requirements.targetAudience}
+                      onChange={(e) => updateRequirements('targetAudience', e.target.value)}
+                      className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
+
+                  {/* Campaign Objective */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Campaign Objective</label>
+                    <input
+                      type="text"
+                      value={requirements.campaignObjective}
+                      onChange={(e) => updateRequirements('campaignObjective', e.target.value)}
+                      className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
+
+                  {/* Budget Range */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Budget Range (₹)</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <input
+                        type="number"
+                        placeholder="Min"
+                        value={requirements.budgetRange.min}
+                        onChange={(e) => updateRequirements('budgetRange', { 
+                          ...requirements.budgetRange, 
+                          min: Number(e.target.value) 
+                        })}
+                        className="p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
+                      />
+                      <input
+                        type="number"
+                        placeholder="Max"
+                        value={requirements.budgetRange.max}
+                        onChange={(e) => updateRequirements('budgetRange', { 
+                          ...requirements.budgetRange, 
+                          max: Number(e.target.value) 
+                        })}
+                        className="p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Preferred Platforms */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Preferred Platforms</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {platforms.map(platform => (
+                        <button
+                          key={platform}
+                          type="button"
+                          onClick={() => updateArrayField('preferredPlatforms', platform)}
+                          className={`p-2 border rounded-lg text-sm capitalize transition-colors ${
+                            requirements.preferredPlatforms?.includes(platform)
+                              ? 'border-purple-500 bg-purple-50 text-purple-700'
+                              : 'border-gray-300 hover:border-gray-400'
+                          }`}
+                        >
+                          {platform}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Outreach Configuration */}
+                  <div className="border-t border-gray-200 pt-4">
+                    <h3 className="text-sm font-semibold text-gray-900 mb-3">🤖 Autonomous Outreach</h3>
+                    
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Creators to Contact</label>
+                        <select
+                          value={requirements.outreachCount}
+                          onChange={(e) => updateRequirements('outreachCount', Number(e.target.value))}
+                          className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
+                        >
+                          <option value={3}>Top 3 creators</option>
+                          <option value={5}>Top 5 creators</option>
+                          <option value={7}>Top 7 creators</option>
+                          <option value={10}>Top 10 creators</option>
+                        </select>
+                      </div>
+                      
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Personalization</label>
+                        <button
+                          type="button"
+                          onClick={() => updateRequirements('personalizedOutreach', !requirements.personalizedOutreach)}
+                          className={`w-full p-2 border rounded-lg text-sm transition-colors ${
+                            requirements.personalizedOutreach
+                              ? 'border-green-500 bg-green-50 text-green-700'
+                              : 'border-gray-300 text-gray-700 hover:border-gray-400'
+                          }`}
+                        >
+                          {requirements.personalizedOutreach ? '✨ AI Personalized' : '📝 Template Based'}
+                        </button>
+                      </div>
+                    </div>
+                    
+                    <p className="text-xs text-gray-500 mt-2">
+                      AI agents will automatically send personalized outreach messages to your top-ranked creators and save them to your outreach manager.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex gap-3 mt-6 pt-6 border-t border-gray-200">
+                  <button
+                    onClick={runAgenticWorkflow}
+                    disabled={isProcessing || !isAIAvailable}
+                    className={`flex-1 px-4 py-3 rounded-lg font-medium transition-all ${
+                      isProcessing || !isAIAvailable
+                        ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                        : 'bg-gradient-to-r from-purple-600 to-blue-600 text-white hover:from-purple-700 hover:to-blue-700'
+                    } flex items-center justify-center gap-2`}
+                  >
+                    {isProcessing ? (
+                      <>
+                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                        Running AI Agents...
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                          <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+                        </svg>
+                        🚀 Launch AI Agents
+                      </>
+                    )}
+                  </button>
+                  
+                  {workflowResult && (
+                    <button
+                      onClick={resetWorkflow}
+                      className="px-4 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+                    >
+                      🔄 Reset
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Workflow Progress */}
+            <div className={`${workflowResult ? 'lg:col-span-2' : 'lg:col-span-1'} space-y-6`}>
+              {/* Agent Progress */}
+              <div className="bg-white rounded-lg shadow p-6">
+                <h2 className="text-lg font-semibold text-gray-900 mb-4">
+                  🤖 AI Agent Progress
+                </h2>
+                
+                <div className="space-y-4">
+                  {workflowSteps.map((step, index) => (
+                    <div key={step.id} className="flex items-center gap-3">
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
+                        step.status === 'completed' ? 'bg-green-100 text-green-600' :
+                        step.status === 'running' ? 'bg-blue-100 text-blue-600' :
+                        step.status === 'error' ? 'bg-red-100 text-red-600' :
+                        'bg-gray-100 text-gray-400'
+                      }`}>
+                        {step.status === 'completed' ? (
+                          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+                          </svg>
+                        ) : step.status === 'running' ? (
+                          <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-current"></div>
+                        ) : step.status === 'error' ? (
+                          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                          </svg>
+                        ) : (
+                          <span className="text-xs font-medium">{index + 1}</span>
+                        )}
+                      </div>
+                      
+                      <div className="flex-1">
+                        <p className={`font-medium ${
+                          step.status === 'completed' ? 'text-green-600' :
+                          step.status === 'running' ? 'text-blue-600' :
+                          step.status === 'error' ? 'text-red-600' :
+                          'text-gray-500'
+                        }`}>
+                          {step.title}
+                        </p>
+                        {step.duration && (
+                          <p className="text-xs text-gray-500">
+                            Completed in {step.duration}ms
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {error && (
+                  <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+                    <p className="text-red-800 text-sm">❌ {error}</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Results Preview */}
+              {workflowResult && (
+                <div className="bg-white rounded-lg shadow p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-lg font-semibold text-gray-900">
+                      🎯 AI Generated Results
+                    </h2>
+                    <div className="text-right">
+                      <div className="text-2xl font-bold text-green-600">
+                        {Math.round(workflowResult.workflowInsights.confidenceScore * 100)}%
+                      </div>
+                      <div className="text-xs text-gray-500">Confidence</div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4 mb-4">
+                    <div className="bg-blue-50 p-3 rounded-lg">
+                      <div className="text-sm font-medium text-blue-900">Campaign Created</div>
+                      <div className="text-xl font-bold text-blue-600">{workflowResult.generatedCampaign.title}</div>
+                    </div>
+                    <div className="bg-green-50 p-3 rounded-lg">
+                      <div className="text-sm font-medium text-green-900">Creators Found</div>
+                      <div className="text-xl font-bold text-green-600">{workflowResult.creatorMatches.length}</div>
+                    </div>
+                  </div>
+
+                  {workflowResult.outreachSummary && (
+                    <div className="grid grid-cols-2 gap-4 mb-4">
+                      <div className="bg-purple-50 p-3 rounded-lg">
+                        <div className="text-sm font-medium text-purple-900">Outreach Sent</div>
+                        <div className="text-xl font-bold text-purple-600">{workflowResult.outreachSummary.totalSent}</div>
+                        <div className="text-xs text-purple-700">
+                          {workflowResult.outreachSummary.aiGenerated} AI + {workflowResult.outreachSummary.templateBased} Template
+                        </div>
+                      </div>
+                      <div className="bg-orange-50 p-3 rounded-lg">
+                        <div className="text-sm font-medium text-orange-900">Success Rate</div>
+                        <div className="text-xl font-bold text-orange-600">
+                          {workflowResult.outreachSummary.failed === 0 ? '100%' : 
+                            `${Math.round((workflowResult.outreachSummary.totalSent / (workflowResult.outreachSummary.totalSent + workflowResult.outreachSummary.failed)) * 100)}%`}
+                        </div>
+                        <div className="text-xs text-orange-700">
+                          {workflowResult.outreachSummary.failed} failed
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="space-y-3">
+                    <div>
+                      <h4 className="font-medium text-gray-900">Campaign Strategy</h4>
+                      <p className="text-sm text-gray-600">{workflowResult.generatedCampaign.aiInsights.strategy}</p>
+                    </div>
+                    
+                    <div>
+                      <h4 className="font-medium text-gray-900">Top Creator Matches</h4>
+                      <div className="space-y-2">
+                        {getTopCreators().slice(0, 3).map((match, index) => (
+                          <div key={match.creator.id} className="flex items-center justify-between p-2 bg-gray-50 rounded">
+                            <div className="flex items-center gap-2">
+                              <img
+                                src={match.creator.avatar}
+                                alt={match.creator.name}
+                                className="w-6 h-6 rounded-full"
+                              />
+                              <span className="text-sm font-medium">{match.creator.name}</span>
+                            </div>
+                            <div className="text-sm font-medium text-green-600">{match.score}% match</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => setShowOutreachManager(true)}
+                      disabled={getTopCreators().length === 0}
+                      className="w-full mt-4 px-4 py-2 bg-gradient-to-r from-green-600 to-blue-600 text-white rounded-lg hover:from-green-700 hover:to-blue-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                    >
+                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                      </svg>
+                      {workflowResult.outreachSummary ? '📧 View Outreach Manager' : '🚀 Launch Manual Outreach'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Negotiation Agent Tab */}
+      {activeTab === 'negotiation-agent' && (
+        <NegotiationAgent />
+      )}
+
       {/* Full Results View */}
-      {workflowResult && (
+      {activeTab === 'campaign-builder' && workflowResult && (
         <div className="bg-white rounded-lg shadow p-6">
           <h2 className="text-xl font-semibold text-gray-900 mb-6">
             📊 Complete AI Agent Results

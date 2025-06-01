@@ -1,9 +1,9 @@
 import { createGroq } from '@ai-sdk/groq';
 import { generateText } from 'ai';
-import { type Creator, type Campaign } from '../types';
+import { type Creator } from '../types';
 import { mockCreators } from '../mock-data/creators';
 import { groqLLMService } from './groq-llm';
-import { outreachStorage } from './outreach-storage';
+import { outreachStorage, type StoredOutreach } from './outreach-storage';
 
 // ============================================================================
 // RATE LIMITING & RETRY UTILITIES
@@ -46,39 +46,6 @@ class GlobalRateLimiter {
     const now = Date.now();
     this.requests = this.requests.filter(time => now - time < this.timeWindow);
     return Math.max(0, this.maxRequests - this.requests.length);
-  }
-}
-
-class RateLimiter {
-  private requests: number[] = [];
-  private maxRequests: number;
-  private timeWindow: number;
-
-  constructor(maxRequests: number = 2, timeWindowMs: number = 60000) {
-    this.maxRequests = maxRequests;
-    this.timeWindow = timeWindowMs;
-  }
-
-  async waitIfNeeded(): Promise<void> {
-    // First check global rate limit
-    await GlobalRateLimiter.getInstance().waitIfNeeded();
-    
-    const now = Date.now();
-    
-    // Remove requests outside the time window
-    this.requests = this.requests.filter(time => now - time < this.timeWindow);
-    
-    // If we're at the limit, wait
-    if (this.requests.length >= this.maxRequests) {
-      const oldestRequest = Math.min(...this.requests);
-      const waitTime = this.timeWindow - (now - oldestRequest) + 1000; // Add 1s buffer
-      console.log(`⏳ Local rate limit reached. Waiting ${Math.round(waitTime/1000)}s...`);
-      await new Promise(resolve => setTimeout(resolve, waitTime));
-      return this.waitIfNeeded(); // Recursively check again
-    }
-    
-    // Record this request
-    this.requests.push(now);
   }
 }
 
@@ -768,13 +735,18 @@ class OutreachAgent {
   ): Promise<OutreachSummary> {
     console.log(`📧 Outreach Agent: Preparing to contact top ${requirements.outreachCount} creators`);
     
-    // Select top creators based on score and recommendation
+    // Select top creators based on score and recommendation - include "consider" creators too
     const topCreators = creatorMatches
-      .filter(match => match.recommendedAction === 'highly_recommend' || match.recommendedAction === 'recommend')
+      .filter(match => 
+        match.recommendedAction === 'highly_recommend' || 
+        match.recommendedAction === 'recommend' || 
+        match.recommendedAction === 'consider'
+      )
       .slice(0, requirements.outreachCount);
     
     if (topCreators.length === 0) {
       console.log('⚠️ No qualified creators found for outreach');
+      console.log('🔍 Available recommendations:', creatorMatches.map(m => `${m.creator.name}: ${m.recommendedAction} (${m.score}%)`));
       return {
         totalSent: 0,
         aiGenerated: 0,
@@ -785,6 +757,7 @@ class OutreachAgent {
     }
     
     console.log(`🎯 Selected ${topCreators.length} top creators for outreach`);
+    console.log(`📊 Recommendations: ${topCreators.map(c => `${c.creator.name} (${c.recommendedAction})`).join(', ')}`);
     
     const outreachResults: OutreachResult[] = [];
     let aiGenerated = 0;
@@ -923,18 +896,37 @@ class OutreachAgent {
       Make it authentic and avoid generic language.
     `;
 
-    const { text } = await generateText({
-      model: this.model,
-      prompt,
-      maxTokens: 800,
-      temperature: 0.3,
-    });
+    try {
+      console.log(`🤖 Generating AI outreach for ${match.creator.name}...`);
+      
+      // Wait for rate limiting if needed
+      await GlobalRateLimiter.getInstance().waitIfNeeded();
+      
+      const result = await RetryHandler.withRetry(async () => {
+        const { text } = await generateText({
+          model: this.model,
+          prompt,
+          maxTokens: 800,
+          temperature: 0.3,
+        });
+        return text;
+      }, 1, 5000); // Only 1 retry with 5s delay
 
-    const parsed = JSON.parse(text.trim());
-    return {
-      subject: parsed.subject || `Partnership Opportunity with ${campaign.brand}`,
-      message: parsed.message || 'AI generation failed - using fallback template'
-    };
+      const parsed = JSON.parse(result.trim());
+      console.log(`✅ AI outreach generated successfully for ${match.creator.name}`);
+      
+      return {
+        subject: parsed.subject || `Partnership Opportunity with ${campaign.brand}`,
+        message: parsed.message || 'AI generation failed - using fallback template'
+      };
+    } catch (error) {
+      console.error(`❌ AI outreach generation failed for ${match.creator.name}:`, error);
+      
+      // Return fallback template on AI failure
+      const fallback = this.generateTemplateOutreach(campaign, match, requirements);
+      console.log(`🔄 Using template fallback for ${match.creator.name}`);
+      return fallback;
+    }
   }
 
   private generateTemplateOutreach(
@@ -989,13 +981,645 @@ P.S. We chose you specifically because ${match.reasoning}`;
         campaignContext: campaign.title,
         createdAt: new Date(),
         lastContact: new Date(),
-        notes: 'Generated by Agentic AI system'
+        notes: 'Generated by Agentic AI system',
+        conversationHistory: [] // Will be initialized by saveOutreach method
       });
       
       console.log(`💾 Outreach saved to storage for ${creator.name}`);
     } catch (error) {
       console.error('Failed to save outreach to storage:', error);
     }
+  }
+}
+
+// ============================================================================
+// NEGOTIATION AGENT
+// ============================================================================
+
+export interface NegotiationInsight {
+  currentPhase: 'initial_interest' | 'price_discussion' | 'terms_negotiation' | 'closing';
+  suggestedResponse: string;
+  negotiationTactics: string[];
+  recommendedOffer: {
+    amount: number;
+    reasoning: string;
+  };
+  nextSteps: string[];
+}
+
+export interface NegotiationResult {
+  success: boolean;
+  insight: NegotiationInsight | null;
+  error?: string;
+  method: 'ai_generated' | 'algorithmic_fallback';
+}
+
+export interface BatchNegotiationResult {
+  totalProcessed: number;
+  successful: number;
+  failed: number;
+  results: Array<{
+    outreach: StoredOutreach;
+    result: NegotiationResult;
+  }>;
+  summary: {
+    aiGenerated: number;
+    algorithmicFallback: number;
+    errors: string[];
+  };
+}
+
+class NegotiationAgent {
+  private groqProvider = createGroq({
+    apiKey: import.meta.env.VITE_GROQ_API_KEY,
+  });
+  private model = this.groqProvider('llama-3.3-70b-versatile');
+
+  /**
+   * Process negotiations for all eligible creators in batch
+   */
+  async executeBatchNegotiation(): Promise<BatchNegotiationResult> {
+    console.log('🤝 Negotiation Agent: Starting batch negotiation process');
+    
+    const eligibleOutreaches = this.getEligibleForNegotiation();
+    
+    if (eligibleOutreaches.length === 0) {
+      console.log('⚠️ No eligible outreaches found for negotiation');
+      return {
+        totalProcessed: 0,
+        successful: 0,
+        failed: 0,
+        results: [],
+        summary: {
+          aiGenerated: 0,
+          algorithmicFallback: 0,
+          errors: ['No eligible outreaches found']
+        }
+      };
+    }
+
+    console.log(`🎯 Processing ${eligibleOutreaches.length} eligible outreaches for batch negotiation`);
+    
+    const results = [];
+    let successful = 0;
+    let failed = 0;
+    let aiGenerated = 0;
+    let algorithmicFallback = 0;
+    const errors: string[] = [];
+
+    // Check remaining API calls
+    const remainingCalls = GlobalRateLimiter.getInstance().getRemainingCalls();
+    console.log(`🔄 Batch Negotiation: ${remainingCalls} API calls available for ${eligibleOutreaches.length} outreaches`);
+
+    for (const outreach of eligibleOutreaches) {
+      try {
+        console.log(`🤝 Processing negotiation for ${outreach.creatorName} (Status: ${outreach.status})`);
+        
+        const result = await this.generateNegotiationStrategy(outreach);
+        
+        if (result.success) {
+          successful++;
+          if (result.method === 'ai_generated') {
+            aiGenerated++;
+          } else {
+            algorithmicFallback++;
+          }
+        } else {
+          failed++;
+          if (result.error) {
+            errors.push(`${outreach.creatorName}: ${result.error}`);
+          }
+        }
+
+        results.push({
+          outreach,
+          result
+        });
+
+        // Small delay between processing to avoid overwhelming the system
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+      } catch (error) {
+        failed++;
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        errors.push(`${outreach.creatorName}: ${errorMessage}`);
+        console.error(`❌ Batch negotiation failed for ${outreach.creatorName}:`, error);
+        
+        results.push({
+          outreach,
+          result: {
+            success: false,
+            insight: null,
+            error: errorMessage,
+            method: 'algorithmic_fallback' as const
+          }
+        });
+      }
+    }
+
+    const summary: BatchNegotiationResult = {
+      totalProcessed: eligibleOutreaches.length,
+      successful,
+      failed,
+      results,
+      summary: {
+        aiGenerated,
+        algorithmicFallback,
+        errors
+      }
+    };
+
+    console.log(`🎉 Batch negotiation completed: ${successful}/${eligibleOutreaches.length} successful`);
+    console.log(`📊 Methods used: ${aiGenerated} AI, ${algorithmicFallback} algorithmic`);
+    
+    return summary;
+  }
+
+  /**
+   * Get outreaches eligible for negotiation (not already in closing phase)
+   */
+  getEligibleForNegotiation(): StoredOutreach[] {
+    const allOutreaches = this.getPositiveResponseCreators();
+    
+    // Filter out deals that are already closed
+    return allOutreaches.filter(outreach => 
+      outreach.status !== 'deal_closed' && 
+      outreach.status !== 'declined'
+    );
+  }
+
+  /**
+   * Auto-apply negotiation strategies (send messages and update deals)
+   */
+  async autoApplyNegotiationStrategies(batchResults: BatchNegotiationResult): Promise<{
+    applied: number;
+    failed: number;
+    errors: string[];
+  }> {
+    console.log('🚀 Auto-applying negotiation strategies from batch results');
+    
+    let applied = 0;
+    let failed = 0;
+    const errors: string[] = [];
+
+    for (const { outreach, result } of batchResults.results) {
+      if (result.success && result.insight) {
+        try {
+          // Store the clean message (without metadata) as a conversation message
+          const success = this.storeNegotiationMessage(
+            outreach,
+            result.insight.suggestedResponse,
+            result.insight,
+            result.method
+          );
+
+          if (success) {
+            applied++;
+            console.log(`✅ Applied negotiation strategy for ${outreach.creatorName} (${result.insight.suggestedResponse.length} chars)`);
+          } else {
+            failed++;
+            errors.push(`Failed to store conversation for ${outreach.creatorName}`);
+          }
+        } catch (error) {
+          failed++;
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          errors.push(`${outreach.creatorName}: ${errorMessage}`);
+          console.error(`❌ Failed to apply strategy for ${outreach.creatorName}:`, error);
+        }
+      } else {
+        failed++;
+        errors.push(`${outreach.creatorName}: No valid strategy generated`);
+      }
+    }
+
+    console.log(`🎯 Auto-application completed: ${applied} applied, ${failed} failed`);
+    return { applied, failed, errors };
+  }
+
+  /**
+   * Store negotiation message with metadata separate from content
+   */
+  private storeNegotiationMessage(
+    outreach: StoredOutreach,
+    messageContent: string,
+    insight: NegotiationInsight,
+    method: 'ai_generated' | 'algorithmic_fallback'
+  ): boolean {
+    try {
+      // Store as conversation message with metadata
+      outreachStorage.addConversationMessage(
+        outreach.id,
+        messageContent, // Clean message without metadata
+        'ai',
+        'negotiation',
+        {
+          aiMethod: method,
+          strategy: insight.currentPhase,
+          tactics: insight.negotiationTactics,
+          suggestedOffer: insight.recommendedOffer.amount,
+          phase: insight.currentPhase
+        }
+      );
+
+      // Update status and offer
+      outreachStorage.updateOutreachStatus(
+        outreach.id,
+        'negotiating',
+        undefined, // Don't duplicate in notes
+        insight.recommendedOffer.amount
+      );
+
+      console.log(`💾 Negotiation message stored for ${outreach.creatorName} with separate metadata`);
+      return true;
+    } catch (error) {
+      console.error('Failed to store negotiation message:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Update outreach with negotiation results (for individual negotiations)
+   */
+  updateOutreachWithNegotiation(
+    outreachId: string, 
+    message: string, 
+    suggestedOffer: number,
+    insight?: NegotiationInsight,
+    method?: 'ai_generated' | 'algorithmic_fallback'
+  ): boolean {
+    try {
+      // Store as conversation message with metadata if available
+      if (insight && method) {
+        outreachStorage.addConversationMessage(
+          outreachId,
+          message, // Clean message
+          'ai',
+          'negotiation',
+          {
+            aiMethod: method,
+            strategy: insight.currentPhase,
+            tactics: insight.negotiationTactics,
+            suggestedOffer: insight.recommendedOffer.amount,
+            phase: insight.currentPhase
+          }
+        );
+      } else {
+        // Fallback for manual messages
+        outreachStorage.addConversationMessage(
+          outreachId,
+          message,
+          'brand',
+          'negotiation'
+        );
+      }
+
+      // Update status and offer
+      outreachStorage.updateOutreachStatus(
+        outreachId,
+        'negotiating',
+        undefined, // Don't duplicate in notes
+        suggestedOffer
+      );
+
+      console.log(`📧 Negotiation Agent: Updated outreach ${outreachId} with new offer ₹${suggestedOffer}`);
+      console.log(`📝 Negotiation Agent: Stored message in conversation history (${message.length} characters)`);
+      return true;
+    } catch (error) {
+      console.error('❌ Negotiation Agent: Failed to update outreach:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Get all outreaches with positive response status for negotiation
+   */
+  getPositiveResponseCreators(): StoredOutreach[] {
+    const allOutreaches = outreachStorage.getAllOutreaches();
+    const positiveStatuses = ['interested', 'negotiating', 'deal_closed'];
+    
+    return allOutreaches
+      .filter(outreach => positiveStatuses.includes(outreach.status))
+      .sort((a, b) => {
+        // Sort by status priority (negotiating > interested > deal_closed)
+        const statusPriority = { negotiating: 3, interested: 2, deal_closed: 1 };
+        return statusPriority[b.status as keyof typeof statusPriority] - 
+               statusPriority[a.status as keyof typeof statusPriority];
+      });
+  }
+
+  /**
+   * Generate AI-powered negotiation strategy for a specific outreach
+   */
+  async generateNegotiationStrategy(outreach: StoredOutreach): Promise<NegotiationResult> {
+    console.log(`🤝 Negotiation Agent: Analyzing strategy for ${outreach.creatorName} (${outreach.status})`);
+    
+    // Check if we have API calls remaining
+    const remainingCalls = GlobalRateLimiter.getInstance().getRemainingCalls();
+    
+    if (remainingCalls < 1) {
+      console.log('⚠️ Negotiation Agent: No API calls remaining - using algorithmic strategy');
+      return {
+        success: true,
+        insight: this.generateAdvancedFallbackStrategy(outreach),
+        method: 'algorithmic_fallback'
+      };
+    }
+
+    const prompt = this.buildStageAwareNegotiationPrompt(outreach);
+
+    try {
+      console.log('🤖 Negotiation Agent: Making AI API call...');
+      
+      await GlobalRateLimiter.getInstance().waitIfNeeded();
+      
+      const result = await RetryHandler.withRetry(async () => {
+        const { text } = await generateText({
+          model: this.model,
+          prompt,
+          maxTokens: 1500,
+          temperature: 0.3,
+        });
+        return text;
+      }, 1, 5000); // Only 1 retry with 5s delay
+
+      // Parse AI response with robust error handling
+      const insights = this.parseAIResponse(result);
+      
+      if (!this.validateInsights(insights)) {
+        console.warn('⚠️ Negotiation Agent: AI response invalid, using fallback');
+        return {
+          success: true,
+          insight: this.generateAdvancedFallbackStrategy(outreach),
+          method: 'algorithmic_fallback'
+        };
+      }
+
+      console.log('✅ Negotiation Agent: AI strategy generated successfully');
+      return {
+        success: true,
+        insight: insights,
+        method: 'ai_generated'
+      };
+      
+    } catch (error) {
+      console.error('❌ Negotiation Agent: AI Error:', error);
+      return {
+        success: true,
+        insight: this.generateAdvancedFallbackStrategy(outreach),
+        method: 'algorithmic_fallback',
+        error: error instanceof Error ? error.message : 'Unknown error'
+      };
+    }
+  }
+
+  /**
+   * Build stage-aware AI prompt for negotiation strategy with conversation context
+   */
+  private buildStageAwareNegotiationPrompt(outreach: StoredOutreach): string {
+    const daysSinceContact = Math.floor((Date.now() - outreach.lastContact.getTime()) / (1000 * 60 * 60 * 24));
+    const hasOffer = outreach.currentOffer && outreach.currentOffer > 0;
+    
+    // Get conversation history for context
+    const conversationContext = outreachStorage.getConversationContext(outreach.id);
+    const hasConversationHistory = conversationContext.length > 0;
+    
+    return `You are an expert negotiation agent for influencer marketing deals. Analyze this creator outreach and provide strategic negotiation guidance based on the current stage, context, and conversation history.
+
+OUTREACH CONTEXT:
+- Creator: ${outreach.creatorName} (@${outreach.creatorPlatform})
+- Current Status: ${outreach.status}
+- Days since last contact: ${daysSinceContact}
+- Confidence Score: ${outreach.confidence}%
+- Brand: ${outreach.brandName}
+- Campaign: ${outreach.campaignContext}
+- Current Offer: ${hasOffer ? `₹${outreach.currentOffer}` : 'No offer set'}
+
+${hasConversationHistory ? `
+CONVERSATION HISTORY:
+${conversationContext}
+
+IMPORTANT: Based on the conversation history above, craft a response that:
+1. Acknowledges previous exchanges naturally
+2. Addresses any concerns or questions raised
+3. Builds on previous discussion points
+4. Maintains conversation flow and context
+` : `
+INITIAL OUTREACH CONTEXT:
+This is the beginning of the negotiation conversation. The original outreach was:
+Subject: ${outreach.subject}
+Message: ${outreach.body.substring(0, 200)}...
+`}
+
+STAGE-SPECIFIC GUIDANCE:
+${this.getStageSpecificGuidance(outreach)}
+
+NEGOTIATION REQUIREMENTS:
+1. Analyze the current negotiation stage and creator's likely mindset
+2. ${hasConversationHistory ? 'Continue the conversation naturally based on previous exchanges' : 'Provide a personalized response that starts the negotiation conversation'}
+3. Recommend tactical approaches based on the negotiation phase and conversation history
+4. Suggest an appropriate offer amount with strategic reasoning
+5. Outline clear next steps to advance the negotiation
+
+RESPONSE TONE:
+- Professional but warm and personal
+- Acknowledge any previous conversation points
+- Show genuine interest in partnership
+- Be specific and action-oriented
+- Avoid generic language
+
+Response format (JSON only):
+{
+  "currentPhase": "initial_interest" | "price_discussion" | "terms_negotiation" | "closing",
+  "suggestedResponse": "Personalized message that flows naturally from any previous conversation and addresses current stage",
+  "negotiationTactics": ["specific tactic 1", "specific tactic 2", "specific tactic 3"],
+  "recommendedOffer": {
+    "amount": number,
+    "reasoning": "Strategic reasoning for this offer amount based on conversation context"
+  },
+  "nextSteps": ["actionable step 1", "actionable step 2", "actionable step 3"]
+}
+
+Focus on building genuine relationships and creating mutually beneficial partnerships. The message should read naturally and professionally without any system-generated metadata.`;
+  }
+
+  /**
+   * Get stage-specific guidance for AI prompt
+   */
+  private getStageSpecificGuidance(outreach: StoredOutreach): string {
+    const daysSinceContact = Math.floor((Date.now() - outreach.lastContact.getTime()) / (1000 * 60 * 60 * 24));
+    
+    switch (outreach.status) {
+      case 'interested':
+        return `INTERESTED STAGE:
+- Creator has shown initial interest but no formal negotiation has started
+- Focus on building excitement and trust
+- Present a compelling value proposition
+- Ask about their collaboration preferences and requirements
+- ${daysSinceContact > 3 ? 'Follow up on initial interest and maintain momentum' : 'Strike while the iron is hot'}`;
+
+      case 'negotiating':
+        return `NEGOTIATING STAGE:
+- Active price/terms discussion is happening
+- Creator may have specific concerns or counter-proposals
+- Focus on finding win-win solutions
+- Address any objections with data and flexibility
+- ${daysSinceContact > 5 ? 'Re-engage with fresh perspective and urgency' : 'Continue momentum with clear next steps'}
+- ${outreach.currentOffer ? `Current offer of ₹${outreach.currentOffer} is on the table` : 'No formal offer made yet'}`;
+
+      case 'deal_closed':
+        return `DEAL CLOSED STAGE:
+- Agreement has been reached
+- Focus on execution and relationship building
+- Confirm deliverables and timeline
+- Set up contract finalization
+- This should be a celebration and logistics message`;
+
+      default:
+        return `UNKNOWN STAGE:
+- Analyze the available context to determine appropriate approach
+- Default to relationship-building and value proposition
+- Ask clarifying questions to understand creator's position`;
+    }
+  }
+
+  /**
+   * Generate advanced algorithmic fallback strategy with stage awareness
+   */
+  private generateAdvancedFallbackStrategy(outreach: StoredOutreach): NegotiationInsight {
+    console.log(`🤖 Negotiation Agent: Generating advanced algorithmic strategy for ${outreach.status} stage`);
+    
+    const baseOffer = outreach.currentOffer || 10000;
+    const daysSinceContact = Math.floor((Date.now() - outreach.lastContact.getTime()) / (1000 * 60 * 60 * 24));
+    const isFollowUp = daysSinceContact > 3;
+    
+    if (outreach.status === 'interested') {
+      return {
+        currentPhase: 'initial_interest',
+        suggestedResponse: isFollowUp 
+          ? `Hi ${outreach.creatorName}! 👋 I wanted to follow up on our previous conversation about partnering with ${outreach.brandName}. I understand you're busy, but I'm still very excited about the potential collaboration. Your content in the ${outreach.creatorPlatform} space would be perfect for our campaign. Could we schedule a quick 15-minute call this week to discuss the details and answer any questions you might have?`
+          : `Hi ${outreach.creatorName}! 👋 Thank you for your interest in partnering with ${outreach.brandName}. I'm excited to discuss this collaboration opportunity! Based on your amazing content and engagement, I believe we can create something truly impactful together. I'd love to share more details about the campaign and hear your thoughts. Are you available for a brief call this week to discuss the partnership?`,
+        negotiationTactics: isFollowUp
+          ? ['Gentle follow-up approach', 'Acknowledge their busy schedule', 'Reiterate mutual value', 'Suggest low-commitment next step']
+          : ['Build initial excitement', 'Emphasize creator selection', 'Focus on collaboration potential', 'Suggest personal connection'],
+        recommendedOffer: {
+          amount: Math.round(baseOffer * (isFollowUp ? 1.15 : 1.2)),
+          reasoning: isFollowUp 
+            ? 'Slightly lower initial offer for follow-up to show flexibility'
+            : 'Strong opening offer to demonstrate value and seriousness'
+        },
+        nextSteps: [
+          'Schedule discovery call within 3-5 days',
+          'Prepare detailed campaign brief and deliverables',
+          'Research their recent high-performing content',
+          'Draft collaboration agreement template'
+        ]
+      };
+      
+    } else if (outreach.status === 'negotiating') {
+      const isStalled = daysSinceContact > 5;
+      
+      return {
+        currentPhase: isStalled ? 'terms_negotiation' : 'price_discussion',
+        suggestedResponse: isStalled
+          ? `Hi ${outreach.creatorName}! I hope you're doing well. I wanted to circle back on our ${outreach.brandName} collaboration discussion. I understand negotiations can take time, and I want to make sure we find terms that work perfectly for both of us. Perhaps we can approach this differently - what matters most to you in this partnership? Is it the creative freedom, timeline flexibility, or compensation structure? Let's find a solution that aligns with your priorities.`
+          : `Hi ${outreach.creatorName}! Thanks for continuing our discussion about the ${outreach.brandName} partnership. I appreciate your feedback and want to address your concerns. ${outreach.brandName} values quality creators like you, and we're committed to finding a collaboration structure that benefits everyone. What specific aspects would you like to adjust or discuss further?`,
+        negotiationTactics: isStalled
+          ? ['Reset negotiation approach', 'Focus on creator priorities', 'Offer alternative structures', 'Show genuine partnership interest']
+          : ['Address specific concerns', 'Show flexibility and understanding', 'Maintain partnership focus', 'Present alternative options'],
+        recommendedOffer: {
+          amount: isStalled ? Math.round(baseOffer * 1.25) : Math.round(baseOffer * 1.1),
+          reasoning: isStalled 
+            ? 'Higher offer to re-energize stalled negotiation and show commitment'
+            : 'Moderate adjustment showing willingness to negotiate while maintaining value'
+        },
+        nextSteps: isStalled
+          ? ['Offer multiple compensation structures', 'Suggest creative collaboration alternatives', 'Set clear decision timeline', 'Prepare partnership case studies']
+          : ['Address specific pricing concerns', 'Provide campaign performance projections', 'Offer milestone-based payments', 'Schedule final decision call']
+      };
+      
+    } else {
+      return {
+        currentPhase: 'closing',
+        suggestedResponse: `Hi ${outreach.creatorName}! 🎉 I'm absolutely thrilled that we've reached an agreement on our ${outreach.brandName} partnership! This is going to be an amazing collaboration. Let's get everything finalized so we can start creating incredible content together. I'll send over the contract with our agreed terms today. I'm really looking forward to working with you and seeing the creative magic you'll bring to this campaign!`,
+        negotiationTactics: [
+          'Celebrate the partnership success',
+          'Maintain high energy and enthusiasm',
+          'Move quickly to contract finalization',
+          'Set clear implementation expectations'
+        ],
+        recommendedOffer: {
+          amount: outreach.currentOffer || baseOffer,
+          reasoning: 'Final agreed amount - focus on execution and relationship building'
+        },
+        nextSteps: [
+          'Send final contract with agreed terms within 24 hours',
+          'Schedule content creation kick-off call',
+          'Provide comprehensive brand guidelines and assets',
+          'Set up payment processing and milestone tracking'
+        ]
+      };
+    }
+  }
+
+  /**
+   * Parse AI response with robust error handling
+   */
+  private parseAIResponse(text: string): NegotiationInsight {
+    try {
+      // First try: direct parsing after trim
+      return JSON.parse(text.trim());
+    } catch (error1) {
+      try {
+        // Second try: remove markdown code blocks
+        let cleanedText = text.trim();
+        cleanedText = cleanedText.replace(/```json\n?/g, '').replace(/```\n?$/g, '');
+        cleanedText = cleanedText.replace(/```\n?/g, '');
+        return JSON.parse(cleanedText.trim());
+      } catch (error2) {
+        try {
+          // Third try: extract JSON from the response
+          const jsonMatch = text.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            return JSON.parse(jsonMatch[0]);
+          }
+          throw new Error('No valid JSON found');
+        } catch (error3) {
+          console.error('🤝 Negotiation Agent: JSON parsing failed:', { error1, error2, error3 });
+          console.error('🤝 Negotiation Agent: Raw text:', text);
+          throw new Error('Failed to parse JSON response from AI');
+        }
+      }
+    }
+  }
+
+  /**
+   * Validate AI insights structure
+   */
+  private validateInsights(insights: any): insights is NegotiationInsight {
+    return insights && 
+           typeof insights === 'object' &&
+           insights.currentPhase &&
+           insights.suggestedResponse &&
+           insights.recommendedOffer &&
+           typeof insights.recommendedOffer.amount === 'number';
+  }
+
+  /**
+   * Check if negotiation agent is available
+   */
+  isAvailable(): boolean {
+    return !!import.meta.env.VITE_GROQ_API_KEY;
+  }
+
+  /**
+   * Get rate limit status for negotiation agent
+   */
+  getRateLimitStatus(): { remaining: number; canMakeRequest: boolean } {
+    const remaining = GlobalRateLimiter.getInstance().getRemainingCalls();
+    return {
+      remaining,
+      canMakeRequest: this.isAvailable() && remaining > 0
+    };
   }
 }
 
@@ -1008,6 +1632,7 @@ class WorkflowOrchestrationAgent {
   private discoveryAgent = new CreatorDiscoveryAgent();
   private scoringAgent = new MatchingScoringAgent();
   private outreachAgent = new OutreachAgent();
+  private negotiationAgent = new NegotiationAgent();
 
   async executeFullWorkflow(requirements: BusinessRequirements): Promise<AgentWorkflowResult> {
     const startTime = Date.now();
@@ -1158,6 +1783,24 @@ class WorkflowOrchestrationAgent {
       remaining
     };
   }
+
+  /**
+   * Get negotiation agent for external use
+   */
+  getNegotiationAgent(): NegotiationAgent {
+    return this.negotiationAgent;
+  }
+
+  /**
+   * Get global rate limit status for UI display
+   */
+  getGlobalStatus(): { remaining: number; total: number; resetTime: number } {
+    return {
+      remaining: GlobalRateLimiter.getInstance().getRemainingCalls(),
+      total: 3,
+      resetTime: Date.now() + 60000 // Approximately when it resets
+    };
+  }
 }
 
 // ============================================================================
@@ -1165,6 +1808,7 @@ class WorkflowOrchestrationAgent {
 // ============================================================================
 
 export const aiAgentsService = new WorkflowOrchestrationAgent();
+export const negotiationAgentService = aiAgentsService.getNegotiationAgent();
 
 // Helper function to create example business requirements
 export const createExampleRequirements = (): BusinessRequirements => ({
