@@ -1,4 +1,4 @@
-import { type Creator } from '../types';
+// import { type Creator } from '../types'; // Currently unused but may be needed later
 
 // Define interfaces for our outreach data structure
 export interface ConversationMessage {

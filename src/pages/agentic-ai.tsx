@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { 
   aiAgentsService, 
   createExampleRequirements,
@@ -65,8 +65,8 @@ export default function AgenticAI() {
     setWorkflowSteps(steps => steps.map(step => ({ ...step, status: 'pending', duration: undefined })));
 
     try {
-      const stepTimings: number[] = [];
-      const startTime = Date.now();
+      // const stepTimings: number[] = [];
+      // const startTime = Date.now();
 
       // Step 1: Campaign Building
       setWorkflowSteps(steps => steps.map((step, index) => 
@@ -619,7 +619,7 @@ export default function AgenticAI() {
                     <div>
                       <h4 className="font-medium text-gray-900">Top Creator Matches</h4>
                       <div className="space-y-2">
-                        {getTopCreators().slice(0, 3).map((match, index) => (
+                        {getTopCreators().slice(0, 3).map((match, _index) => (
                           <div key={match.creator.id} className="flex items-center justify-between p-2 bg-gray-50 rounded">
                             <div className="flex items-center gap-2">
                               <img

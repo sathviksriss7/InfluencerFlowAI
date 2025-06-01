@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { aiOutreachService, type BrandInfo, type OutreachEmail, type AIOutreachResponse, type NegotiationContext } from '../services/ai-outreach';
+import React, { useState } from 'react';
+import { aiOutreachService, type BrandInfo, type OutreachEmail, type AIOutreachResponse } from '../services/ai-outreach';
 import { outreachStorage, type StoredOutreach } from '../services/outreach-storage';
 import { type Creator } from '../types';
 
@@ -69,14 +69,14 @@ export default function AIOutreachManager({ searchResults, onClose }: OutreachMa
     setActiveTab(tab);
   };
 
-  // Auto-advance workflow
-  const advanceWorkflow = () => {
-    if (activeTab === 'setup' && setupComplete) {
-      setActiveTab('outreach');
-    } else if (activeTab === 'outreach' && emailsGenerated) {
-      setActiveTab('tracking');
-    }
-  };
+  // Auto-advance workflow (currently unused but kept for future use)
+  // const advanceWorkflow = () => {
+  //   if (activeTab === 'setup' && setupComplete) {
+  //     setActiveTab('outreach');
+  //   } else if (activeTab === 'outreach' && emailsGenerated) {
+  //     setActiveTab('tracking');
+  //   }
+  // };
 
   // Toggle creator selection
   const toggleCreatorSelection = (creator: Creator) => {
@@ -138,6 +138,7 @@ export default function AIOutreachManager({ searchResults, onClose }: OutreachMa
           campaignContext: campaignContext,
           createdAt: new Date(),
           lastContact: new Date(),
+          conversationHistory: [],
           notes: `AI-generated outreach email with ${(response.confidence * 100).toFixed(0)}% confidence`
         };
 
@@ -155,34 +156,34 @@ export default function AIOutreachManager({ searchResults, onClose }: OutreachMa
     }
   };
 
-  // Generate negotiation email
-  const generateNegotiationEmail = async (creator: Creator, negotiationContext: NegotiationContext) => {
-    try {
-      const response = await aiOutreachService.generateNegotiationEmail(creator, brandInfo, negotiationContext);
-      
-      // Update outreach status
-      setOutreachStatuses(prev => {
-        const current = prev.get(creator.id);
-        if (current) {
-          const updated = {
-            ...current,
-            emails: [...current.emails, response.email],
-            status: 'negotiating' as const,
-            lastContact: new Date(),
-            currentOffer: negotiationContext.currentOffer,
-            creatorCounterOffer: negotiationContext.creatorAskingPrice
-          };
-          return new Map(prev.set(creator.id, updated));
-        }
-        return prev;
-      });
-      
-      return response;
-    } catch (error) {
-      console.error('Error generating negotiation email:', error);
-      return null;
-    }
-  };
+  // Generate negotiation email (currently unused but kept for future use)
+  // const generateNegotiationEmail = async (creator: Creator, negotiationContext: NegotiationContext) => {
+  //   try {
+  //     const response = await aiOutreachService.generateNegotiationEmail(creator, brandInfo, negotiationContext);
+  //     
+  //     // Update outreach status
+  //     setOutreachStatuses(prev => {
+  //       const current = prev.get(creator.id);
+  //       if (current) {
+  //         const updated = {
+  //           ...current,
+  //           emails: [...current.emails, response.email],
+  //           status: 'negotiating' as const,
+  //           lastContact: new Date(),
+  //           currentOffer: negotiationContext.currentOffer,
+  //           creatorCounterOffer: negotiationContext.creatorAskingPrice
+  //         };
+  //         return new Map(prev.set(creator.id, updated));
+  //       }
+  //       return prev;
+  //     });
+  //     
+  //     return response;
+  //   } catch (error) {
+  //     console.error('Error generating negotiation email:', error);
+  //     return null;
+  //   }
+  // };
 
   // Generate follow-up email
   const generateFollowUpEmail = async (creator: Creator) => {

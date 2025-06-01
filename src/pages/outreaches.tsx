@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { outreachStorage, type StoredOutreach } from '../services/outreach-storage';
 import { aiOutreachService, type AIOutreachResponse, type BrandInfo } from '../services/ai-outreach';
 

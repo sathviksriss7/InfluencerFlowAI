@@ -6,7 +6,7 @@ import { mockPaymentMilestones } from '../mock-data/payments';
 
 export default function Analytics() {
   const [timeRange, setTimeRange] = useState('30d');
-  const [selectedMetric, setSelectedMetric] = useState('overview');
+  // const [selectedMetric, setSelectedMetric] = useState('overview'); // Currently unused but kept for future features
 
   // Calculate analytics data
   const totalSpent = mockPaymentMilestones
@@ -176,7 +176,7 @@ export default function Analytics() {
         <div className="bg-white rounded-lg shadow p-6">
           <h2 className="text-lg font-semibold text-gray-900 mb-4">Campaign Performance</h2>
           <div className="space-y-4">
-            {campaignPerformance.map((campaign, index) => (
+            {campaignPerformance.map((campaign, _index) => (
               <div key={campaign.id} className="border border-gray-200 rounded-lg p-4">
                 <div className="flex justify-between items-start mb-3">
                   <div>
