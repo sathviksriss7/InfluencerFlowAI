@@ -1,0 +1,6 @@
+Flask>=2.0
+python-dotenv>=0.19
+requests>=2.25
+supabase>=1.0
+Flask-CORS>=3.0
+gunicorn>=20.0 

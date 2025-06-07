@@ -211,7 +211,7 @@
    # Create .env.local file (REQUIRED - platform won't work without this!)
    cp env.example .env.local
    ```
-
+   
 4. **Configure Environment Variables** ⚡
    
    Edit `.env.local` with your actual values:
@@ -250,11 +250,18 @@
 1. **Navigate to Settings**: In your Supabase dashboard, go to **Settings** → **API**
 2. **Copy Project URL**: Copy the "Project URL" (format: `https://abcdefgh.supabase.co`)
 3. **Copy Anon Key**: Copy the "anon public" key (long string starting with `eyJ`)
-4. **Add to .env.local**:
-   ```bash
-   VITE_SUPABASE_URL="https://YOUR_ACTUAL_PROJECT_REF.supabase.co"
-   VITE_SUPABASE_ANON_KEY="YOUR_ACTUAL_ANON_KEY"
-   ```
+4. **Add to `.env.local`** (in your project root, NOT `backend/.env`):
+    ```bash
+    # Supabase Keys (for frontend)
+    VITE_SUPABASE_URL="https://YOUR_ACTUAL_PROJECT_REF.supabase.co"
+    VITE_SUPABASE_ANON_KEY="YOUR_ACTUAL_ANON_KEY"
+
+    # Backend API URL (for frontend to call your Python backend)
+    # For local development (Python backend on port 5001):
+    VITE_BACKEND_API_URL="http://localhost:5001"
+    # For production (after deploying Python backend, e.g., to Render):
+    # VITE_BACKEND_API_URL="https://your-python-backend.onrender.com"
+    ```
 
 ### **Step 3: Enable Google OAuth Provider** 🔧
 
@@ -324,14 +331,32 @@
 
 ### **Environment Variables**
 
-Your `.env.local` file should contain:
+Your `.env.local` file (in the project root) should contain:
 
 ```bash
-# Supabase Configuration (REQUIRED for authentication)
+# Supabase Configuration (for frontend client & auth)
 VITE_SUPABASE_URL="https://your-project.supabase.co"
 VITE_SUPABASE_ANON_KEY="your_supabase_anon_key_here"
 
-# Groq API Configuration (REQUIRED for AI features)
+# Backend API URL (for frontend to call your Python backend)
+# Use http://localhost:5001 for local Python backend development
+# Update to your deployed backend URL for production
+VITE_BACKEND_API_URL="http://localhost:5001"
+
+# Groq API Configuration (ONLY for backend, keep this in backend/.env)
+# VITE_GROQ_API_KEY="gsk_your_actual_api_key_here" 
+# Note: VITE_GROQ_API_KEY is primarily used by the Python backend now.
+# The frontend does not directly call Groq anymore for secured endpoints.
+```
+
+Your `backend/.env` file (in the `backend/` directory) should contain:
+
+```bash
+# Supabase Configuration (for backend to validate JWTs, etc.)
+VITE_SUPABASE_URL="https://your-project.supabase.co"
+VITE_SUPABASE_ANON_KEY="your_supabase_anon_key_here"
+
+# Groq API Configuration (for backend AI calls)
 VITE_GROQ_API_KEY="gsk_your_actual_api_key_here"
 ```
 

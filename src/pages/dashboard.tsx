@@ -234,13 +234,13 @@ export default function Dashboard() {
       <div className="bg-white rounded-lg shadow p-6">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900 mb-2">
-              Welcome to InfluencerFlowAI Dashboard
-            </h1>
-            <p className="text-gray-600">
-              Manage your influencer marketing campaigns with AI-powered automation.
-            </p>
-          </div>
+        <h1 className="text-2xl font-bold text-gray-900 mb-2">
+          Welcome to InfluencerFlowAI Dashboard
+        </h1>
+        <p className="text-gray-600">
+          Manage your influencer marketing campaigns with AI-powered automation.
+        </p>
+      </div>
           
           {/* Filter and Export Controls */}
           {outreachSummary && outreachSummary.totalOutreaches > 0 && (
@@ -429,8 +429,8 @@ export default function Dashboard() {
           <div className="bg-white rounded-lg shadow p-6">
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-lg font-semibold text-gray-900">
-                📊 Outreach Status Overview
-              </h2>
+              📊 Outreach Status Overview
+            </h2>
               <div className="text-sm text-gray-500">
                 {filteredSummary.totalOutreaches !== (outreachSummary?.totalOutreaches || 0) ? (
                   <>Filtered: {filteredSummary.totalOutreaches}</>
@@ -447,11 +447,11 @@ export default function Dashboard() {
                   <div key={status} className="space-y-2">
                     {/* Status Header */}
                     <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2">
                         <span className="text-lg">{getStatusIcon(status)}</span>
                         <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(status)}`}>
-                          {getStatusDisplayName(status)}
-                        </span>
+                      {getStatusDisplayName(status)}
+                    </span>
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="font-semibold text-gray-900">{count}</span>
@@ -577,15 +577,15 @@ export default function Dashboard() {
             <h3 className="text-lg font-semibold text-gray-900 mb-2">
               🔍 No Results Found
             </h3>
-            <p className="text-gray-600 mb-4">
+        <p className="text-gray-600 mb-4">
               Your current filters don't match any outreaches. Try adjusting your filter criteria.
-            </p>
-            <button
+        </p>
+        <button 
               onClick={clearFilters}
               className="px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 transition-colors"
-            >
+        >
               Clear All Filters
-            </button>
+        </button>
           </div>
         </div>
       )}

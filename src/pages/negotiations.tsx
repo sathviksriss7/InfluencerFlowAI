@@ -169,36 +169,36 @@ export default function Negotiations() {
           {filteredOutreaches.map((outreach) => {
             const conversationCount = outreach.conversationHistory?.length || 0;
             return (
-              <div 
+            <div 
                 key={outreach.id}
                 onClick={() => setSelectedOutreach(outreach.id)}
-                className={`bg-white rounded-lg shadow p-4 cursor-pointer transition-all ${
+              className={`bg-white rounded-lg shadow p-4 cursor-pointer transition-all ${
                   selectedOutreach === outreach.id ? 'ring-2 ring-blue-500 bg-blue-50' : 'hover:shadow-md'
-                }`}
-              >
-                <div className="flex items-start justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <img
+              }`}
+            >
+              <div className="flex items-start justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <img
                       src={outreach.creatorAvatar}
                       alt={outreach.creatorName}
-                      className="w-8 h-8 rounded-full object-cover"
-                    />
-                    <div>
+                    className="w-8 h-8 rounded-full object-cover"
+                  />
+                  <div>
                       <p className="font-medium text-gray-900 text-sm">{outreach.creatorName}</p>
                       <p className="text-xs text-gray-500">{outreach.brandName}</p>
                     </div>
                   </div>
                   <span className={getStatusBadge(outreach.status)}>
                     {outreach.status.replace('_', ' ')}
-                  </span>
-                </div>
-                
-                <div className="flex justify-between items-center text-sm">
-                  <div>
+                </span>
+              </div>
+              
+              <div className="flex justify-between items-center text-sm">
+                <div>
                     <p className="text-sm text-gray-600">{outreach.creatorPlatform}</p>
-                    <p className="font-semibold text-gray-900">
+                  <p className="font-semibold text-gray-900">
                       {outreach.currentOffer ? `₹${outreach.currentOffer.toLocaleString()}` : 'No offer'}
-                    </p>
+                  </p>
                   </div>
                   <div className="text-right">
                     <span className="text-gray-500">
@@ -298,41 +298,41 @@ export default function Negotiations() {
                   {selectedOutreachData.conversationHistory && selectedOutreachData.conversationHistory.length > 0 ? (
                     <div className="space-y-4">
                       {selectedOutreachData.conversationHistory.map((message) => (
-                        <div 
-                          key={message.id}
-                          className={`flex ${message.sender === 'brand' ? 'justify-end' : 'justify-start'}`}
-                        >
+                  <div 
+                    key={message.id}
+                    className={`flex ${message.sender === 'brand' ? 'justify-end' : 'justify-start'}`}
+                  >
                           <div className={`max-w-xs lg:max-w-md px-4 py-3 rounded-lg ${getMessageBgColor(message.sender)}`}>
-                            <div className="flex items-center gap-2 mb-1">
-                              <span className="text-sm">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-sm">
                                 {getMessageIcon(message.type, message.sender)}
-                              </span>
-                              <span className="text-xs opacity-75">
+                        </span>
+                        <span className="text-xs opacity-75">
                                 {getMessageSenderLabel(message.sender)}
                               </span>
                               {message.metadata?.aiMethod && (
                                 <span className="text-xs bg-black bg-opacity-10 px-1 rounded">
                                   {message.metadata.aiMethod === 'ai_generated' ? 'AI' : 'Algo'}
-                                </span>
+                        </span>
                               )}
-                            </div>
+                      </div>
                             <div className="text-sm whitespace-pre-wrap">{message.content}</div>
-                            {message.metadata && (
-                              <div className="mt-2 text-xs opacity-75">
+                      {message.metadata && (
+                        <div className="mt-2 text-xs opacity-75">
                                 {message.metadata.suggestedOffer && (
                                   <p>💰 Suggested: ₹{message.metadata.suggestedOffer.toLocaleString()}</p>
                                 )}
                                 {message.metadata.strategy && (
                                   <p>🎯 Phase: {message.metadata.strategy.replace('_', ' ')}</p>
-                                )}
-                              </div>
-                            )}
-                            <p className="text-xs opacity-50 mt-1">
-                              {formatTime(message.timestamp)}
-                            </p>
-                          </div>
+                          )}
                         </div>
-                      ))}
+                      )}
+                      <p className="text-xs opacity-50 mt-1">
+                        {formatTime(message.timestamp)}
+                      </p>
+                    </div>
+                  </div>
+                ))}
                     </div>
                   ) : (
                     <div className="text-center py-8">
