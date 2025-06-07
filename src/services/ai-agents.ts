@@ -281,7 +281,7 @@ class MatchingScoringAgent {
       if (aiScoredCount < this.maxAIScoring && GlobalRateLimiter.getInstance().getRemainingCalls() > 0) {
         scoringCallResponse = await this.scoreIndividualCreatorViaBackend(campaign, creator);
         if (scoringCallResponse.method === 'ai_generated' && scoringCallResponse.success) aiScoredCount++;
-      } else {
+    } else {
         const fallbackData = this.localFallbackScoring(campaign, creator);
         scoringCallResponse = { success: true, creatorMatch: fallbackData, method: 'algorithmic_fallback' };
       }
@@ -414,7 +414,7 @@ class OutreachAgent {
         };
 
         const payload = {
-          creator: match.creator, 
+          creator: match.creator,
           brandInfo: brandInfo, 
           campaignContext: campaign.title, 
         };
@@ -446,15 +446,15 @@ class OutreachAgent {
         else templateBasedCount++;
         
         await this.saveOutreach(campaign, match.creator, subject, message, false, method as 'ai_generated' | 'template_based');
-        
-outreachResults.push({
-          creator: match.creator,
+          
+          outreachResults.push({
+            creator: match.creator,
           subject,
           message,
-          status: 'sent',
+            status: 'sent',
           method: method as 'ai_generated' | 'template_based',
-          timestamp: new Date()
-        });
+            timestamp: new Date()
+          });
         console.log(`✅ Outreach for ${match.creator.name} processed directly by backend (${method}) & saved.`);
         
       } catch (error) {
@@ -579,7 +579,7 @@ class NegotiationAgent {
       );
       outreachStorage.updateOutreachStatus(outreachId, 'negotiating', undefined, suggestedOffer);
       return true;
-    } catch (error) { 
+    } catch (error) {
       console.error('Error updating outreach in NegotiationAgent:', error); 
       return false; 
     }
@@ -605,8 +605,8 @@ class WorkflowOrchestrationAgent {
     console.log("🚀 Workflow Orchestrator (FE): Starting full agentic workflow...");
     const startTime = Date.now();
     const initialGlobalCalls = GlobalRateLimiter.getInstance().getRemainingCalls();
-    
-    const generatedCampaign = await this.campaignAgent.generateCampaign(requirements);
+      
+      const generatedCampaign = await this.campaignAgent.generateCampaign(requirements);
     console.log(`Workflow Step 1 (Campaign): ${generatedCampaign.title} (using ${generatedCampaign.agentVersion.includes('fallback') ? 'Fallback' : 'AI'})`);
 
     const discoveredCreators = await this.discoveryAgent.findCreators(generatedCampaign, requirements.targetAudience );
@@ -626,11 +626,11 @@ class WorkflowOrchestrationAgent {
             }
         };
     }
-
-    const creatorMatches = await this.scoringAgent.scoreCreators(generatedCampaign, discoveredCreators);
+      
+      const creatorMatches = await this.scoringAgent.scoreCreators(generatedCampaign, discoveredCreators);
     console.log(`Workflow Step 3 (Scoring): Scored ${creatorMatches.length} creators.`);
-
-    const outreachSummary = await this.outreachAgent.executeOutreach(generatedCampaign, creatorMatches, requirements);
+      
+      const outreachSummary = await this.outreachAgent.executeOutreach(generatedCampaign, creatorMatches, requirements);
     console.log(`Workflow Step 4 (Outreach): ${outreachSummary.totalSent} messages sent.`);
 
     const processingTime = Date.now() - startTime;
@@ -638,12 +638,12 @@ class WorkflowOrchestrationAgent {
     const callsUsedThisWorkflow = initialGlobalCalls - finalGlobalCalls;
 
     return {
-      generatedCampaign,
-      creatorMatches,
-      outreachSummary,
-      workflowInsights: {
-        totalProcessingTime: processingTime,
-        agentsUsed: ['CampaignBuilder', 'CreatorDiscovery', 'MatchingScoring', 'Outreach'],
+        generatedCampaign,
+        creatorMatches,
+        outreachSummary,
+        workflowInsights: {
+          totalProcessingTime: processingTime,
+          agentsUsed: ['CampaignBuilder', 'CreatorDiscovery', 'MatchingScoring', 'Outreach'],
         confidenceScore: Math.min(0.95, (generatedCampaign.confidence + (creatorMatches.length > 0 ? (creatorMatches.reduce((s,m)=>s+(m.score||0),0)/creatorMatches.length/100) : 0.5))/2 + (callsUsedThisWorkflow > 0 ? 0.1 : 0) ),
         recommendedNextSteps: [`Review ${outreachSummary.totalSent} outreaches.`, "Monitor responses for negotiation.", `Frontend API calls used: ${callsUsedThisWorkflow}`]
       }

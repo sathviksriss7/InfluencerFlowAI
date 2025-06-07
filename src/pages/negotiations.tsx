@@ -115,14 +115,17 @@ export default function Negotiations() {
   const getMessageSenderLabel = (sender: string) => {
     switch (sender) {
       case 'brand': return 'You';
-      case 'ai': return 'AI Assistant';
+      case 'ai': return 'AI Agent';
       case 'creator': return selectedOutreachData?.creatorName || 'Creator';
+      case 'system': return 'System Log';
       default: return sender;
     }
   };
 
   const getMessageIcon = (type: string, sender: string) => {
     if (sender === 'ai') return '🤖';
+    if (type === 'call_log') return '▶️';
+    if (type === 'voice_transcript') return '🎤';
     switch (type) {
       case 'outreach': return '📧';
       case 'negotiation': return '🤝';
@@ -136,6 +139,7 @@ export default function Negotiations() {
     switch (sender) {
       case 'brand': return 'bg-blue-600 text-white';
       case 'ai': return 'bg-purple-100 text-purple-800 border border-purple-200';
+      case 'system': return 'bg-gray-200 text-gray-700 border border-gray-300';
       case 'creator': return 'bg-gray-100 text-gray-900';
       default: return 'bg-gray-100 text-gray-900';
     }
@@ -317,20 +321,39 @@ export default function Negotiations() {
                               )}
                       </div>
                             <div className="text-sm whitespace-pre-wrap">{message.content}</div>
-                      {message.metadata && (
-                        <div className="mt-2 text-xs opacity-75">
+                            
+                            {/* Display Call Specific Metadata */}
+                            {message.type === 'call_log' && message.metadata?.recording_url && (
+                              <div className="mt-2 text-xs">
+                                <a 
+                                  href={message.metadata.recording_url} 
+                                  target="_blank" 
+                                  rel="noopener noreferrer"
+                                  className="text-blue-500 hover:underline"
+                                >
+                                  Listen to recording ({message.metadata.recording_duration || 'N/A'}s)
+                                </a>
+                              </div>
+                            )}
+                            {message.type === 'voice_transcript' && message.metadata?.call_sid && (
+                                <p className="text-xs opacity-60 mt-1">From call: {message.metadata.call_sid.substring(0,10)}...</p>
+                            )}
+                            
+                            {/* Display Other Metadata (e.g., from negotiation) */}
+                            {message.type === 'negotiation' && message.metadata && (
+                              <div className="mt-2 text-xs opacity-75">
                                 {message.metadata.suggestedOffer && (
                                   <p>💰 Suggested: ₹{message.metadata.suggestedOffer.toLocaleString()}</p>
                                 )}
                                 {message.metadata.strategy && (
                                   <p>🎯 Phase: {message.metadata.strategy.replace('_', ' ')}</p>
-                          )}
-                        </div>
-                      )}
-                      <p className="text-xs opacity-50 mt-1">
-                        {formatTime(message.timestamp)}
-                      </p>
-                    </div>
+                                )}
+                              </div>
+                            )}
+                            <p className="text-xs opacity-50 mt-1">
+                              {formatTime(message.timestamp)}
+                            </p>
+                      </div>
                   </div>
                 ))}
                     </div>

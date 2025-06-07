@@ -6,13 +6,26 @@ export interface ConversationMessage {
   content: string;
   sender: 'brand' | 'creator' | 'ai';
   timestamp: Date;
-  type: 'outreach' | 'response' | 'negotiation' | 'update';
+  type: 'outreach' | 'response' | 'negotiation' | 'update' | 'call_log' | 'voice_transcript' | 'call_exchange' | 'voice_call_summary';
   metadata?: {
     aiMethod?: 'ai_generated' | 'algorithmic_fallback';
     strategy?: string;
     tactics?: string[];
     suggestedOffer?: number;
     phase?: string;
+    errorInfo?: string;
+    call_sid?: string;
+    recording_url?: string;         // For individual audio clips OR old full recording
+    recording_duration?: string;    // For individual audio clips OR old full recording duration
+    creator_segment_recording_sid?: string;
+    // New fields for voice_call_summary metadata
+    full_recording_url?: string;      // Specifically for the full call recording of a voice_call_summary
+    full_recording_duration?: string; // Specifically for the full call recording duration
+    turns?: Array<{                // Array of spoken turns in a voice_call_summary
+      speaker: string; // 'ai' or 'user' (or 'creator')
+      text: string;
+      audio_url?: string; // Optional: URL to individual audio for this specific turn (if we decide to keep/use it)
+    }>;
   };
 }
 
@@ -128,7 +141,7 @@ class OutreachStorageService {
     outreachId: string, 
     content: string, 
     sender: 'brand' | 'creator' | 'ai',
-    type: 'response' | 'negotiation' | 'update',
+    type: ConversationMessage['type'],
     metadata?: ConversationMessage['metadata']
   ): void {
     try {
