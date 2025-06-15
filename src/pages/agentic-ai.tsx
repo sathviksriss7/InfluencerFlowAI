@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ChangeEvent, type FormEvent } from 'react';
 import { 
   aiAgentsService,
   createExampleRequirements,
@@ -8,6 +8,7 @@ import {
 } from '../services/ai-agents';
 import AIOutreachManager from '../components/ai-outreach-manager';
 import NegotiationAgent from '../components/negotiation-agent';
+import { supabase } from '../lib/supabase';
 
 interface WorkflowStep {
   id: string;
@@ -19,6 +20,8 @@ interface WorkflowStep {
 
 type TabType = 'campaign-builder' | 'negotiation-agent';
 
+type InputMethod = 'manual' | 'upload';
+
 export default function AgenticAI() {
   const [activeTab, setActiveTab] = useState<TabType>('campaign-builder');
   const [requirements, setRequirements] = useState<BusinessRequirements>(createExampleRequirements());
@@ -27,6 +30,11 @@ export default function AgenticAI() {
   const [currentStep, setCurrentStep] = useState(0);
   const [showOutreachManager, setShowOutreachManager] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [inputMethod, setInputMethod] = useState<InputMethod>('manual');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [fileUploadStatus, setFileUploadStatus] = useState<'idle' | 'uploading' | 'extracting' | 'success' | 'error'>('idle');
+  const [fileUploadError, setFileUploadError] = useState<string | null>(null);
 
   const [workflowSteps, setWorkflowSteps] = useState<WorkflowStep[]>([
     { id: 'campaign', title: 'Building Campaign Strategy', status: 'pending' },
@@ -156,6 +164,183 @@ export default function AgenticAI() {
   const industries = ['Technology', 'Fashion', 'Food & Beverage', 'Fitness', 'Travel', 'Gaming', 'Beauty', 'Education', 'Finance', 'Healthcare'];
   const goalOptions = ['Increase brand awareness', 'Drive sales', 'Build community', 'Product launch', 'Lead generation', 'Content creation'];
 
+  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files && event.target.files[0]) {
+      setSelectedFile(event.target.files[0]);
+      setFileUploadStatus('idle');
+      setFileUploadError(null);
+    } else {
+      setSelectedFile(null);
+    }
+  };
+
+  const handleFileUploadAndExtract = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!selectedFile) {
+      setFileUploadError('Please select a file first.');
+      return;
+    }
+
+    setFileUploadStatus('uploading');
+    setFileUploadError(null);
+
+    try {
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError || !session) {
+        console.error('No Supabase session for API call.', sessionError);
+        setFileUploadError('Authentication error. Please sign in again.');
+        setFileUploadStatus('error');
+        return;
+      }
+      const token = session.access_token;
+
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+
+      const backendUrl = import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:5001';
+      const response = await fetch(`${backendUrl}/api/campaign/extract_from_document`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+        body: formData,
+      });
+
+      setFileUploadStatus('extracting');
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || `HTTP error! status: ${response.status}`);
+      }
+
+      if (result.structured_requirements) {
+        const extracted = result.structured_requirements;
+        console.log('Extracted requirements from document:', extracted);
+
+        setRequirements(prevReqs => {
+          const updatedReqs: BusinessRequirements = {
+            ...prevReqs, 
+            
+            companyName: extracted.brand_name || '',
+            productService: extracted.product_service_name || '',
+            targetAudience: extracted.target_audience_description || '',
+            keyMessage: (extracted.key_message_points && extracted.key_message_points.length > 0) ? extracted.key_message_points.join(', ') : '',
+            timeline: extracted.timeline_indication || '',
+            
+            campaignObjective: '', 
+            businessGoals: [], 
+            contentTypes: prevReqs.contentTypes || [],
+            preferredPlatforms: prevReqs.preferredPlatforms || [],
+            specialRequirements: '',
+            industry: [],
+          };
+
+          updatedReqs.industry = [];
+          if (extracted.industry && Array.isArray(extracted.industry)) {
+            updatedReqs.industry = extracted.industry
+              .map((ind: unknown) => (typeof ind === 'string' ? ind.trim() : ''))
+              .filter((ind: string) => ind && industries.includes(ind));
+          }
+
+          let firstObjectiveText = '';
+          if (extracted.campaign_objectives && Array.isArray(extracted.campaign_objectives) && extracted.campaign_objectives.length > 0) {
+            firstObjectiveText = (extracted.campaign_objectives[0] || '').toString().trim();
+          }
+          updatedReqs.campaignObjective = firstObjectiveText;
+
+          if (firstObjectiveText && extracted.campaign_objectives && Array.isArray(extracted.campaign_objectives)) {
+            updatedReqs.businessGoals = extracted.campaign_objectives
+              .map((obj: unknown) => (typeof obj === 'string' ? obj.trim() : ''))
+              .filter((obj: string) => obj && goalOptions.includes(obj));
+          } else {
+            updatedReqs.businessGoals = [];
+          }
+
+          let newBudget = { min: 0, max: 0 };
+          const budgetStr = extracted.budget_indication ? String(extracted.budget_indication).toLowerCase() : '';
+          if (budgetStr) {
+            const budgetMatch = budgetStr.match(/(\d+(?:\.\d+)?)[\s,]*([kKmM])?(?:(?:\s*-\s*|\s*to\s*)(\d+(?:\.\d+)?)[\s,]*([kKmM])?)?/);
+            const parseBudgetVal = (valStr?: string, suffix?: string): number => {
+              if (!valStr) return 0;
+              let num = parseFloat(valStr);
+              if (suffix) {
+                const s = suffix.toLowerCase();
+                if (s === 'k') num *= 1000;
+                if (s === 'm') num *= 1000000;
+              }
+              return num;
+            };
+
+            if (budgetMatch) {
+              const minVal = parseBudgetVal(budgetMatch[1], budgetMatch[2]);
+              let maxVal = budgetMatch[3] ? parseBudgetVal(budgetMatch[3], budgetMatch[4]) : 0;
+              
+              if (budgetStr.includes('up to') && minVal && !maxVal) {
+                maxVal = minVal; 
+              } else if (minVal && !maxVal && !budgetStr.includes('up to')) {
+                 maxVal = minVal * 1.5; 
+              }
+              newBudget = { min: minVal || 0, max: maxVal || 0 };
+            } else {
+              console.warn('Could not parse budget_indication:', extracted.budget_indication);
+            }
+          }
+          updatedReqs.budgetRange = newBudget;
+
+          let specialReqsText = '';
+          if (extracted.deliverables_examples && extracted.deliverables_examples.length > 0) {
+            specialReqsText += `Deliverables: ${extracted.deliverables_examples.join(', ')}\n`;
+          }
+          if (extracted.tone_of_voice) {
+            specialReqsText += `Tone: ${extracted.tone_of_voice}\n`;
+          }
+          if (extracted.negative_keywords_exclusions && extracted.negative_keywords_exclusions.length > 0) {
+            specialReqsText += `Exclusions: ${extracted.negative_keywords_exclusions.join(', ')}\n`;
+          }
+          if (extracted.other_notes_or_mandatories) {
+            specialReqsText += `Other Notes: ${extracted.other_notes_or_mandatories}\n`;
+          }
+          updatedReqs.specialRequirements = specialReqsText.trim();
+          
+          let newPreferredPlatforms: string[] = [];
+          let foundYoutubeInDeliverables = false;
+          if (extracted.deliverables_examples && extracted.deliverables_examples.length > 0) {
+            const deliverablesText = extracted.deliverables_examples.join(' ').toLowerCase();
+            if (deliverablesText.includes('youtube') || deliverablesText.includes('yt') || deliverablesText.includes('you tube')) {
+              foundYoutubeInDeliverables = true;
+            }
+          }
+
+          if (foundYoutubeInDeliverables) {
+            if (platforms.includes('youtube')) { 
+              newPreferredPlatforms = ['youtube'];
+            }
+          } else if (extracted.platform_preferences && extracted.platform_preferences.length > 0 && Array.isArray(extracted.platform_preferences)) {
+            newPreferredPlatforms = extracted.platform_preferences
+              .map((p: any) => String(p).toLowerCase())
+              .filter((p: string) => platforms.includes(p));
+          }
+          updatedReqs.preferredPlatforms = newPreferredPlatforms;
+
+          return updatedReqs;
+        });
+
+        setFileUploadStatus('success');
+        setSelectedFile(null); 
+        alert('Campaign requirements extracted and pre-filled from the document!');
+        setInputMethod('manual'); 
+      } else {
+        throw new Error('No structured requirements found in the response.');
+      }
+
+    } catch (err) {
+      console.error('File upload or extraction error:', err);
+      setFileUploadError(err instanceof Error ? err.message : 'An unknown error occurred.');
+      setFileUploadStatus('error');
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="bg-gradient-to-r from-purple-600 via-blue-600 to-indigo-600 text-white rounded-lg shadow-lg">
@@ -267,353 +452,286 @@ export default function AgenticAI() {
             </div>
           )}
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className={`${workflowResult ? 'lg:col-span-1' : 'lg:col-span-2'} space-y-6`}>
-              <div className="bg-white rounded-lg shadow p-6">
-                <h2 className="text-lg font-semibold text-gray-900 mb-4">
-                  📋 Business Requirements
-                </h2>
-                
-                <div className="space-y-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Company Name</label>
-                      <input
-                        type="text"
-                        value={requirements.companyName}
-                        onChange={(e) => updateRequirements('companyName', e.target.value)}
-                        className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Industry</label>
-                      <select
-                        value={requirements.industry}
-                        onChange={(e) => updateRequirements('industry', e.target.value)}
-                        className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
-                      >
-                        {industries.map(industry => (
-                          <option key={industry} value={industry}>{industry}</option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Product/Service</label>
-                    <input
-                      type="text"
-                      value={requirements.productService}
-                      onChange={(e) => updateRequirements('productService', e.target.value)}
-                      className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Business Goals</label>
-                    <div className="grid grid-cols-2 gap-2">
-                      {goalOptions.map(goal => (
-                        <button
-                          key={goal}
-                          type="button"
-                          onClick={() => updateArrayField('businessGoals', goal)}
-                          className={`p-2 border rounded-lg text-sm transition-colors ${
-                            requirements.businessGoals.includes(goal)
-                              ? 'border-purple-500 bg-purple-50 text-purple-700'
-                              : 'border-gray-300 hover:border-gray-400'
-                          }`}
-                        >
-                          {goal}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Target Audience</label>
-                    <input
-                      type="text"
-                      value={requirements.targetAudience}
-                      onChange={(e) => updateRequirements('targetAudience', e.target.value)}
-                      className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Campaign Objective</label>
-                    <input
-                      type="text"
-                      value={requirements.campaignObjective}
-                      onChange={(e) => updateRequirements('campaignObjective', e.target.value)}
-                      className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Budget Range (₹)</label>
-                    <div className="grid grid-cols-2 gap-2">
-                      <input
-                        type="number"
-                        placeholder="Min"
-                        value={requirements.budgetRange.min}
-                        onChange={(e) => updateRequirements('budgetRange', { 
-                          ...requirements.budgetRange, 
-                          min: Number(e.target.value) 
-                        })}
-                        className="p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
-                      />
-                      <input
-                        type="number"
-                        placeholder="Max"
-                        value={requirements.budgetRange.max}
-                        onChange={(e) => updateRequirements('budgetRange', { 
-                          ...requirements.budgetRange, 
-                          max: Number(e.target.value) 
-                        })}
-                        className="p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Preferred Platforms</label>
-                    <div className="grid grid-cols-3 gap-2">
-                      {platforms.map(platform => (
-                        <button
-                          key={platform}
-                          type="button"
-                          onClick={() => updateArrayField('preferredPlatforms', platform)}
-                          className={`p-2 border rounded-lg text-sm capitalize transition-colors ${
-                            requirements.preferredPlatforms?.includes(platform)
-                              ? 'border-purple-500 bg-purple-50 text-purple-700'
-                              : 'border-gray-300 hover:border-gray-400'
-                          }`}
-                        >
-                          {platform}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="border-t border-gray-200 pt-4">
-                    <h3 className="text-sm font-semibold text-gray-900 mb-3">🤖 Autonomous Outreach</h3>
-                    
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Creators to Contact</label>
-                        <select
-                          value={requirements.outreachCount}
-                          onChange={(e) => updateRequirements('outreachCount', Number(e.target.value))}
-                          className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
-                        >
-                          <option value={3}>Top 3 creators</option>
-                          <option value={5}>Top 5 creators</option>
-                          <option value={7}>Top 7 creators</option>
-                          <option value={10}>Top 10 creators</option>
-                        </select>
-                      </div>
-                      
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Personalization</label>
-                        <button
-                          type="button"
-                          onClick={() => updateRequirements('personalizedOutreach', !requirements.personalizedOutreach)}
-                          className={`w-full p-2 border rounded-lg text-sm transition-colors ${
-                            requirements.personalizedOutreach
-                              ? 'border-green-500 bg-green-50 text-green-700'
-                              : 'border-gray-300 text-gray-700 hover:border-gray-400'
-                          }`}
-                        >
-                          {requirements.personalizedOutreach ? '✨ AI Personalized' : '📝 Template Based'}
-                        </button>
-                      </div>
-                    </div>
-                    
-                    <p className="text-xs text-gray-500 mt-2">
-                      AI agents will automatically send personalized outreach messages to your top-ranked creators and save them to your outreach manager.
-                    </p>
-                  </div>
+          <div className="my-6 p-6 bg-white rounded-lg shadow">
+            <h3 className="text-lg font-medium leading-6 text-gray-900 mb-4">Campaign Input Method</h3>
+            <fieldset className="mt-4">
+              <legend className="sr-only">Input method</legend>
+              <div className="space-y-4 sm:flex sm:items-center sm:space-y-0 sm:space-x-10">
+                <div className="flex items-center">
+                  <input
+                    id="manual-input"
+                    name="input-method"
+                    type="radio"
+                    checked={inputMethod === 'manual'}
+                    onChange={() => setInputMethod('manual')}
+                    className="focus:ring-indigo-500 h-4 w-4 text-indigo-600 border-gray-300"
+                  />
+                  <label htmlFor="manual-input" className="ml-3 block text-sm font-medium text-gray-700">
+                    Enter Details Manually
+                  </label>
                 </div>
-
-                <div className="flex gap-3 mt-6 pt-6 border-t border-gray-200">
-                  <button
-                    onClick={runAgenticWorkflow}
-                    disabled={isProcessing || !isAIAvailable}
-                    className={`flex-1 px-4 py-3 rounded-lg font-medium transition-all ${
-                      isProcessing || !isAIAvailable
-                        ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                        : 'bg-gradient-to-r from-purple-600 to-blue-600 text-white hover:from-purple-700 hover:to-blue-700'
-                    } flex items-center justify-center gap-2`}
-                  >
-                    {isProcessing ? (
-                      <>
-                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                        Running AI Agents...
-                      </>
-                    ) : (
-                      <>
-                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                          <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
-                        </svg>
-                        🚀 Launch AI Agents
-                      </>
-                    )}
-                  </button>
-                  
-                  {workflowResult && (
-                    <button
-                      onClick={resetWorkflow}
-                      className="px-4 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-                    >
-                      🔄 Reset
-                    </button>
-                  )}
+                <div className="flex items-center">
+                  <input
+                    id="upload-brief"
+                    name="input-method"
+                    type="radio"
+                    checked={inputMethod === 'upload'}
+                    onChange={() => setInputMethod('upload')}
+                    className="focus:ring-indigo-500 h-4 w-4 text-indigo-600 border-gray-300"
+                  />
+                  <label htmlFor="upload-brief" className="ml-3 block text-sm font-medium text-gray-700">
+                    Upload Campaign Brief (PDF/DOCX)
+                  </label>
                 </div>
               </div>
-            </div>
+            </fieldset>
 
-            <div className={`${workflowResult ? 'lg:col-span-2' : 'lg:col-span-1'} space-y-6`}>
-              <div className="bg-white rounded-lg shadow p-6">
-                <h2 className="text-lg font-semibold text-gray-900 mb-4">
-                  🤖 AI Agent Progress
-                </h2>
-                
-                <div className="space-y-4">
-                  {workflowSteps.map((step, index) => (
-                    <div key={step.id} className="flex items-center gap-3">
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
-                        step.status === 'completed' ? 'bg-green-100 text-green-600' :
-                        step.status === 'running' ? 'bg-blue-100 text-blue-600' :
-                        step.status === 'error' ? 'bg-red-100 text-red-600' :
-                        'bg-gray-100 text-gray-400'
-                      }`}>
-                        {step.status === 'completed' ? (
-                          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                            <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
-                          </svg>
-                        ) : step.status === 'running' ? (
-                          <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-current"></div>
-                        ) : step.status === 'error' ? (
-                          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                            <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
-                          </svg>
-                        ) : (
-                          <span className="text-xs font-medium">{index + 1}</span>
-                        )}
-                      </div>
-                      
-                      <div className="flex-1">
-                        <p className={`font-medium ${
-                          step.status === 'completed' ? 'text-green-600' :
-                          step.status === 'running' ? 'text-blue-600' :
-                          step.status === 'error' ? 'text-red-600' :
-                          'text-gray-500'
-                        }`}>
-                          {step.title}
-                        </p>
-                        {step.duration && (
-                          <p className="text-xs text-gray-500">
-                            Completed in {step.duration}ms
-                          </p>
-                        )}
-                      </div>
-                    </div>
+            {inputMethod === 'upload' && (
+              <form onSubmit={handleFileUploadAndExtract} className="mt-6 space-y-4">
+                <div>
+                  <label htmlFor="campaign-brief-file" className="block text-sm font-medium text-gray-700">
+                    Campaign Brief Document
+                  </label>
+                  <div className="mt-1 flex items-center">
+                    <input
+                      id="campaign-brief-file"
+                      name="campaign-brief-file"
+                      type="file"
+                      accept=".pdf,.doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                      onChange={handleFileChange}
+                      className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+                    />
+                  </div>
+                  {selectedFile && <p className="mt-2 text-sm text-gray-500">Selected file: {selectedFile.name}</p>}
+                </div>
+                <div className="flex items-center space-x-3">
+                  <button
+                    type="submit"
+                    disabled={!selectedFile || fileUploadStatus === 'uploading' || fileUploadStatus === 'extracting'}
+                    className="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50"
+                  >
+                    {fileUploadStatus === 'uploading' && 'Uploading...'}
+                    {fileUploadStatus === 'extracting' && 'Extracting...'}
+                    {(fileUploadStatus === 'idle' || fileUploadStatus === 'success' || fileUploadStatus === 'error') && 'Upload and Extract Requirements'}
+                  </button>
+                  {(fileUploadStatus === 'uploading' || fileUploadStatus === 'extracting') && (
+                    <svg className="animate-spin h-5 w-5 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                  )}
+                </div>
+                {fileUploadStatus === 'success' && (
+                  <p className="text-sm text-green-600">File processed successfully! Requirements will be pre-filled.</p>
+                )}
+                {fileUploadError && (
+                  <p className="text-sm text-red-600">Error: {fileUploadError}</p>
+                )}
+              </form>
+            )}
+          </div>
+
+          {inputMethod === 'manual' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-6 bg-white rounded-lg shadow">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Company Name</label>
+                <input
+                  type="text"
+                  value={requirements.companyName}
+                  onChange={(e) => updateRequirements('companyName', e.target.value)}
+                  className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Industry</label>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                  {industries.map(industryOption => (
+                    <button
+                      key={industryOption}
+                      type="button"
+                      onClick={() => updateArrayField('industry', industryOption)}
+                      className={`p-2 border rounded-lg text-sm transition-colors ${
+                        requirements.industry.includes(industryOption)
+                          ? 'border-purple-500 bg-purple-50 text-purple-700'
+                          : 'border-gray-300 hover:border-gray-400'
+                      }`}
+                    >
+                      {industryOption}
+                    </button>
                   ))}
                 </div>
-
-                {error && (
-                  <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-                    <p className="text-red-800 text-sm">❌ {error}</p>
-                  </div>
-                )}
               </div>
 
-              {workflowResult && (
-                <div className="bg-white rounded-lg shadow p-6">
-                  <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-lg font-semibold text-gray-900">
-                      🎯 AI Generated Results
-                    </h2>
-                    <div className="text-right">
-                      <div className="text-2xl font-bold text-green-600">
-                        {Math.round(workflowResult.workflowInsights.confidenceScore * 100)}%
-                      </div>
-                      <div className="text-xs text-gray-500">Confidence</div>
-                    </div>
-                  </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Product/Service</label>
+                <input
+                  type="text"
+                  value={requirements.productService}
+                  onChange={(e) => updateRequirements('productService', e.target.value)}
+                  className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
+                />
+              </div>
 
-                  <div className="grid grid-cols-2 gap-4 mb-4">
-                    <div className="bg-blue-50 p-3 rounded-lg">
-                      <div className="text-sm font-medium text-blue-900">Campaign Created</div>
-                      <div className="text-xl font-bold text-blue-600">{workflowResult.generatedCampaign.title}</div>
-                    </div>
-                    <div className="bg-green-50 p-3 rounded-lg">
-                      <div className="text-sm font-medium text-green-900">Creators Found</div>
-                      <div className="text-xl font-bold text-green-600">{workflowResult.creatorMatches.length}</div>
-                    </div>
-                  </div>
-
-                  {workflowResult.outreachSummary && (
-                    <div className="grid grid-cols-2 gap-4 mb-4">
-                      <div className="bg-purple-50 p-3 rounded-lg">
-                        <div className="text-sm font-medium text-purple-900">Outreach Sent</div>
-                        <div className="text-xl font-bold text-purple-600">{workflowResult.outreachSummary.totalSent}</div>
-                        <div className="text-xs text-purple-700">
-                          {workflowResult.outreachSummary.aiGenerated} AI + {workflowResult.outreachSummary.templateBased} Template
-                        </div>
-                      </div>
-                      <div className="bg-orange-50 p-3 rounded-lg">
-                        <div className="text-sm font-medium text-orange-900">Success Rate</div>
-                        <div className="text-xl font-bold text-orange-600">
-                          {workflowResult.outreachSummary.failed === 0 ? '100%' : 
-                            `${Math.round((workflowResult.outreachSummary.totalSent / (workflowResult.outreachSummary.totalSent + workflowResult.outreachSummary.failed)) * 100)}%`}
-                        </div>
-                        <div className="text-xs text-orange-700">
-                          {workflowResult.outreachSummary.failed} failed
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="space-y-3">
-                    <div>
-                      <h4 className="font-medium text-gray-900">Campaign Strategy</h4>
-                      <p className="text-sm text-gray-600">{workflowResult.generatedCampaign.aiInsights.strategy}</p>
-                    </div>
-                    
-                    <div>
-                      <h4 className="font-medium text-gray-900">Top Creator Matches</h4>
-                      <div className="space-y-2">
-                        {getTopCreators().slice(0, 3).map((match, _index) => (
-                          <div key={match.creator.id} className="flex items-center justify-between p-2 bg-gray-50 rounded">
-                            <div className="flex items-center gap-2">
-                              <img
-                                src={match.creator.avatar}
-                                alt={match.creator.name}
-                                className="w-6 h-6 rounded-full"
-                              />
-                              <span className="text-sm font-medium">{match.creator.name}</span>
-                            </div>
-                            <div className="text-sm font-medium text-green-600">{match.score}% match</div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Business Goals</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {goalOptions.map(goal => (
                     <button
-                      onClick={() => setShowOutreachManager(true)}
-                      disabled={getTopCreators().length === 0}
-                      className="w-full mt-4 px-4 py-2 bg-gradient-to-r from-green-600 to-blue-600 text-white rounded-lg hover:from-green-700 hover:to-blue-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                      key={goal}
+                      type="button"
+                      onClick={() => updateArrayField('businessGoals', goal)}
+                      className={`p-2 border rounded-lg text-sm transition-colors ${
+                        requirements.businessGoals.includes(goal)
+                          ? 'border-purple-500 bg-purple-50 text-purple-700'
+                          : 'border-gray-300 hover:border-gray-400'
+                      }`}
                     >
-                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                        <path d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
-                      </svg>
-                      {workflowResult.outreachSummary ? '📧 View Outreach Manager' : '🚀 Launch Manual Outreach'}
+                      {goal}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Target Audience</label>
+                <input
+                  type="text"
+                  value={requirements.targetAudience}
+                  onChange={(e) => updateRequirements('targetAudience', e.target.value)}
+                  className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Campaign Objective</label>
+                <input
+                  type="text"
+                  value={requirements.campaignObjective}
+                  onChange={(e) => updateRequirements('campaignObjective', e.target.value)}
+                  className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Budget Range (₹)</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    type="number"
+                    placeholder="Min"
+                    value={requirements.budgetRange.min}
+                    onChange={(e) => updateRequirements('budgetRange', { 
+                      ...requirements.budgetRange, 
+                      min: Number(e.target.value) 
+                    })}
+                    className="p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
+                  />
+                  <input
+                    type="number"
+                    placeholder="Max"
+                    value={requirements.budgetRange.max}
+                    onChange={(e) => updateRequirements('budgetRange', { 
+                      ...requirements.budgetRange, 
+                      max: Number(e.target.value) 
+                    })}
+                    className="p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Preferred Platforms</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {platforms.map(platform => (
+                    <button
+                      key={platform}
+                      type="button"
+                      onClick={() => updateArrayField('preferredPlatforms', platform)}
+                      className={`p-2 border rounded-lg text-sm capitalize transition-colors ${
+                        requirements.preferredPlatforms?.includes(platform)
+                          ? 'border-purple-500 bg-purple-50 text-purple-700'
+                          : 'border-gray-300 hover:border-gray-400'
+                      }`}
+                    >
+                      {platform}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="border-t border-gray-200 pt-4">
+                <h3 className="text-sm font-semibold text-gray-900 mb-3">🤖 Autonomous Outreach</h3>
+                
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Creators to Contact</label>
+                    <select
+                      value={requirements.outreachCount}
+                      onChange={(e) => updateRequirements('outreachCount', Number(e.target.value))}
+                      className="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
+                    >
+                      <option value={3}>Top 3 creators</option>
+                      <option value={5}>Top 5 creators</option>
+                      <option value={7}>Top 7 creators</option>
+                      <option value={10}>Top 10 creators</option>
+                    </select>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Personalization</label>
+                    <button
+                      type="button"
+                      onClick={() => updateRequirements('personalizedOutreach', !requirements.personalizedOutreach)}
+                      className={`w-full p-2 border rounded-lg text-sm transition-colors ${
+                        requirements.personalizedOutreach
+                          ? 'border-green-500 bg-green-50 text-green-700'
+                          : 'border-gray-300 text-gray-700 hover:border-gray-400'
+                      }`}
+                    >
+                      {requirements.personalizedOutreach ? '✨ AI Personalized' : '📝 Template Based'}
                     </button>
                   </div>
                 </div>
-              )}
+                
+                <p className="text-xs text-gray-500 mt-2">
+                  AI agents will automatically send personalized outreach messages to your top-ranked creators and save them to your outreach manager.
+                </p>
+              </div>
             </div>
+          )}
+
+          <div className="flex gap-3 mt-6 pt-6 border-t border-gray-200">
+            <button
+              onClick={runAgenticWorkflow}
+              disabled={isProcessing || !isAIAvailable}
+              className={`flex-1 px-4 py-3 rounded-lg font-medium transition-all ${
+                isProcessing || !isAIAvailable
+                  ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                  : 'bg-gradient-to-r from-purple-600 to-blue-600 text-white hover:from-purple-700 hover:to-blue-700'
+              } flex items-center justify-center gap-2`}
+            >
+              {isProcessing ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                  Running AI Agents...
+                </>
+              ) : (
+                <>
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+                  </svg>
+                  🚀 Launch AI Agents
+                </>
+              )}
+            </button>
+            
+            {workflowResult && (
+              <button
+                onClick={resetWorkflow}
+                className="px-4 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                🔄 Reset
+              </button>
+            )}
           </div>
         </>
       )}

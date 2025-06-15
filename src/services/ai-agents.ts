@@ -261,10 +261,21 @@ interface BrandInfo {
 }
 
 export interface BusinessRequirements {
-  companyName: string; industry: string; productService: string; businessGoals: string[];
-  targetAudience: string; demographics?: string; campaignObjective: string; keyMessage?: string;
-  budgetRange: { min: number; max: number; }; timeline: string; preferredPlatforms?: string[];
-  contentTypes?: string[]; specialRequirements?: string; outreachCount: number; personalizedOutreach: boolean;
+  companyName: string;
+  industry: string[]; // MODIFIED from string to string[]
+  productService: string;
+  businessGoals: string[];
+  targetAudience: string;
+  demographics?: string; 
+  campaignObjective: string;
+  keyMessage?: string;
+  budgetRange: { min: number; max: number; }; 
+  timeline: string;
+  preferredPlatforms?: string[];
+  contentTypes?: string[];
+  specialRequirements?: string;
+  outreachCount: number; 
+  personalizedOutreach: boolean;
 }
 
 export interface GeneratedCampaign { // This is what CampaignBuildingAgent produces
@@ -430,22 +441,41 @@ class CampaignBuildingAgent {
   }
 
   private generateLocalFallbackCampaign(requirements: BusinessRequirements): GeneratedCampaign {
-    console.log('🤖 CB Agent (FE): Generating local fallback campaign.');
-    const startDate = new Date(); startDate.setDate(startDate.getDate() + 7);
-    const endDate = new Date(startDate); endDate.setDate(endDate.getDate() + 30);
-    const deadline = new Date(startDate); deadline.setDate(deadline.getDate() - 3);
-    const finalPlatforms = requirements.preferredPlatforms?.slice(0, 2) || ['instagram', 'youtube'];
-    const suggestedNiches = [requirements.industry?.toLowerCase() || 'general', 'lifestyle'];
+    const now = new Date();
+    const startDate = now.toISOString().split('T')[0];
+    const endDate = new Date(now.setDate(now.getDate() + 30)).toISOString().split('T')[0];
+    const appDeadline = new Date(now.setDate(now.getDate() - 7)).toISOString().split('T')[0]; // App deadline 1 week before start
+
+    // Handle industry array for fallback
+    const industryText = requirements.industry && requirements.industry.length > 0 
+      ? requirements.industry.join(', ') 
+      : 'General';
+
     return {
-      title: `${requirements.companyName} Fallback Campaign (FE)`,
+      title: `Exciting Campaign for ${requirements.companyName}`,
       brand: requirements.companyName,
-      description: `Local fallback: Campaign for ${requirements.productService}`,
-      brief: `Local fallback brief for ${requirements.companyName}. Target: ${requirements.targetAudience}. Objective: ${requirements.campaignObjective}`,
-      platforms: finalPlatforms, minFollowers: 10000, niches: suggestedNiches, locations: ['India'], deliverables: ['1 Post', '2 Stories'],
-      budgetMin: Math.floor(requirements.budgetRange.min * 0.7), budgetMax: Math.floor(requirements.budgetRange.max * 0.8),
-      startDate: startDate.toISOString().split('T')[0], endDate: endDate.toISOString().split('T')[0], applicationDeadline: deadline.toISOString().split('T')[0],
-      aiInsights: { strategy: `Local FE fallback strategy. Focus on ${finalPlatforms.join(', ')}.`, reasoning: 'Local fallback used.', successFactors: ['Clear CTA', 'Relevant Content'], potentialChallenges: ['Generic messaging'], optimizationSuggestions: ['Customize heavily'] },
-      confidence: 0.35, agentVersion: 'campaign-builder-fallback-fe-v1.3', generatedAt: new Date()
+      description: `A dynamic campaign focusing on ${requirements.productService} for the ${industryText} sector. We aim to ${requirements.businessGoals.join(', ')}. Target audience: ${requirements.targetAudience}`,
+      brief: `Campaign Objective: ${requirements.campaignObjective}. Key Message: ${requirements.keyMessage || 'Experience the best!'}. Platforms: ${(requirements.preferredPlatforms || []).join(', ')}. Content: ${(requirements.contentTypes || []).join(', ')}. Special Notes: ${requirements.specialRequirements || 'None'}`,
+      platforms: requirements.preferredPlatforms || ['instagram', 'youtube'],
+      minFollowers: 5000,
+      niches: requirements.industry && requirements.industry.length > 0 ? [...requirements.industry] : ['general interest'],
+      locations: ['Global'],
+      deliverables: ['1 Instagram Post', '2 Instagram Stories'],
+      budgetMin: requirements.budgetRange.min || 500,
+      budgetMax: requirements.budgetRange.max || 2500,
+      startDate: startDate,
+      endDate: endDate,
+      applicationDeadline: appDeadline,
+      aiInsights: {
+        strategy: "Standard engagement strategy. Focus on clear calls to action and visually appealing content.",
+        reasoning: "Fallback strategy due to API limitations or errors. Provides a basic but functional campaign structure.",
+        successFactors: ["Consistent posting", "Audience interaction"],
+        potentialChallenges: ["Lower organic reach", "Generic messaging"],
+        optimizationSuggestions: ["Boost posts with paid ads", "Run contests or giveaways"]
+      },
+      confidence: 0.4,
+      agentVersion: 'local_fallback_v1.1',
+      generatedAt: new Date(),
     };
   }
 }
@@ -655,7 +685,7 @@ class OutreachAgent {
         
         const brandInfo: BrandInfo = {
             name: campaign.brand,
-            industry: requirements.industry,
+            industry: requirements.industry.join(', ') || 'General',
             campaignGoals: requirements.businessGoals,
             budget: { 
                 min: campaign.budgetMin, 
@@ -1129,7 +1159,7 @@ export const aiAgentsService = new WorkflowOrchestrationAgent();
 
 export const createExampleRequirements = (): BusinessRequirements => ({
   companyName: 'Innovatech Solutions',
-  industry: 'Technology',
+  industry: ['Technology'], // MODIFIED to be an array
   productService: 'Cloud-based AI Analytics Platform',
   businessGoals: ['Generate B2B leads', 'Increase enterprise demo requests by 20%'],
   targetAudience: 'CTOs, VPs of Engineering, Data Science Managers in mid-to-large enterprises',

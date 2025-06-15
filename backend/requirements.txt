@@ -6,3 +6,5 @@ Flask-CORS>=3.0
 gunicorn>=20.0
 twilio>=7.0 # For Twilio Voice API
 elevenlabs>=0.2 # For ElevenLabs Text-to-Speech 
+pdfplumber>=0.10.0 # For PDF parsing
+python-docx>=1.0.0 # For .docx Word file parsing 

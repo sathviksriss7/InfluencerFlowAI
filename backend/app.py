@@ -5,13 +5,17 @@ import os
 import signal
 import requests
 import json
+import pdfplumber
+import docx # CORRECTED IMPORT
+from werkzeug.utils import secure_filename
 from functools import wraps # For decorator
 from supabase import create_client, Client # Supabase client
 from datetime import datetime, timedelta, timezone # Added timezone
+import re # For date validation
 
 # Import Twilio and ElevenLabs
 from twilio.rest import Client as TwilioClient
-from twilio.twiml.voice_response import VoiceResponse, Say, Play, Record, Gather
+from twilio.twiml.voice_response import VoiceResponse, Say, Play, Record, Gather, Stream, Connect
 from elevenlabs.client import ElevenLabs # type: ignore # Use this for the main client
 import shutil # For saving audio file temporarily
 import uuid   # For generating unique filenames
@@ -132,12 +136,10 @@ def token_required(f):
             return jsonify({"success": False, "error": "Supabase client not initialized on backend for token validation."}), 500
 
         try:
-            # Validate the token using Supabase
             user_response = supabase_client.auth.get_user(token)
-            # If get_user doesn't throw an error and returns a user, the token is valid.
-            # user_response.user will contain user details if needed by the endpoint.
             print(f"🔑 Token validated for user: {user_response.user.id if user_response and user_response.user else 'Unknown'}")
-            request.current_user = user_response.user # Make user available to endpoint
+            request.current_user = user_response.user
+            request.raw_jwt = token # Store raw token on request
         except Exception as e:
             print(f"❌ Token validation error: {e}")
             return jsonify({"success": False, "error": f"Invalid or expired token: {e}"}), 401
@@ -145,6 +147,132 @@ def token_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+# --- Campaign Requirement Extraction Helpers --- START ---
+
+def build_document_extraction_prompt(text_content: str) -> str:
+    """
+    Builds the prompt for the LLM to extract campaign requirements from document text.
+    """
+    json_structure_example = {
+        "brand_name": "string (e.g., 'EcoFresh Juices') or null",
+        "product_service_name": "string (e.g., 'Organic Cold-Pressed Juice Subscription'). If multiple distinct products or services are listed, provide them as a comma-separated string (e.g., 'Product A, Product B, Service X'). or null",
+        "industry": ["list of strings (e.g., [\"Technology\", \"Fashion\"])", "or empty list []"],
+        "campaign_objectives": ["list of strings (e.g., [\"Increase brand awareness\", \"Drive trial subscriptions\"])", "or empty list []"],
+        "target_audience_description": "string (detailed description of the ideal customer, demographics, interests) or null",
+        "key_message_points": ["list of strings (main selling points or messages to convey) or empty list []"],
+        "influencer_type_preference": ["list of strings (e.g., 'Food bloggers', 'Wellness influencers', 'Fitness trainers') or empty list [] or 'Any'"],
+        "platform_preferences": ["list of strings (e.g., 'Instagram', 'YouTube', 'TikTok') or empty list [] or 'Any'"],
+        "budget_indication": "string (e.g., 'Approximately $1000-$5000 total', 'Flexible', 'Up to $200 per influencer') or null",
+        "timeline_indication": "string (e.g., 'Campaign to run for 6 weeks starting next month', 'Q3 launch') or null",
+        "deliverables_examples": ["list of strings (e.g., '2 Instagram posts, 4 stories per influencer', '1 dedicated YouTube video') or empty list []"],
+        "tone_of_voice": "string (e.g., 'Fun and energetic', 'Informative and trustworthy', 'Aspirational and premium') or null",
+        "negative_keywords_exclusions": ["list of strings (topics, words, or competitors to avoid) or empty list []"],
+        "other_notes_or_mandatories": "string (any other specific requirements, do's/don'ts, or mandatory inclusions) or null"
+    }
+
+    prompt = f"""
+You are an expert campaign analyst. Your task is to meticulously read the following text extracted from a campaign brief document and identify key campaign requirements.
+Extract the information and structure it as a VALID JSON object.
+The JSON object MUST strictly follow this structure. For any fields where information is not found or cannot be reasonably inferred from the text, use `null` for string fields or an empty list `[]` for list fields.
+Do NOT add any fields that are not in this predefined structure.
+Ensure your entire output is ONLY the JSON object and nothing else. No introductory text, no explanations, no markdown formatting around the JSON.
+
+JSON Structure to populate:
+```json
+{json.dumps(json_structure_example, indent=2)}
+```
+
+Now, analyze the following text content and extract the campaign requirements:
+
+--- DOCUMENT TEXT ---
+{text_content}
+--- END OF DOCUMENT TEXT ---
+
+Your output must be a single, valid JSON object.
+"""
+    return prompt
+
+def extract_campaign_details_with_llm(text_content: str): # Synchronous function
+    """
+    Uses Groq LLM to extract structured campaign requirements from text.
+    Returns a dictionary with keys "success" (boolean) and either "data" (dict) or "error" (str).
+    Uses requests.post directly, consistent with other Groq calls in this file.
+    """
+    global groq_api_key # Use the global groq_api_key loaded from .env
+    if not groq_api_key:
+        print("❌ Groq API key not available for campaign detail extraction.")
+        return {"success": False, "error": "Groq API key not configured on backend."}
+
+    system_prompt = "You are an AI assistant specialized in extracting structured information from text according to a specified JSON format. Output only the JSON object."
+    user_prompt = build_document_extraction_prompt(text_content)
+    
+    print("🧠 Calling Groq LLM (via requests.post) for campaign detail extraction...")
+    
+    headers = {
+        "Authorization": f"Bearer {groq_api_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "llama3-70b-8192", # Or your preferred Groq model
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "temperature": 0.1, # Low temperature for more deterministic extraction
+        "max_tokens": 2048 # Ensure enough tokens for potentially large JSON
+    }
+    
+    response_content = None # Initialize to ensure it's defined for the except block
+    try:
+        response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
+        response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+        
+        ai_response_data = response.json()
+        
+        if not ai_response_data.get('choices') or not ai_response_data['choices'][0].get('message') or \
+           not ai_response_data['choices'][0]['message'].get('content'):
+            print(f"❌ Groq API response missing expected content structure. Response: {ai_response_data}")
+            return {"success": False, "error": "LLM response structure invalid."}
+            
+        response_content = ai_response_data['choices'][0]['message']['content']
+        
+        print(f"💬 LLM Raw Response (first 300 chars): {response_content[:300]}")
+        
+        json_response_cleaned = response_content.strip()
+        if json_response_cleaned.startswith("```json"):
+            json_response_cleaned = json_response_cleaned[7:]
+        if json_response_cleaned.endswith("```"):
+            json_response_cleaned = json_response_cleaned[:-3]
+        json_response_cleaned = json_response_cleaned.strip()
+        
+        extracted_data = json.loads(json_response_cleaned)
+        print("✅ Successfully parsed LLM JSON response for campaign details.")
+        return {"success": True, "data": extracted_data}
+
+    except requests.exceptions.HTTPError as http_err:
+        error_details = f"HTTP error occurred: {http_err}."
+        try:
+            # Try to get more details from the response body if it's JSON
+            error_body = http_err.response.json()
+            error_details += f" Details: {error_body.get('error', {}).get('message', 'No specific error message in JSON.')}"
+        except ValueError: # If response body is not JSON
+            error_details += f" Response text: {http_err.response.text[:200]}" # Log first 200 chars
+        print(f"❌ Groq API call failed: {error_details}")
+        return {"success": False, "error": f"LLM API call failed. {error_details}"}
+    except requests.exceptions.RequestException as req_err:
+        print(f"❌ Groq API request failed: {req_err}")
+        return {"success": False, "error": f"LLM API request failed: {str(req_err)}"}
+    except json.JSONDecodeError as e:
+        error_message = f"Error decoding LLM JSON response: {str(e)}. Response snippet: {response_content[:300] if response_content else 'None'}"
+        print(f"❌ {error_message}")
+        return {"success": False, "error": "Failed to parse LLM response as JSON.", "raw_response_snippet": response_content[:300] if response_content else 'None'}
+    except Exception as e:
+        print(f"❌ Error during Groq API call or processing for campaign extraction: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": f"LLM API call or processing failed: {str(e)}"}
+
+# --- Campaign Requirement Extraction Helpers --- END ---
 # --- Helper: Build Stage-Aware Negotiation Prompt (Python version) ---
 def build_stage_aware_negotiation_prompt(outreach_data):
     # Basic details (ensure keys match what frontend sends)
@@ -557,7 +685,9 @@ def handle_generate_outreach_message():
 def build_campaign_generation_prompt(requirements_data):
     # Extracting data with defaults to prevent KeyErrors
     company_name = requirements_data.get('companyName', '[Company Name]')
-    industry = requirements_data.get('industry', '[Industry]')
+    # MODIFIED: Handle industry as a list, join for the prompt or use a default
+    industry_list = requirements_data.get('industry', [])
+    industry_str = ', '.join(industry_list) if industry_list else '[General Industry]'
     product_service = requirements_data.get('productService', '[Product/Service]')
     business_goals_list = requirements_data.get('businessGoals', [])
     business_goals = ", ".join(business_goals_list) if business_goals_list else '[Business Goals]'
@@ -578,22 +708,22 @@ def build_campaign_generation_prompt(requirements_data):
     budget_min_ai = int(budget_min_req * 0.8)
     budget_max_ai = int(budget_max_req * 0.9)
 
-    prompt = f"""You are an expert campaign strategist with 15+ years of experience in influencer marketing. Generate a comprehensive, data-driven campaign based on business requirements.
+    prompt = f"""You are an expert campaign strategist. Based on the following business requirements, generate a comprehensive and creative influencer marketing campaign plan.
 
-BUSINESS REQUIREMENTS ANALYSIS:
-Company: {company_name}
-Industry: {industry}
-Product/Service: {product_service}
-Business Goals: {business_goals}
-Target Audience: {target_audience}
-Demographics: {demographics}
-Campaign Objective: {campaign_objective}
-Key Message: {key_message}
-Budget Range (Requirement): ₹{budget_min_req}-₹{budget_max_req}
-Timeline: {timeline}
-Preferred Platforms: {preferred_platforms}
-Content Types: {content_types}
-Special Requirements: {special_requirements}
+Business Requirements:
+- Company Name: {company_name}
+- Industry: {industry_str}  # MODIFIED to use industry_str
+- Product/Service: {product_service}
+- Business Goals: {business_goals}
+- Target Audience: {target_audience}
+- Demographics: {demographics}
+- Campaign Objective: {campaign_objective}
+- Key Message: {key_message}
+- Budget Range (Requirement): ₹{budget_min_req}-₹{budget_max_req}
+- Timeline: {timeline}
+- Preferred Platforms: {preferred_platforms}
+- Content Types: {content_types}
+- Special Requirements: {special_requirements}
 
 CAMPAIGN GENERATION REQUIREMENTS:
 1. STRATEGIC TITLE: Create compelling campaign title (5-8 words)
@@ -648,7 +778,8 @@ def generate_fallback_campaign_py(requirements_data):
     company_name = requirements_data.get('companyName', '[Company]')
     campaign_objective_list = requirements_data.get('campaignObjective', 'Achieve Goal').split(' ')
     campaign_objective_short = campaign_objective_list[0] if campaign_objective_list else 'Campaign'
-    industry = requirements_data.get('industry', 'General')
+    
+    industry_value = requirements_data.get('industry', 'General') # This can be a list or a string
     product_service = requirements_data.get('productService', '[Product/Service]')
     target_audience = requirements_data.get('targetAudience', '[Target Audience]')
     budget_min = int(requirements_data.get('budgetRange', {}).get('min', 10000) * 0.8)
@@ -662,7 +793,18 @@ def generate_fallback_campaign_py(requirements_data):
 
     # Simplified platform/niche selection for fallback
     platforms = requirements_data.get('preferredPlatforms', ['instagram', 'youtube'])[:2]
-    niches = [industry.lower(), 'lifestyle']
+    
+    first_industry_niche = 'general' # Default niche
+    if isinstance(industry_value, list) and industry_value:
+        # If industry_value is a non-empty list, take the first item, ensure it's a string, then lowercase
+        first_industry_niche = str(industry_value[0]).lower()
+    elif isinstance(industry_value, str):
+        # If industry_value is a string, lowercase it
+        first_industry_niche = industry_value.lower()
+    # If industry_value is an empty list or another type, 'general' (default) will be used.
+
+    # Create niches list, ensuring 'lifestyle' is present and avoiding duplicates
+    niches = list(set([first_industry_niche, 'lifestyle']))
 
     return {
         "title": f"{company_name} {campaign_objective_short} Fallback Campaign",
@@ -691,6 +833,122 @@ def generate_fallback_campaign_py(requirements_data):
         "generatedAt": datetime.now().isoformat()
     }
 
+# NEW HELPER: Validate date strings or return None if placeholder/invalid
+def validate_date_string(date_str):
+    if not date_str or not isinstance(date_str, str):
+        return None
+    # Check for placeholder like YYYY-MM-DD or other non-date patterns from AI
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
+        # If it doesn't strictly match YYYY-MM-DD, consider it invalid for DB insert
+        # This handles cases like "Next month", "Q3", "YYYY-MM-DD", etc.
+        return None
+    try:
+        # Attempt to parse to ensure it's a valid date format that Supabase can handle
+        datetime.strptime(date_str, '%Y-%m-%d')
+        return date_str
+    except ValueError:
+        # If strptime fails, it's not a valid date in the expected format
+        return None
+
+# MODIFIED HELPER: Save campaign to Supabase - will be modified in next step
+def save_campaign_to_db(campaign_payload, user_id, original_requirements, raw_jwt_token): # raw_jwt_token is now passed
+    # Ensure supabase_client and its postgrest component are available
+    if not supabase_client or not hasattr(supabase_client, 'postgrest'):
+        error_message = "Supabase client or postgrest interface not available."
+        print(f"❌ {error_message}")
+        return {"success": False, "error": error_message, "data": None}
+
+    # Prepare the payload for the 'campaigns' table
+    # (Existing payload preparation logic remains the same)
+    # ...
+
+    db_payload = {
+        "user_id": str(user_id),  # Ensure user_id is a string, matching auth.uid() type if it's text, or cast in policy
+        "title": campaign_payload.get("title"),
+        "brand": campaign_payload.get("brand"),
+        "description": campaign_payload.get("description"),
+        "brief": campaign_payload.get("brief"),
+        "status": "active",  # AI campaigns default to 'active'
+        "creation_method": "ai", # Mark as AI created
+        "platforms": campaign_payload.get("platforms"),
+        "min_followers": campaign_payload.get("minFollowers") or campaign_payload.get("min_followers"),
+        "niches": campaign_payload.get("niches"),
+        "locations": campaign_payload.get("locations"),
+        "deliverables": campaign_payload.get("deliverables"),
+        "budget_min": campaign_payload.get("budgetMin") or campaign_payload.get("budget_min"),
+        "budget_max": campaign_payload.get("budgetMax") or campaign_payload.get("budget_max"),
+        "start_date": validate_date_string(campaign_payload.get("startDate") or campaign_payload.get("start_date")),
+        "end_date": validate_date_string(campaign_payload.get("endDate") or campaign_payload.get("end_date")),
+        "application_deadline": validate_date_string(campaign_payload.get("applicationDeadline") or campaign_payload.get("application_deadline")),
+        "ai_insights": campaign_payload.get("aiInsights") or campaign_payload.get("ai_insights"),
+        "confidence": campaign_payload.get("confidence"),
+        # Fields from original_requirements (ensure these keys exist in your requirements_data)
+        'company_name': original_requirements.get('companyName'), 
+        'product_service_name': original_requirements.get('productService'),
+        'campaign_objective': original_requirements.get('campaignObjective'),
+        'target_audience': original_requirements.get('targetAudience'),
+        'key_message': original_requirements.get('keyMessage'),
+        # created_at and updated_at will be set by Supabase default or triggers if defined,
+        # otherwise we can set them here if needed like in the other create endpoint
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+
+    print(f"💾 DEBUG: Preparing to insert into Supabase. User ID for insert: {user_id}")
+    print(f"💾 DEBUG: Full db_payload for Supabase insert: {json.dumps(db_payload, indent=2, default=str)}")
+    
+    if not raw_jwt_token:
+        print("🟡 DEBUG: Raw JWT token is MISSING in save_campaign_to_db. RLS will rely on default client auth if policy needs user context.")
+
+    # Store the current headers of the PostgREST client session
+    # This is crucial to restore the client's auth state (e.g., service role key) afterwards
+    original_postgrest_headers = supabase_client.postgrest.session.headers.copy()
+
+    try:
+        if raw_jwt_token:
+            print(f"💾 DEBUG: Temporarily setting PostgREST auth to user's JWT for RLS. Token snippet: {raw_jwt_token[:20]}...")
+            # This sets the Authorization: Bearer <user_jwt> header for the PostgREST client
+            supabase_client.postgrest.auth(raw_jwt_token)
+        else:
+            # If no JWT, the client will use its default authentication (e.g., service role key)
+            # RLS policies checking auth.uid() might fail if they expect a user context not provided by the service key alone.
+            print("💾 DEBUG: Proceeding with default PostgREST client authentication (e.g., service key).")
+
+        print(f"💾 DEBUG: Attempting insert. User ID for insert: {user_id}")
+        insert_response = supabase_client.table('campaigns').insert(db_payload).execute()
+        
+        if hasattr(insert_response, 'data') and insert_response.data and len(insert_response.data) > 0:
+            saved_campaign_data = insert_response.data[0]
+            print(f"✅ Campaign '{saved_campaign_data.get('title')}' (ID: {saved_campaign_data.get('id')}) saved successfully for user {user_id}.")
+            return {"success": True, "data": saved_campaign_data, "error": None}
+        else:
+            error_msg = "Campaign data not returned from DB after insert."
+            # Attempt to get more specific error from PostgREST response
+            if hasattr(insert_response, 'error') and insert_response.error:
+                 error_details = getattr(insert_response.error, 'message', str(insert_response.error))
+                 error_code = getattr(insert_response.error, 'code', 'N/A')
+                 error_hint = getattr(insert_response.error, 'hint', 'N/A')
+                 error_msg += f" Supabase error (Code: {error_code}, Hint: {error_hint}): {error_details}"
+            elif hasattr(insert_response, 'status_code') and insert_response.status_code >= 400:
+                 error_msg += f" HTTP Status: {insert_response.status_code}. Response: {getattr(insert_response, 'text', str(insert_response))[:200]}"
+
+            print(f"❌ {error_msg} Raw Response: {insert_response}")
+            return {"success": False, "error": error_msg, "data": None}
+
+    except Exception as e:
+        error_message = f"Error saving campaign to Supabase: {type(e).__name__} - {str(e)}"
+        print(f"❌ {error_message}")
+        import traceback
+        traceback.print_exc() # Print full traceback for debugging
+        return {"success": False, "error": error_message, "data": None}
+    finally:
+        # CRITICAL: Restore the original headers to the PostgREST client
+        # This ensures the global client reverts to its original authentication state (e.g., service role)
+        print("💾 DEBUG: Restoring original PostgREST client session headers.")
+        supabase_client.postgrest.session.headers = original_postgrest_headers
+        # Verify restoration (optional debug log)
+        # print(f"💾 DEBUG: Headers restored to: {supabase_client.postgrest.session.headers}")
+
 @app.route('/api/campaign/generate', methods=['POST'])
 @token_required # Secure this endpoint
 def handle_generate_campaign():
@@ -698,81 +956,98 @@ def handle_generate_campaign():
     if not requirements_data:
         return jsonify({"success": False, "error": "Missing business requirements in request body."}), 400
 
+    if not hasattr(request, 'current_user') or not request.current_user or not hasattr(request.current_user, 'id') or not hasattr(request, 'raw_jwt'):
+        print("🔴 Current user or raw_jwt not found in request for handle_generate_campaign.") 
+        return jsonify({"success": False, "error": "User context or token not available for campaign generation."}), 401
+        
+    current_user_id = request.current_user.id
+    raw_jwt_from_request = request.raw_jwt # Get the raw token
+    campaign_to_save = None
+    generation_method = "unknown"
+    error_during_generation = None
+
     if not groq_api_key:
         print("🤖 Campaign Agent (Backend): Groq API key not configured. Using fallback campaign strategy.")
-        fallback_campaign = generate_fallback_campaign_py(requirements_data)
-        return jsonify({"success": True, "campaign": fallback_campaign, "method": "algorithmic_fallback"})
-
-    prompt = build_campaign_generation_prompt(requirements_data)
-    try:
-        print(f"🤖 Campaign Agent (Backend): Making AI API call for campaign generation...")
-        headers = {
-            "Authorization": f"Bearer {groq_api_key}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "model": "llama3-70b-8192", 
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.3,
-            "max_tokens": 2000 # Adjusted for potentially longer campaign details
-        }
-        
-        response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
-        response.raise_for_status()
-        
-        ai_response_data = response.json()
-        ai_message_content = ai_response_data['choices'][0]['message']['content']
-        
+        campaign_to_save = generate_fallback_campaign_py(requirements_data)
+        generation_method = "algorithmic_fallback_no_api_key"
+    else:
+        prompt = build_campaign_generation_prompt(requirements_data)
         try:
-            json_str = ai_message_content # Default to the full content
-            # Attempt to strip markdown fences if present
-            if ai_message_content.strip().startswith("```json"):
-                # Find the start of the actual JSON after the ```json
-                json_block_start = ai_message_content.find('{')
-                # Find the end of the JSON before the closing ```
-                json_block_end = ai_message_content.rfind('}')
-                if json_block_start != -1 and json_block_end != -1 and json_block_start < json_block_end:
-                    json_str = ai_message_content[json_block_start : json_block_end + 1]
-            elif ai_message_content.strip().startswith("{") and ai_message_content.strip().endswith("}"):
-                json_str = ai_message_content.strip() # It's already a JSON string (hopefully)
-            else: # If no clear JSON structure, try finding the first { and last }
+            print(f"🤖 Campaign Agent (Backend): Making AI API call for campaign generation...")
+            headers = {"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"}
+            payload = {
+                "model": "llama3-70b-8192", 
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.3,
+                "max_tokens": 2000
+            }
+            response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
+            response.raise_for_status()
+            ai_response_data = response.json()
+            ai_message_content = ai_response_data['choices'][0]['message']['content']
+            try:
+                json_str = ai_message_content 
                 json_start_index = ai_message_content.find('{')
                 json_end_index = ai_message_content.rfind('}')
                 if json_start_index != -1 and json_end_index != -1 and json_start_index < json_end_index:
                     json_str = ai_message_content[json_start_index : json_end_index + 1]
                 else:
-                    raise ValueError("Could not find any JSON-like block in AI response.")
+                    if not (ai_message_content.strip().startswith("{") and ai_message_content.strip().endswith("}")):
+                        raise ValueError("Could not find a valid JSON block in AI response (no clear braces).")
+                    json_str = ai_message_content.strip()
+                content = json.loads(json_str)
+                if "body" in content and "message" not in content: content["message"] = content.pop("body")
+                if not all(k in content for k in ["title", "brand", "description", "platforms"]):
+                    raise ValueError("AI campaign response JSON missing required keys (title, brand, description, platforms)")
+                content['agentVersion'] = 'campaign-builder-py-v1.1'
+                content['generatedAt'] = datetime.now(timezone.utc).isoformat()
+                if 'confidence' not in content: content['confidence'] = 0.85
+                print(f"✨ Campaign Agent (Backend): AI campaign generated successfully: {content.get('title')}")
+                campaign_to_save = content
+                generation_method = "ai_generated"
+            except (json.JSONDecodeError, ValueError) as e_parse:
+                error_msg = f"Error parsing AI campaign JSON response: {e_parse}. Raw (first 500 chars): {ai_message_content[:500]}"
+                print(error_msg)
+                error_during_generation = error_msg 
+                campaign_to_save = generate_fallback_campaign_py(requirements_data)
+                generation_method = "algorithmic_fallback_after_parse_error"
+        except requests.exceptions.RequestException as e_req:
+            error_msg = f"Groq API request failed for campaign generation: {e_req}"
+            print(error_msg)
+            error_during_generation = error_msg
+            campaign_to_save = generate_fallback_campaign_py(requirements_data)
+            generation_method = "algorithmic_fallback_after_api_error"
+        except Exception as e_gen:
+            error_msg = f"An unexpected error occurred during AI campaign generation: {e_gen}"
+            print(error_msg)
+            import traceback
+            traceback.print_exc()
+            error_during_generation = error_msg
+            campaign_to_save = generate_fallback_campaign_py(requirements_data)
+            generation_method = "algorithmic_fallback_after_unexpected_error"
 
-            content = json.loads(json_str) 
-            
-            # Adapt the 'body' field from AI to 'message' for consistent response structure with other endpoints
-            if "body" in content and "message" not in content:
-                content["message"] = content.pop("body")
-
-            # Basic validation for expected keys after adaptation
-            if not all(k in content for k in ["title", "brand", "description", "platforms"]):
-                raise ValueError("AI campaign response JSON missing required keys")
-            
-            # Add agent metadata not directly from LLM
-            content['agentVersion'] = 'campaign-builder-py-v1.0'
-            content['generatedAt'] = datetime.now().isoformat()
-            if 'confidence' not in content: content['confidence'] = 0.85 # Default if not provided
-
-            print(f"✅ Campaign Agent (Backend): AI campaign generated successfully: {content.get('title')}")
-            return jsonify({"success": True, "campaign": content, "method": "ai_generated"})
-        except (json.JSONDecodeError, ValueError) as e:
-            print(f"Error parsing AI campaign JSON response: {e}. Raw: {ai_message_content}")
-            fallback_campaign = generate_fallback_campaign_py(requirements_data)
-            return jsonify({"success": True, "campaign": fallback_campaign, "method": "algorithmic_fallback", "error": "AI response parsing failed, using fallback campaign."})
-
-    except requests.exceptions.RequestException as e:
-        print(f"Groq API request failed for campaign generation: {e}")
-        fallback_campaign = generate_fallback_campaign_py(requirements_data)
-        return jsonify({"success": True, "campaign": fallback_campaign, "method": "algorithmic_fallback", "error": str(e)})
-    except Exception as e:
-        print(f"An unexpected error occurred during AI campaign generation: {e}")
-        fallback_campaign = generate_fallback_campaign_py(requirements_data)
-        return jsonify({"success": True, "campaign": fallback_campaign, "method": "algorithmic_fallback", "error": "Unexpected backend error during AI campaign generation."})
+    if campaign_to_save:
+        # Pass the raw_jwt_from_request to save_campaign_to_db
+        db_save_result = save_campaign_to_db(campaign_to_save, current_user_id, requirements_data, raw_jwt_from_request)
+        if db_save_result["success"]:
+            response_payload = {
+                "success": True, 
+                "campaign": db_save_result["data"], 
+                "method": generation_method, 
+                "message": "Campaign generated and saved successfully."
+            }
+            if error_during_generation:
+                 response_payload["generation_warning"] = error_during_generation
+            return jsonify(response_payload), 201
+        else:
+            return jsonify({
+                "success": False, 
+                "error": f"Campaign content was generated (method: {generation_method}) but failed to save to database: {db_save_result['error']}",
+                "generation_warning": error_during_generation,
+                "generated_campaign_data_for_debug": campaign_to_save
+            }), 500
+    else:
+        return jsonify({"success": False, "error": "Critical error: Failed to produce any campaign content to save."}), 500
 
 # --- Helper: Build Creator Scoring Prompt (Python version) ---
 def build_creator_scoring_prompt(campaign_data, creator_data):
@@ -1238,9 +1513,6 @@ The {brand_name} Team"""
 @token_required
 def handle_generate_initial_outreach():
     data = request.json
-    if not data or not all(k in data for k in ['creator', 'brandInfo', 'campaignContext']):
-        return jsonify({"success": False, "error": "Missing creator, brandInfo, or campaignContext."}), 400
-
     creator_data = data['creator']
     brand_info_data = data['brandInfo']
     campaign_context_str = data['campaignContext']
@@ -1251,7 +1523,7 @@ def handle_generate_initial_outreach():
         return jsonify({"success": True, **fallback_content, "method": "algorithmic_fallback"})
 
     prompt = build_initial_outreach_prompt_py(creator_data, brand_info_data, campaign_context_str)
-    try:
+    try: # Outer try for the API call and subsequent processing
         print(f"🤖 Initial Outreach (Backend): Calling Groq for {creator_data.get('name', 'N/A')}")
         headers = {"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"}
         payload = {"model": "llama3-70b-8192", "messages": [{"role": "user", "content": prompt}], "temperature": 0.4, "max_tokens": 1000}
@@ -1262,35 +1534,26 @@ def handle_generate_initial_outreach():
         ai_response_data = response.json()
         ai_message_content = ai_response_data['choices'][0]['message']['content']
         
-        try:
-            json_str = ai_message_content # Default to the full content
-            # Attempt to strip markdown fences if present
-            if ai_message_content.strip().startswith("```json"):
-                # Find the start of the actual JSON after the ```json
-                json_block_start = ai_message_content.find('{')
-                # Find the end of the JSON before the closing ```
-                json_block_end = ai_message_content.rfind('}')
-                if json_block_start != -1 and json_block_end != -1 and json_block_start < json_block_end:
-                    json_str = ai_message_content[json_block_start : json_block_end + 1]
-            elif ai_message_content.strip().startswith("{") and ai_message_content.strip().endswith("}"):
-                json_str = ai_message_content.strip() # It's already a JSON string (hopefully)
-            else: # If no clear JSON structure, try finding the first { and last }
-                json_start_index = ai_message_content.find('{')
-                json_end_index = ai_message_content.rfind('}')
-                if json_start_index != -1 and json_end_index != -1 and json_start_index < json_end_index:
-                    json_str = ai_message_content[json_start_index : json_end_index + 1]
-                else:
-                    raise ValueError("Could not find any JSON-like block in AI response.")
+        try: # Inner try for JSON parsing
+            # More aggressive cleaning: find the first '{' and last '}'
+            first_brace = ai_message_content.find('{')
+            last_brace = ai_message_content.rfind('}')
 
-            content = json.loads(json_str) 
+            if first_brace != -1 and last_brace != -1 and first_brace < last_brace:
+                json_str = ai_message_content[first_brace : last_brace + 1]
+            else:
+                # If we can't find a clear start and end, the content is likely not usable JSON
+                raise ValueError(f"Could not find a valid JSON block (no clear '{{' and '}}' boundaries). Raw content snippet: {ai_message_content[:100]}")
             
-            # Adapt the 'body' field from AI to 'message' for consistent response structure with other endpoints
+            content = json.loads(json_str) # Attempt to parse the extracted string
+            
+            # Adapt the 'body' field from AI to 'message' for consistent response structure
             if "body" in content and "message" not in content:
                 content["message"] = content.pop("body")
 
             # Basic validation for expected keys after adaptation
             if not all(k in content for k in ["subject", "message"]):
-                raise ValueError("AI initial outreach response JSON missing required keys (subject, message) after adaptation")
+                raise ValueError(f"AI initial outreach response JSON missing required keys (subject, message) after adaptation. Keys found: {list(content.keys())}")
             
             return jsonify({"success": True, **content, "method": "ai_generated"})
         except (json.JSONDecodeError, ValueError) as e:
@@ -1304,6 +1567,8 @@ def handle_generate_initial_outreach():
         return jsonify({"success": True, **fallback_content, "method": "algorithmic_fallback", "error": str(e)})
     except Exception as e:
         print(f"Unexpected error during AI initial outreach: {e}")
+        import traceback
+        traceback.print_exc() 
         fallback_content = generate_fallback_initial_outreach_py(creator_data, brand_info_data, campaign_context_str)
         return jsonify({"success": True, **fallback_content, "method": "algorithmic_fallback", "error": "Unexpected backend error."})
 
@@ -2054,6 +2319,647 @@ def get_call_progress_status():
             "call_sid": call_sid,
             "outreach_id": call_data.get('outreach_id')
         }), 200
+
+# NEW ENDPOINT FOR DOCUMENT EXTRACTION
+@app.route('/api/campaign/extract_from_document', methods=['POST'])
+@token_required
+def extract_campaign_from_document(): # REMOVED current_user parameter
+    print(f"📄 Entering /api/campaign/extract_from_document endpoint for user: {request.current_user.id if hasattr(request.current_user, 'id') else 'unknown'}") # MODIFIED to use request.current_user
+    if 'file' not in request.files:
+        print("❌ No file part in request")
+        return jsonify({"success": False, "error": "No file part in the request"}), 400
+    
+    file = request.files['file']
+    
+    if file.filename == '':
+        print("❌ No file selected")
+        return jsonify({"success": False, "error": "No file selected for uploading"}), 400
+
+    if file:
+        # Use secure_filename to prevent directory traversal attacks
+        filename = secure_filename(file.filename)
+        print(f"📄 Received file: {filename}")
+        
+        allowed_extensions = {'.pdf', '.docx'}
+        file_ext = os.path.splitext(filename)[1].lower()
+
+        if file_ext not in allowed_extensions:
+            print(f"❌ Unsupported file type: {file_ext}")
+            return jsonify({"success": False, "error": f"Unsupported file type: {file_ext}. Please upload a PDF or DOCX file."}), 400
+
+        extracted_text = ""
+        try:
+            if file_ext == '.pdf':
+                with pdfplumber.open(file.stream) as pdf: # Use file.stream for in-memory processing
+                    for page in pdf.pages:
+                        page_text = page.extract_text()
+                        if page_text: # Check if text was extracted
+                           extracted_text += page_text + "\n"
+                print(f"📄 Successfully extracted text from PDF: {filename}")
+            
+            elif file_ext == '.docx':
+                document = docx.Document(file.stream) # Use file.stream for in-memory processing
+                for para in document.paragraphs:
+                    extracted_text += para.text + "\n"
+                print(f"📄 Successfully extracted text from DOCX: {filename}")
+
+            if not extracted_text.strip():
+                 print(f"⚠️ No text could be extracted from {filename}")
+                 return jsonify({"success": False, "error": f"No text content could be extracted from the file: {filename}."}), 400
+
+            # TODO: Send extracted_text to LLM for requirement extraction
+            # For now, return the extracted text (or a snippet)
+            print(f"Extracted text length: {len(extracted_text)}")
+            
+            # Placeholder for LLM call and structured data response
+            # llm_extracted_requirements = call_llm_to_extract_requirements(extracted_text)
+            if not extracted_text.strip():
+                 print(f"⚠️ No text could be extracted from {filename}")
+                 return jsonify({"success": False, "error": f"No text content could be extracted from the file: {filename}. Please ensure the document contains selectable text."}), 400
+            
+            print(f"Extracted text length: {len(extracted_text)}. Sending to LLM...")
+
+            # Call LLM to extract requirements
+            llm_result = extract_campaign_details_with_llm(extracted_text)
+
+            if not llm_result.get("success"):
+                return jsonify({
+                    "success": False,
+                    "error": llm_result.get("error", "LLM processing failed."),
+                    "filename": filename,
+                    "file_type": file_ext,
+                    "raw_llm_response_snippet": llm_result.get("raw_response_snippet") # For debugging
+                }), 500
+
+            return jsonify({
+                "success": True, 
+                "message": f"Successfully extracted campaign requirements from '{filename}'.",
+                "filename": filename,
+                "file_type": file_ext,
+                "structured_requirements": llm_result.get("data")
+            }), 200
+            
+
+        except Exception as e:
+            print(f"❌ Error processing file {filename}: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"success": False, "error": f"Error processing file: {str(e)}"}), 500
+    
+    return jsonify({"success": False, "error": "An unknown error occurred with the file upload"}), 500
+
+# NEW ENDPOINT TO LIST ALL CAMPAIGNS
+@app.route('/api/campaigns', methods=['GET'])
+@token_required
+def list_campaigns():
+    if not supabase_client or not hasattr(supabase_client, 'postgrest'):
+        print("🔴 Supabase client or postgrest interface not available for list_campaigns.")
+        return jsonify({"success": False, "error": "Supabase client not configured."}), 500
+
+    if not hasattr(request, 'current_user') or not request.current_user or not hasattr(request.current_user, 'id') or not hasattr(request, 'raw_jwt'):
+        print("🔴 Current user or raw_jwt not found in request for list_campaigns.")
+        return jsonify({"success": False, "error": "User context or token not available."}), 401
+        
+    current_user_id = request.current_user.id
+    raw_jwt_token = request.raw_jwt # Get the raw token from the request object populated by @token_required
+    
+    print(f"ℹ️ Fetching campaigns for user_id: {current_user_id}. JWT is {'present' if raw_jwt_token else 'MISSING'}.")
+
+    # Store the current headers of the PostgREST client session
+    original_postgrest_headers = supabase_client.postgrest.session.headers.copy()
+
+    try:
+        if raw_jwt_token:
+            print(f"💾 DEBUG: list_campaigns - Temporarily setting PostgREST auth to user's JWT. Snippet: {raw_jwt_token[:20]}...")
+            supabase_client.postgrest.auth(raw_jwt_token) # Set current request to use user's JWT
+        else:
+            # This case should ideally not happen if @token_required is working and RLS needs auth.uid()
+            print("⚠️ WARNING: list_campaigns - No raw_jwt_token available. RLS policies using auth.uid() may not work as expected.")
+
+        campaigns_response = supabase_client.table('campaigns') \
+                                .select('id, title, brand, description, status, budget_min, budget_max, application_deadline, start_date, end_date, platforms, niches, deliverables, min_followers, locations, ai_insights, user_id, created_at, creation_method') \
+                                .eq('user_id', current_user_id) \
+                                .order('created_at', desc=True) \
+                                .execute()
+
+        # ADDED DEBUGGING: Print the raw response from Supabase
+        print(f"💾 DEBUG: Raw Supabase response in list_campaigns: {campaigns_response}")
+        # You can also log specific parts like campaigns_response.data if you want to inspect it directly
+        if hasattr(campaigns_response, 'data'):
+            print(f"💾 DEBUG: campaigns_response.data in list_campaigns: {campaigns_response.data}")
+        if hasattr(campaigns_response, 'error') and campaigns_response.error: # Check if error is not None
+            print(f"💾 DEBUG: campaigns_response.error in list_campaigns: {campaigns_response.error}")
+
+        fetched_campaigns = []
+        if hasattr(campaigns_response, 'data') and campaigns_response.data:
+            fetched_campaigns = campaigns_response.data
+        
+        if not fetched_campaigns:
+            print(f"ℹ️ No campaigns found for user {current_user_id} or campaigns_response.data was empty/None.")
+            # It's important to return success:true here as per frontend expectation for empty list
+            return jsonify({"success": True, "campaigns": []})
+
+        # Transform data to match frontend's expected nested structure
+        transformed_campaigns = []
+        for campaign_row in fetched_campaigns:
+            transformed = {
+                "id": campaign_row.get('id'),
+                "title": campaign_row.get('title'),
+                "brand": campaign_row.get('brand'),
+                "description": campaign_row.get('description'),
+                "status": campaign_row.get('status'),
+                "creation_method": campaign_row.get('creation_method'), # Added creation_method
+                "budget": {
+                    "min": campaign_row.get('budget_min'),
+                    "max": campaign_row.get('budget_max')
+                },
+                "timeline": {
+                    "applicationDeadline": campaign_row.get('application_deadline'),
+                    "startDate": campaign_row.get('start_date'),
+                    "endDate": campaign_row.get('end_date')
+                },
+                "requirements": {
+                    "platforms": campaign_row.get('platforms', []), 
+                    "minFollowers": campaign_row.get('min_followers'),
+                },
+                "platforms": campaign_row.get('platforms', []), 
+                "niches": campaign_row.get('niches', []),
+                "deliverables": campaign_row.get('deliverables', []),
+                "locations": campaign_row.get('locations', []),
+                "min_followers": campaign_row.get('min_followers'), 
+                "ai_insights": campaign_row.get('ai_insights'),
+                "user_id": campaign_row.get('user_id'),
+                "created_at": campaign_row.get('created_at'),
+                "applicants": campaign_row.get('applicants', 0), 
+                "selected": campaign_row.get('selected', 0)    
+            }
+            transformed_campaigns.append(transformed)
+        
+        print(f"✅ Fetched and transformed {len(transformed_campaigns)} campaigns for user {current_user_id}. Now including creation_method.")
+        return jsonify({"success": True, "campaigns": transformed_campaigns})
+
+    except Exception as e:
+        error_message = f"Error fetching campaigns from Supabase: {type(e).__name__} - {str(e)}"
+        print(f"❌ {error_message}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": error_message}), 500
+    finally:
+        # CRITICAL: Restore the original headers to the PostgREST client
+        print("💾 DEBUG: list_campaigns - Restoring original PostgREST client session headers.")
+        supabase_client.postgrest.session.headers = original_postgrest_headers
+
+# NEW ENDPOINT TO GET A SINGLE CAMPAIGN BY ID
+@app.route('/api/campaigns/<campaign_id>', methods=['GET'])
+@token_required
+def get_campaign_by_id(campaign_id):
+    if not supabase_client or not hasattr(supabase_client, 'postgrest'):
+        print("🔴 Supabase client or postgrest interface not available for get_campaign_by_id.")
+        return jsonify({"success": False, "error": "Supabase client not configured."}), 500
+
+    if not hasattr(request, 'current_user') or not request.current_user or not hasattr(request.current_user, 'id') or not hasattr(request, 'raw_jwt'):
+        print("🔴 Current user or raw_jwt not found in request for get_campaign_by_id.")
+        return jsonify({"success": False, "error": "User context or token not available."}), 401
+        
+    current_user_id = request.current_user.id
+    raw_jwt_token = request.raw_jwt
+
+    print(f"ℹ️ Fetching campaign with id: {campaign_id} for user_id: {current_user_id}. JWT is {'present' if raw_jwt_token else 'MISSING'}.")
+
+    original_postgrest_headers = supabase_client.postgrest.session.headers.copy()
+
+    try:
+        if raw_jwt_token:
+            print(f"💾 DEBUG: get_campaign_by_id - Temporarily setting PostgREST auth to user's JWT. Snippet: {raw_jwt_token[:20]}...")
+            supabase_client.postgrest.auth(raw_jwt_token)
+        else:
+            print("⚠️ WARNING: get_campaign_by_id - No raw_jwt_token available. RLS policies using auth.uid() may not work as expected.")
+
+        # CORRECTED: Using parentheses for implicit line continuation for the Supabase query
+        # This should resolve the SyntaxError: unexpected character after line continuation character
+        campaign_response = (supabase_client.table('campaigns')
+                                .select('id, title, brand, description, brief, status, budget_min, budget_max, application_deadline, start_date, end_date, platforms, niches, deliverables, min_followers, locations, ai_insights, user_id, created_at')
+                                .eq('id', campaign_id)
+                                .eq('user_id', current_user_id)
+                                .maybe_single()
+                                .execute())
+
+        print(f"💾 DEBUG: Raw Supabase response in get_campaign_by_id: {campaign_response}")
+        if hasattr(campaign_response, 'data') and campaign_response.data:
+            print(f"💾 DEBUG: campaign_response.data in get_campaign_by_id: {campaign_response.data}")
+        if hasattr(campaign_response, 'error') and campaign_response.error:
+            print(f"💾 DEBUG: campaign_response.error in get_campaign_by_id: {campaign_response.error}")
+
+
+        campaign_row = None
+        if hasattr(campaign_response, 'data') and campaign_response.data:
+            campaign_row = campaign_response.data
+        
+        if not campaign_row:
+            print(f"ℹ️ Campaign with id {campaign_id} not found for user {current_user_id} or response data was empty.")
+            return jsonify({"success": False, "error": "Campaign not found or not authorized."}), 404
+
+        # Transform data to match the detailed nested structure expected by the frontend
+        transformed_campaign = {
+            "id": campaign_row.get('id'),
+            "title": campaign_row.get('title'),
+            "brand": campaign_row.get('brand'),
+            "description": campaign_row.get('description'),
+            "brief": campaign_row.get('brief'), 
+            "status": campaign_row.get('status'),
+            "budget": {
+                "min": campaign_row.get('budget_min'),
+                "max": campaign_row.get('budget_max')
+            },
+            "timeline": {
+                "applicationDeadline": campaign_row.get('application_deadline'),
+                "startDate": campaign_row.get('start_date'),
+                "endDate": campaign_row.get('end_date')
+            },
+            "requirements": { 
+                "platforms": campaign_row.get('platforms', []),
+                "minFollowers": campaign_row.get('min_followers'),
+                "niches": campaign_row.get('niches', []), 
+                "locations": campaign_row.get('locations', []), 
+                "deliverables": campaign_row.get('deliverables', []) 
+            },
+            # Storing ai_insights directly as it's already an object
+            "aiInsights": campaign_row.get('ai_insights'), 
+            "userId": campaign_row.get('user_id'), 
+            "createdAt": campaign_row.get('created_at'),
+            # These might not be directly on the campaign row but could be calculated or joined in the future
+            "applicants": campaign_row.get('applicants', 0), 
+            "selected": campaign_row.get('selected', 0)    
+        }
+        
+        print(f"✅ Fetched and transformed campaign with id {campaign_id} for user {current_user_id}.")
+        return jsonify({"success": True, "campaign": transformed_campaign})
+
+    except Exception as e:
+        error_message = f"Error fetching campaign {campaign_id} from Supabase: {type(e).__name__} - {str(e)}"
+        print(f"❌ {error_message}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": error_message}), 500
+    finally:
+        print(f"💾 DEBUG: get_campaign_by_id - Restoring original PostgREST client session headers for campaign_id: {campaign_id}.")
+        supabase_client.postgrest.session.headers = original_postgrest_headers
+
+# NEW ENDPOINT TO UPDATE A CAMPAIGN
+@app.route('/api/campaigns/<campaign_id>', methods=['PUT'])
+@token_required
+def update_campaign_by_id(campaign_id):
+    if not supabase_client:
+        return jsonify({"success": False, "error": "Supabase client not initialized."}), 500
+
+    current_user_id = request.current_user.id
+    data = request.json
+    if not data:
+        return jsonify({"success": False, "error": "No data provided for update."}), 400
+
+    # Fields that can be updated by the user for a 'human' campaign
+    allowed_fields = [
+        "title", "brand", "description", "brief", "status",
+        "budget_min", "budget_max", 
+        "application_deadline", "start_date", "end_date",
+        "platforms", "min_followers", "niches", "locations", "deliverables",
+        # Original brief fields (though UI might not allow editing, API should handle if sent)
+        "company_name", "product_service_name", "campaign_objective", 
+        "target_audience", "key_message"
+    ]
+    
+    # AI campaigns have restricted status updates
+    allowed_ai_statuses = ['active', 'completed', 'cancelled']
+
+    try:
+        # First, fetch the existing campaign to check its creation_method and owner
+        # Use the user's JWT for RLS by default by calling auth() on the client
+        # Store original headers
+        original_postgrest_headers = supabase_client.postgrest.session.headers.copy()
+        supabase_client.postgrest.auth(request.raw_jwt)
+
+        existing_campaign_response = supabase_client.table('campaigns')\
+            .select('id, user_id, creation_method, status')\
+            .eq('id', campaign_id)\
+            .maybe_single()\
+            .execute()
+
+        # Restore original headers
+        supabase_client.postgrest.session.headers = original_postgrest_headers
+
+        if not existing_campaign_response.data:
+            return jsonify({"success": False, "error": "Campaign not found."}), 404
+        
+        existing_campaign = existing_campaign_response.data
+
+        # Authorization Check: Ensure the user owns this campaign
+        # This check might be redundant if RLS is fully effective, but good as a safeguard.
+        if str(existing_campaign.get('user_id')) != str(current_user_id):
+            # If RLS didn't prevent access, this ensures non-owners cannot update.
+            # This could happen if RLS is misconfigured or if a service key bypasses user-specific RLS for the select but not for update.
+            print(f"⚠️ Authorization mismatch: User {current_user_id} tried to update campaign {campaign_id} owned by {existing_campaign.get('user_id')}.")
+            return jsonify({"success": False, "error": "You are not authorized to update this campaign."}), 403
+
+        update_payload = {}
+        nested_budget = {}
+        nested_timeline = {}
+        nested_requirements = {}
+
+        # Handle status update restrictions for AI campaigns
+        if existing_campaign.get('creation_method') == 'ai':
+            if 'status' in data and data['status'] not in allowed_ai_statuses:
+                return jsonify({
+                    "success": False, 
+                    "error": f"AI-generated campaigns can only have their status set to: {', '.join(allowed_ai_statuses)}."
+                }), 400
+            # For AI campaigns, only allow 'status' and potentially a few other specific fields if necessary in the future.
+            # For now, if it's an AI campaign, we're primarily concerned with status changes (e.g., cancellation).
+            # If other fields are sent for an AI campaign, they will be ignored unless explicitly handled here.
+            if 'status' in data:
+                update_payload['status'] = data['status']
+            # Add any other fields AI campaigns are allowed to update here.
+            # For now, if only 'status' is in data, other fields won't be processed for AI.
+
+        else: # For 'human' campaigns, process all allowed fields
+            for field in allowed_fields:
+                if field in data:
+                    if field in ["budget_min", "budget_max"]:
+                        nested_budget[field.split('_')[1]] = data[field] if data[field] != '' else None
+                    elif field in ["application_deadline", "start_date", "end_date"]:
+                        # Validate and format date strings if they are not empty
+                        validated_date = validate_date_string(data[field]) if data[field] else None
+                        nested_timeline[field] = validated_date
+                    elif field in ["platforms", "min_followers", "niches", "locations", "deliverables"]:
+                        if field == "min_followers":
+                            nested_requirements[field] = data[field] if data[field] != '' else None
+                        else: # assuming others are arrays or direct values
+                            nested_requirements[field] = data[field]
+                    else: # Direct top-level fields
+                        update_payload[field] = data[field]
+        
+        # Populate the main payload with nested structures if they have data
+        if nested_budget:
+            # Ensure existing budget fields are preserved if not all are updated
+            # This requires fetching the current budget if only partial update is sent
+            current_budget = existing_campaign.get('budget', {}) if isinstance(existing_campaign.get('budget'), dict) else {}
+            update_payload['budget'] = {**current_budget, **nested_budget}
+
+        if nested_timeline:
+            current_timeline = existing_campaign.get('timeline', {}) if isinstance(existing_campaign.get('timeline'), dict) else {}
+            update_payload['timeline'] = {**current_timeline, **nested_timeline}
+            
+        if nested_requirements:
+            current_requirements = existing_campaign.get('requirements', {}) if isinstance(existing_campaign.get('requirements'), dict) else {}
+            update_payload['requirements'] = {**current_requirements, **nested_requirements}
+
+
+        if not update_payload: # If only non-allowed fields were sent for AI, or no valid fields for human
+            # For AI campaigns, if only 'status' was sent and it was valid, update_payload would have 'status'.
+            # If an AI campaign update request has no 'status' or other AI-allowed fields, this message is appropriate.
+            # If a human campaign update request has no recognized fields, this is also appropriate.
+            return jsonify({"success": False, "error": "No valid fields provided for update or operation not permitted for AI campaign."}), 400
+
+        update_payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+        
+        print(f"💾 Updating campaign ID {campaign_id} for user {current_user_id} with payload: {json.dumps(update_payload, indent=2, default=str)}")
+
+        # Use the user's JWT for RLS on the update operation
+        original_postgrest_headers_update = supabase_client.postgrest.session.headers.copy()
+        supabase_client.postgrest.auth(request.raw_jwt)
+
+        update_response = supabase_client.table('campaigns')\
+            .update(update_payload)\
+            .eq('id', campaign_id)\
+            .eq('user_id', current_user_id)\
+            .execute()
+
+        print(f"💾 Update response: {update_response}")
+        
+        # Restore original headers for the client
+        supabase_client.postgrest.session.headers = original_postgrest_headers_update
+
+        if update_response.data:
+            # Fetch the updated campaign to return the full object with all fields
+            # Use user's JWT again for this fetch
+            original_postgrest_headers_fetch = supabase_client.postgrest.session.headers.copy()
+            supabase_client.postgrest.auth(request.raw_jwt)
+            
+            updated_campaign_response = supabase_client.table('campaigns')\
+                .select('*')\
+                .eq('id', campaign_id)\
+                .single()\
+                .execute()
+            
+            supabase_client.postgrest.session.headers = original_postgrest_headers_fetch
+
+            if updated_campaign_response.data:
+                return jsonify({"success": True, "campaign": updated_campaign_response.data, "message": "Campaign updated successfully."})
+            else:
+                # This case should ideally not happen if update was successful
+                print(f"⚠️ Update reported success for campaign {campaign_id}, but failed to re-fetch. Update response: {update_response}")
+                return jsonify({"success": True, "campaign": update_payload, "message": "Campaign updated, but full re-fetch failed. Returning partial data."})
+
+        else: # Handle errors from Supabase update
+            error_message = "Failed to update campaign."
+            if hasattr(update_response, 'error') and update_response.error:
+                error_details = getattr(update_response.error, 'message', str(update_response.error))
+                error_code = getattr(update_response.error, 'code', 'N/A')
+                error_hint = getattr(update_response.error, 'hint', 'N/A')
+                error_message += f" Supabase error (Code: {error_code}, Hint: {error_hint}): {error_details}"
+            elif hasattr(update_response, 'status_code') and update_response.status_code >= 400:
+                error_message += f" HTTP Status: {update_response.status_code}. Response: {getattr(update_response, 'text', str(update_response))[:200]}"
+            print(f"❌ Update error for campaign {campaign_id}: {error_message}. Raw response: {update_response}")
+            return jsonify({"success": False, "error": error_message}), 500
+
+    except Exception as e:
+        error_message = f"An unexpected error occurred: {type(e).__name__} - {str(e)}"
+        print(f"❌ Unexpected error in update_campaign_by_id for campaign {campaign_id}: {error_message}")
+        import traceback
+        traceback.print_exc()
+        # Ensure client headers are restored even if an unexpected error occurs
+        if 'original_postgrest_headers' in locals() and hasattr(supabase_client, 'postgrest'):
+             supabase_client.postgrest.session.headers = original_postgrest_headers
+        elif 'original_postgrest_headers_update' in locals() and hasattr(supabase_client, 'postgrest'):
+             supabase_client.postgrest.session.headers = original_postgrest_headers_update
+
+        return jsonify({"success": False, "error": error_message}), 500
+
+@app.route('/api/campaigns', methods=['POST'])
+@token_required
+def create_new_campaign():
+    user_id = request.current_user.id
+    raw_jwt_token = request.raw_jwt
+    data = request.get_json()
+
+    if not data:
+        return jsonify({"success": False, "error": "No data provided"}), 400
+
+    db_insert_payload = {
+        "user_id": str(user_id),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "creation_method": "human" # Mark as human created
+    }
+
+    # Direct mappings from payload
+    for key in ['title', 'brand', 'description', 'brief', 'status']:
+        if key in data and data[key] is not None:
+            db_insert_payload[key] = data[key]
+        elif key == 'status' and 'status' not in data : # Default status if not provided at all
+             db_insert_payload[key] = 'draft' # Human campaigns can be draft
+        # If key is in data but value is None, it will be inserted as NULL if db_insert_payload[key] = None
+
+    # Nested: budget
+    budget_data = data.get('budget')
+    if budget_data and isinstance(budget_data, dict):
+        if 'min' in budget_data and budget_data['min'] is not None:
+            db_insert_payload['budget_min'] = budget_data['min']
+        if 'max' in budget_data and budget_data['max'] is not None:
+            db_insert_payload['budget_max'] = budget_data['max']
+
+    # Nested: timeline
+    timeline_data = data.get('timeline')
+    if timeline_data and isinstance(timeline_data, dict):
+        for key, db_key in [('applicationDeadline', 'application_deadline'),
+                             ('startDate', 'start_date'),
+                             ('endDate', 'end_date')]:
+            if key in timeline_data and timeline_data[key]:
+                # validate_date_string should return None if invalid, which is fine for DB
+                db_insert_payload[db_key] = validate_date_string(timeline_data[key])
+
+    # Nested: requirements
+    requirements_data = data.get('requirements')
+    if requirements_data and isinstance(requirements_data, dict):
+        for key, db_key in [('platforms', 'platforms'),
+                             ('minFollowers', 'min_followers'),
+                             ('niches', 'niches'),
+                             ('locations', 'locations'),
+                             ('deliverables', 'deliverables')]:
+            if key in requirements_data and requirements_data[key] is not None:
+                 db_insert_payload[db_key] = requirements_data[key]
+    
+    # Optional fields from AI generation (company_name, etc.) are not expected from this form
+    # They will be NULL if not in db_insert_payload and columns are nullable.
+
+    if not supabase_client or not hasattr(supabase_client, 'postgrest'):
+        return jsonify({"success": False, "error": "Supabase client not configured"}), 500
+
+    original_postgrest_headers = supabase_client.postgrest.session.headers.copy()
+    try:
+        if raw_jwt_token:
+            supabase_client.postgrest.auth(raw_jwt_token)
+        
+        insert_response = supabase_client.table('campaigns').insert(db_insert_payload).execute()
+
+        if hasattr(insert_response, 'data') and insert_response.data:
+            created_campaign_raw = insert_response.data[0]
+            
+            # Simple transform for the response, similar to list_campaigns
+            transformed_campaign = {
+                "id": created_campaign_raw.get("id"),
+                "title": created_campaign_raw.get("title"),
+                "brand": created_campaign_raw.get("brand"),
+                "description": created_campaign_raw.get("description"),
+                "brief": created_campaign_raw.get("brief"),
+                "status": created_campaign_raw.get("status"),
+                "creation_method": created_campaign_raw.get("creation_method"), # Include creation_method
+                "budget": {
+                    "min": created_campaign_raw.get("budget_min"),
+                    "max": created_campaign_raw.get("budget_max")
+                },
+                "timeline": {
+                    "applicationDeadline": created_campaign_raw.get("application_deadline"),
+                    "startDate": created_campaign_raw.get("start_date"),
+                    "endDate": created_campaign_raw.get("end_date")
+                },
+                "requirements": {
+                    "platforms": created_campaign_raw.get("platforms"),
+                    "minFollowers": created_campaign_raw.get("min_followers"),
+                    "niches": created_campaign_raw.get("niches"),
+                    "locations": created_campaign_raw.get("locations"),
+                    "deliverables": created_campaign_raw.get("deliverables")
+                },
+                "aiInsights": created_campaign_raw.get("ai_insights"),
+                "userId": created_campaign_raw.get("user_id"),
+                "createdAt": created_campaign_raw.get("created_at"),
+                "updatedAt": created_campaign_raw.get("updated_at")
+                # company_name etc. will be included if they are in created_campaign_raw and columns exist
+            }
+            # Add any other top-level fields from the raw campaign if they exist (like company_name, etc.)
+            for key in ['company_name', 'product_service_name', 'campaign_objective', 'target_audience', 'key_message']:
+                if created_campaign_raw.get(key) is not None:
+                    transformed_campaign[key] = created_campaign_raw.get(key)
+
+            return jsonify({"success": True, "campaign": transformed_campaign}), 201
+        else:
+            error_msg = "Failed to create campaign in database."
+            if hasattr(insert_response, 'error') and insert_response.error:
+                 error_details = getattr(insert_response.error, 'message', str(insert_response.error))
+                 error_msg += f" Details: {error_details}"
+            elif hasattr(insert_response, 'status_code'): # Check for other HTTP errors from Supabase
+                error_msg += f" Status: {insert_response.status_code}. Response: {str(insert_response)[:200]}"
+
+            print(f"❌ Supabase insert error: {error_msg}. Raw Response: {insert_response}")
+            return jsonify({"success": False, "error": error_msg}), 500
+            
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": f"An unexpected error occurred: {str(e)}"}), 500
+    finally:
+        if supabase_client and hasattr(supabase_client, 'postgrest'):
+             supabase_client.postgrest.session.headers = original_postgrest_headers
+
+def transform_campaign_for_frontend(campaign_data):
+    """Transforms a single campaign record from Supabase to a frontend-friendly format."""
+    if not campaign_data:
+        return None
+
+    # Ensure dates are strings or None
+    application_deadline = campaign_data.get('application_deadline')
+    start_date = campaign_data.get('start_date')
+    end_date = campaign_data.get('end_date')
+    created_at = campaign_data.get('created_at')
+    updated_at = campaign_data.get('updated_at') # Assuming this field might exist
+
+    return {
+        "id": campaign_data.get('id'),
+        "title": campaign_data.get('title'),
+        "brand": campaign_data.get('brand'),
+        "status": campaign_data.get('status'),
+        "description": campaign_data.get('description'),
+        "brief": campaign_data.get('brief'), # Added brief
+        "creation_method": campaign_data.get('creation_method'), # Added creation_method
+        "budget": {
+            "min": campaign_data.get('budget_min'),
+            "max": campaign_data.get('budget_max')
+        },
+        "timeline": {
+            "applicationDeadline": application_deadline if application_deadline else None,
+            "startDate": start_date if start_date else None,
+            "endDate": end_date if end_date else None
+        },
+        "requirements": { # Assuming these map directly for now
+            "platforms": campaign_data.get('platforms', []), # Default to empty list if None
+            "minFollowers": campaign_data.get('min_followers'),
+            "niches": campaign_data.get('niches', []), # Default to empty list if None
+            "locations": campaign_data.get('locations', []), # Default to empty list if None
+            "deliverables": campaign_data.get('deliverables', []) # Default to empty list if None
+        },
+        # Include original brief fields from the database if they exist
+        "company_name": campaign_data.get('company_name'),
+        "product_service_name": campaign_data.get('product_service_name'),
+        "campaign_objective": campaign_data.get('campaign_objective'),
+        "target_audience": campaign_data.get('target_audience'),
+        "key_message": campaign_data.get('key_message'),
+        
+        "ai_insights": campaign_data.get('ai_insights'), # Make sure this is included
+        "user_id": campaign_data.get('user_id'), # Include user_id
+        "created_at": created_at if created_at else None, # Include created_at
+        "updated_at": updated_at if updated_at else None, # Include updated_at
+        "applicants": campaign_data.get('applicants', 0), # Placeholder, assuming you might add this
+        "selected": campaign_data.get('selected', 0)     # Placeholder
+    }
 
 if __name__ == '__main__':
     app.run(debug=True, port=int(os.getenv('PORT', 5001))) # Use PORT from env if available

@@ -1,6 +1,8 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import CampaignAIAssistant from '../components/campaign-ai-assistant';
+import { useAuth } from '../contexts/AuthContext';
+import { toast } from 'react-toastify';
 
 interface CampaignForm {
   title: string;
@@ -22,6 +24,11 @@ interface CampaignForm {
 export default function CreateCampaign() {
   const [currentStep, setCurrentStep] = useState(1);
   const [showAIAssistant, setShowAIAssistant] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const navigate = useNavigate();
+  const { session, loading: authLoading } = useAuth();
+
   const [formData, setFormData] = useState<CampaignForm>({
     title: '',
     brand: '',
@@ -382,6 +389,75 @@ export default function CreateCampaign() {
     }
   };
 
+  const handleCampaignSubmit = async () => {
+    if (!session?.access_token) {
+      toast.error('Authentication required to create a campaign.');
+      setIsSubmitting(false);
+      return;
+    }
+    if (authLoading) {
+      toast.warn('Authentication is still loading, please wait a moment.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    setSubmitError(null);
+
+    // Transform formData to the structure expected by the backend
+    const payload = {
+      title: formData.title,
+      brand: formData.brand,
+      description: formData.description,
+      brief: formData.brief,
+      status: 'draft', // Default status for new campaigns
+      budget: {
+        min: formData.budgetMin,
+        max: formData.budgetMax,
+      },
+      timeline: {
+        applicationDeadline: formData.applicationDeadline || null,
+        startDate: formData.startDate || null,
+        endDate: formData.endDate || null,
+      },
+      requirements: {
+        platforms: formData.platforms,
+        minFollowers: formData.minFollowers,
+        niches: formData.niches,
+        locations: formData.locations,
+        deliverables: formData.deliverables,
+      },
+      // Include any other fields your backend expects for creation
+    };
+
+    try {
+      const response = await fetch('/api/campaigns', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || 'Failed to create campaign.');
+      }
+
+      toast.success('Campaign created successfully!');
+      navigate('/campaigns'); // Navigate to the campaigns list page
+
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'An unknown error occurred during submission.';
+      console.error('Error creating campaign:', err);
+      setSubmitError(errorMsg);
+      toast.error(errorMsg);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       {/* Header */}
@@ -462,12 +538,12 @@ export default function CreateCampaign() {
             <div className="flex justify-between items-center mt-8 pt-6 border-t border-gray-200">
               <button
                 onClick={prevStep}
-                disabled={currentStep === 1}
+                disabled={currentStep === 1 || isSubmitting}
                 className={`px-6 py-2 rounded-lg font-medium transition-colors ${
                   currentStep === 1
                     ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
                     : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
+                } ${isSubmitting ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
                 Previous
               </button>
@@ -477,17 +553,20 @@ export default function CreateCampaign() {
               </div>
 
               <button
-                onClick={currentStep === 5 ? () => console.log('Campaign created!', formData) : nextStep}
-                disabled={!canProceed()}
+                onClick={currentStep === 5 ? handleCampaignSubmit : nextStep}
+                disabled={!canProceed() || isSubmitting || (currentStep === 5 && authLoading)}
                 className={`px-6 py-2 rounded-lg font-medium transition-colors ${
-                  canProceed()
+                  (canProceed() && !isSubmitting && !(currentStep === 5 && authLoading))
                     ? 'bg-blue-600 text-white hover:bg-blue-700'
                     : 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                }`}
+                } ${isSubmitting ? 'opacity-50' : ''}`}
               >
-                {currentStep === 5 ? 'Create Campaign' : 'Next'}
+                {currentStep === 5 ? (isSubmitting ? 'Creating...' : 'Create Campaign') : 'Next'}
               </button>
             </div>
+            {submitError && currentStep === 5 && (
+              <p className="mt-4 text-sm text-center text-red-600">Error: {submitError}</p>
+            )}
           </div>
         </div>
 

@@ -128,8 +128,11 @@
 - **Verification System**: Verified creator badges and authenticity indicators
 
 #### Campaign Management
-- **Multi-Step Campaign Creation**: Guided campaign setup with intelligent recommendations
-- **Requirement Specification**: Define platforms, audiences, deliverables, and budgets
+- **Multi-Step Campaign Creation**: Guided campaign setup with intelligent recommendations.
+- **Human vs. AI Campaign Differentiation**:
+    - **Human-Created Campaigns**: Created via the platform's forms. Fully editable by users, follow a standard status lifecycle (e.g., Draft, Active, In Review, Completed, Cancelled).
+    - **AI-Generated Campaigns**: Created by the "Campaign Builder Agent" using AI. These campaigns are not directly editable by users through the standard edit form. They have a lifecycle primarily focused on `active`, `completed`, or `cancelled` statuses. Users can cancel AI-generated campaigns directly from the UI.
+- **Requirement Specification**: Define platforms, audiences, deliverables, and budgets.
 - **Application Management**: Track and manage creator applications
 - **Performance Monitoring**: Real-time campaign performance tracking
 
@@ -182,13 +185,15 @@
 - **Fallback System**: Graceful degradation when LLM is unavailable
 
 ### Data Management
-- **Persistent Storage**: localStorage-based outreach and campaign data
-- **Real-time Synchronization**: Live updates across all platform components
+- **Supabase PostgreSQL Database**: Secure and scalable cloud database for all persistent application data, including user profiles, campaign details (both Human-created and AI-generated), outreach information, negotiation history, etc. Row Level Security (RLS) is utilized to ensure users can only access their own data.
+- **Real-time Synchronization**: Leverages Supabase's real-time capabilities for features requiring live data updates across clients.
+- **Persistent Storage**: localStorage-based outreach and campaign data (Note: This is largely superseded by Supabase for primary data storage. localStorage might be used for UI state or non-critical caching if applicable.)
 - **Comprehensive Mock Database**: 100+ creators, 18 campaigns, 25 deals, 14 contracts, 35 payments
 - **RESTful API Design**: Scalable and maintainable data architecture
 
 ### Backend
-- **Python 3.10+** with **Flask** for robust API development
+- **Python 3.10+** with **Flask** for robust API development.
+- **Supabase Python Client**: Used for interacting with the Supabase PostgreSQL database (CRUD operations for campaigns, user data, etc.) and leveraging RLS by passing user JWTs for operations requiring user context.
 - **Twilio Integration**: For programmable voice call capabilities.
 - **ElevenLabs Integration**: For dynamic, high-quality Text-to-Speech generation.
 - **Groq API Integration**: For LLM-powered decision making and text generation in voice calls and email.
@@ -207,278 +212,213 @@
 ## 🚀 Getting Started
 
 ### Prerequisites
-- **Node.js 18+** (Required)
-- **npm or yarn** (Package manager)
+- **Node.js 18+** (Required for Frontend)
+- **Python 3.10+** (Required for Backend)
+- **npm or yarn** (Package manager for Frontend)
+- **pip** (Package manager for Python Backend)
+- **Git** (For cloning the repository)
 - **Groq API Key** (Required for AI features) - [Get free key](https://console.groq.com/)
-- **Supabase Account** (Required for authentication) - [Create free account](https://supabase.com/)
-- **Google Cloud Account** (Required for OAuth) - [Get started](https://console.cloud.google.com/)
+- **Supabase Account** (Required for authentication & database) - [Create free account](https://supabase.com/)
+- **Google Cloud Account** (Required for OAuth with Supabase Auth) - [Get started](https://console.cloud.google.com/)
+- **Twilio Account & Phone Number** (Required for Voice Call features) - [Create free account](https://www.twilio.com/)
+- **ElevenLabs Account** (Optional, for premium AI Text-to-Speech in Voice Calls) - [Create free account](https://elevenlabs.io/)
 
-### Quick Start Installation
+### Backend Setup
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/yourusername/influencerflowai.git
-   cd influencerflowai
-   ```
-
-2. **Install dependencies**
-   ```bash
-   npm install
-   ```
-
-3. **🚨 CRITICAL: Create Environment File**
-   ```bash
-   # Create .env.local file (REQUIRED - platform won't work without this!)
-   cp env.example .env.local
-   ```
-   
-4. **Configure Environment Variables** ⚡
-   
-   Edit `.env.local` with your actual values:
-   ```bash
-   # Supabase Configuration (REQUIRED for authentication)
-   VITE_SUPABASE_URL="https://YOUR_PROJECT_REF.supabase.co"
-   VITE_SUPABASE_ANON_KEY="YOUR_ACTUAL_ANON_KEY_HERE"
-   
-   # Groq API Configuration (REQUIRED for AI features)
-   VITE_GROQ_API_KEY="gsk_YOUR_ACTUAL_API_KEY_HERE"
-   ```
-
-5. **Start the development server**
-   ```bash
-   npm run dev
-   ```
-
-6. **Open your browser**
-   Navigate to `http://localhost:5173`
-
----
-
-## 🔐 **DETAILED AUTHENTICATION SETUP**
-
-### **Step 1: Create Supabase Project** 🎯
-
-1. **Visit Supabase**: Go to [supabase.com](https://supabase.com/) and create a free account
-2. **Create New Project**: Click "New Project" and fill in:
-   - **Project Name**: `InfluencerFlowAI` (or your preferred name)
-   - **Database Password**: Use a strong password
-   - **Region**: Choose closest to your location
-3. **Wait for Setup**: Project creation takes 2-3 minutes
-
-### **Step 2: Get Supabase Credentials** 📋
-
-1. **Navigate to Settings**: In your Supabase dashboard, go to **Settings** → **API**
-2. **Copy Project URL**: Copy the "Project URL" (format: `https://abcdefgh.supabase.co`)
-3. **Copy Anon Key**: Copy the "anon public" key (long string starting with `eyJ`)
-4. **Add to `.env.local`** (in your project root, NOT `backend/.env`):
+1.  **Clone the repository (if you haven't already):**
     ```bash
-    # Supabase Keys (for frontend)
-    VITE_SUPABASE_URL="https://YOUR_ACTUAL_PROJECT_REF.supabase.co"
-    VITE_SUPABASE_ANON_KEY="YOUR_ACTUAL_ANON_KEY"
-
-    # Backend API URL (for frontend to call your Python backend)
-    # For local development (Python backend on port 5001):
-    VITE_BACKEND_API_URL="http://localhost:5001"
-    # For production (after deploying Python backend, e.g., to Render):
-    # VITE_BACKEND_API_URL="https://your-python-backend.onrender.com"
+    git clone https://github.com/yourusername/influencerflowai.git # Replace with your repo URL
+    cd influencerflowai
     ```
 
-### **Step 3: Enable Google OAuth Provider** 🔧
+2.  **Navigate to the backend directory:**
+    ```bash
+    cd backend
+    ```
+3.  **Create and activate a Python virtual environment:**
+    ```bash
+    python3 -m venv venv
+    source venv/bin/activate  # On Windows use `venv\Scripts\activate`
+    ```
+4.  **Install Python dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+5.  **🚨 CRITICAL: Create Backend Environment File**
+    Ensure you are in the `backend` directory.
+    ```bash
+    cp .env.example .env
+    ```
+6.  **Configure Backend Environment Variables** ⚡
+    Edit `backend/.env` with your actual values:
+    ```env
+    # Supabase Configuration
+    VITE_SUPABASE_URL="https://YOUR_PROJECT_REF.supabase.co"
+    VITE_SUPABASE_SERVICE_KEY="YOUR_SUPABASE_SERVICE_ROLE_KEY" # For backend admin/service operations
 
-1. **Go to Authentication**: In Supabase dashboard, click **Authentication** → **Providers**
-2. **Find Google**: Scroll down to find "Google" in the provider list
-3. **Enable Google**: Toggle the "Enable Google provider" switch to **ON**
-4. **Note the Callback URL**: Copy the callback URL shown (format: `https://your-project.supabase.co/auth/v1/callback`)
+    # Groq API Configuration
+    VITE_GROQ_API_KEY="gsk_YOUR_ACTUAL_API_KEY_HERE"
 
-### **Step 4: Set Up Google OAuth** 🌐
+    # Twilio Configuration
+    TWILIO_ACCOUNT_SID="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    TWILIO_AUTH_TOKEN="your_twilio_auth_token"
+    TWILIO_PHONE_NUMBER="+1234567890" # Your Twilio phone number configured for voice
 
-#### **A. Create Google Cloud Project**
-1. **Visit Google Cloud Console**: Go to [console.cloud.google.com](https://console.cloud.google.com)
-2. **Create Project**: Create a new project or select existing one
-3. **Enable APIs**: Search for and enable "Google+ API" (if not already enabled)
+    # ElevenLabs Configuration (Optional but recommended for best voice quality)
+    ELEVENLABS_API_KEY="your_elevenlabs_api_key"
+    ELEVENLABS_VOICE_ID="your_chosen_voice_id_or_leave_blank_for_default" # e.g., Rachel
 
-#### **B. Configure OAuth Consent Screen**
-1. **Go to OAuth Consent**: Navigate to **APIs & Services** → **OAuth consent screen**
-2. **Choose User Type**: Select "External" for public apps
-3. **Fill Required Fields**:
-   - **App name**: `InfluencerFlowAI`
-   - **User support email**: Your email
-   - **Developer contact**: Your email
-4. **Add Authorized Domains**: Add your Supabase project domain:
-   ```
-   YOUR_PROJECT_REF.supabase.co
-   ```
-5. **Save and Continue** through all steps
+    # Frontend URL (Important for CORS configuration in the backend)
+    VITE_FRONTEND_URL="http://localhost:5173" # Update if your frontend runs on a different port/URL
+    ```
+    *Note: `VITE_SUPABASE_ANON_KEY` is primarily used by the frontend but shown here for completeness if any backend logic were to mimic client-side behavior without service role privileges.*
 
-#### **C. Create OAuth Credentials**
-1. **Go to Credentials**: Navigate to **APIs & Services** → **Credentials**
-2. **Create Credentials**: Click "Create Credentials" → "OAuth client ID"
-3. **Choose Application Type**: Select "Web application"
-4. **Configure URLs**:
-   
-   **Authorized JavaScript origins:**
-   ```
-   http://localhost:5173
-   https://your-production-domain.com
-   ```
-   
-   **Authorized redirect URIs:**
-   ```
-   http://localhost:5173/auth/callback
-   https://your-production-domain.com/auth/callback
-   https://YOUR_PROJECT_REF.supabase.co/auth/v1/callback
-   ```
+7.  **Run the Flask backend server:**
+    From the `backend` directory:
+    ```bash
+    python app.py
+    ```
+    The backend will typically start on `http://127.0.0.1:5000`. Check the terminal output.
 
-5. **Save and Copy Credentials**: You'll get a **Client ID** and **Client Secret**
+### Frontend Setup
 
-### **Step 5: Connect Google to Supabase** 🔗
+1.  **Navigate to the project root directory** (e.g., `cd ..` if you are in `backend/`).
+    ```bash
+    # Ensure you are in the main project root: influencerflowai/
+    ```
+2.  **Install frontend dependencies:**
+    ```bash
+    npm install
+    ```
+3.  **🚨 CRITICAL: Create Frontend Environment File**
+    Ensure you are in the project root directory.
+    ```bash
+    cp .env.example .env.local
+    ```
+    *Vite uses `.env.local` by default for local development environment variables. These are not committed to git.*
 
-1. **Return to Supabase**: Go back to **Authentication** → **Providers** → **Google**
-2. **Add Google Credentials**:
-   - **Client ID**: Paste your Google Client ID
-   - **Client Secret**: Paste your Google Client Secret
-3. **Save Configuration**: Click "Save"
+4.  **Configure Frontend Environment Variables** ⚡
+    Edit `.env.local` (in the project root) with your values.
+    ```env
+    # Supabase Configuration (Client-side authentication)
+    VITE_SUPABASE_URL="https://YOUR_PROJECT_REF.supabase.co"
+    VITE_SUPABASE_ANON_KEY="YOUR_SUPABASE_PUBLIC_ANON_KEY"
 
-### **Step 6: Test Authentication** ✅
+    # Groq API Key (Generally NOT recommended for direct frontend use due to security)
+    # Most AI features should be proxied through your backend.
+    # VITE_GROQ_API_KEY="gsk_YOUR_ACTUAL_API_KEY_HERE"
+    ```
+5.  **Start the frontend development server:**
+    ```bash
+    npm run dev
+    ```
+    The frontend will typically start on `http://localhost:5173`.
 
-1. **Start Your App**: Run `npm run dev` and visit `http://localhost:5173`
-2. **Try Login**: Click "Continue with Google" and test the flow
-3. **Check Users**: In Supabase dashboard, go to **Authentication** → **Users** to see authenticated users
+### Full Project Structure Overview (Simplified)
 
----
-
-## 🔧 **Configuration Details**
-
-### **Environment Variables**
-
-Your `.env.local` file (in the project root) should contain:
-
-```bash
-# Supabase Configuration (for frontend client & auth)
-VITE_SUPABASE_URL="https://your-project.supabase.co"
-VITE_SUPABASE_ANON_KEY="your_supabase_anon_key_here"
-
-# Backend API URL (for frontend to call your Python backend)
-# Use http://localhost:5001 for local Python backend development
-# Update to your deployed backend URL for production
-VITE_BACKEND_API_URL="http://localhost:5001"
-
-# Groq API Configuration (ONLY for backend, keep this in backend/.env)
-# VITE_GROQ_API_KEY="gsk_your_actual_api_key_here" 
-# Note: VITE_GROQ_API_KEY is primarily used by the Python backend now.
-# The frontend does not directly call Groq anymore for secured endpoints.
+```
+influencerflowai/
+├── backend/
+│   ├── app.py              # Main Flask application
+│   ├── requirements.txt    # Backend Python dependencies
+│   ├── .env.example        # Example environment variables for backend
+│   ├── .env                # Actual environment variables for backend (gitignored)
+│   └── venv/               # Python virtual environment (gitignored)
+│   └── ...                 # Other backend files (helpers, routes, etc.)
+├── public/                 # Static assets for frontend (e.g., favicons)
+├── src/                    # Frontend React application source (TypeScript)
+│   ├── App.tsx             # Main application component with routing
+│   ├── main.tsx            # React entry point
+│   ├── index.css           # Global styles (Tailwind base, custom global styles)
+│   ├── assets/             # Images, fonts, etc.
+│   ├── components/         # Reusable UI components
+│   ├── contexts/           # React Contexts (e.g., AuthContext)
+│   ├── layouts/            # Page layout components (e.g., for authenticated routes)
+│   ├── pages/              # Routed page components (e.g., Campaigns, CreateCampaign)
+│   ├── services/           # API interaction functions (e.g., fetching campaigns)
+│   └── vite-env.d.ts       # Vite TypeScript environment types
+├── .env.example            # Example environment variables for frontend (root)
+├── .env.local              # Actual environment variables for frontend (root, gitignored)
+├── .gitignore              # Specifies intentionally untracked files that Git should ignore
+├── package.json            # Frontend dependencies and npm scripts
+├── README.md               # This file - project documentation
+├── tsconfig.json           # TypeScript configuration for the frontend
+├── vite.config.ts          # Vite build tool configuration
+└── ...                     # Other configuration files (e.g., postcss.config.js, tailwind.config.js)
 ```
 
-Your `backend/.env` file (in the `backend/` directory) should contain:
+### Key Environment Variables Summary
 
-```bash
-# Supabase Configuration (for backend to validate JWTs, etc.)
-VITE_SUPABASE_URL="https://your-project.supabase.co"
-VITE_SUPABASE_ANON_KEY="your_supabase_anon_key_here"
+**Backend (`backend/.env`):**
+- `VITE_SUPABASE_URL`: Your Supabase project URL.
+- `VITE_SUPABASE_SERVICE_KEY`: Your Supabase service role key (for backend operations requiring admin-like privileges, bypassing RLS when necessary).
+- `VITE_GROQ_API_KEY`: Your Groq Cloud API key.
+- `TWILIO_ACCOUNT_SID`: Your Twilio Account SID.
+- `TWILIO_AUTH_TOKEN`: Your Twilio Auth Token.
+- `TWILIO_PHONE_NUMBER`: Your Twilio phone number capable of making voice calls.
+- `ELEVENLABS_API_KEY`: (Optional) Your ElevenLabs API key for premium TTS.
+- `ELEVENLABS_VOICE_ID`: (Optional) The ElevenLabs voice ID you wish to use.
+- `VITE_FRONTEND_URL`: The URL of your running frontend (e.g., `http://localhost:5173`) for backend CORS configuration.
 
-# Groq API Configuration (for backend AI calls)
-VITE_GROQ_API_KEY="gsk_your_actual_api_key_here"
+**Frontend (`.env.local` in project root):**
+- `VITE_SUPABASE_URL`: Your Supabase project URL.
+- `VITE_SUPABASE_ANON_KEY`: Your Supabase anonymous public key (for client-side authentication with Supabase).
+
+---
+**Security Note:** Always ensure that your `.env` files (in `backend/` and the project root for `.env.local`) are included in your `.gitignore` file to prevent accidentally committing sensitive API keys and credentials to your version control repository. The provided `.env.example` files serve as templates and are safe to commit.
+
+## 🎯 Usage Examples
+
+### **Authentication Flow** 🔐
+
+**Secure User Authentication:**
+```typescript
+// Users are automatically redirected to login if not authenticated
+// After Google OAuth, users land on protected dashboard
+// Session persists across browser restarts
+// Automatic token refresh handles expired sessions
 ```
 
-### **Groq API Setup** 📋
+### **Autonomous Campaign Creation** 🧠
 
-1. **Sign up**: Visit [console.groq.com](https://console.groq.com/)
-2. **Create API Key**: Generate a new API key in the dashboard
-3. **Copy Key**: Add to your `.env.local` file
-4. **Verify**: The AI search mode will show "Groq Powered" when properly configured
+The multi-agent AI system handles complete campaign workflows:
 
-**Free Tier Includes:**
-- High-speed inference with Llama 3.3 70B
-- Generous rate limits for development
-- No credit card required for testing
-- Perfect for the conservative rate limiting in this platform
+**Business Requirements Input:**
+```
+Company: TechFlow Solutions
+Product: AI-powered productivity software  
+Objective: Launch new product and drive 10K+ app downloads
+Target Audience: Tech professionals and developers aged 25-40
+Budget: ₹50,000 - ₹200,000
+Platforms: YouTube, LinkedIn, Twitter
+Outreach: Top 5 creators with AI personalization
+```
 
----
+**Autonomous AI Output:**
+- **Generated Campaign**: Complete strategy with budget optimization
+- **Creator Discovery**: 25+ relevant creators found and filtered
+- **Intelligent Scoring**: Multi-factor analysis with detailed reasoning
+- **Automated Outreach**: 5 personalized messages sent and tracked
+- **Analytics**: Success rates, confidence scores, and recommendations
 
-## 🚨 **Troubleshooting Guide**
+### **Multi-Agent Coordination**
 
-### **❌ "Unsupported provider: provider is not enabled"**
+| Agent | Function | AI/Algorithmic | Output |
+|-------|----------|---------------|---------|
+| **Campaign Builder** | Strategy generation | AI + Fallback | Complete campaign with insights |
+| **Creator Discovery** | Find relevant creators | AI + Enhanced filtering | Scored creator list |
+| **Matching & Scoring** | Compatibility analysis | AI (top 1) + Algorithm | Ranked matches with reasoning |
+| **Outreach Agent** | Message generation & sending | AI + Templates | Sent outreach with tracking |
 
-**This is the most common error - here's how to fix it:**
+### **Rate Limiting Intelligence**
 
-1. **Check .env.local file exists**: Make sure you have created `.env.local` in your project root
-2. **Verify Supabase credentials**: Ensure your `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are correct
-3. **Enable Google Provider**: In Supabase dashboard, go to Authentication → Providers → Enable Google
-4. **Add Google Credentials**: Make sure you've added Client ID and Secret to Supabase
-5. **Restart Dev Server**: After changing .env.local, restart with `npm run dev`
+The system intelligently manages API usage:
 
-### **❌ OAuth Redirect Errors**
-
-**"Invalid redirect URI" or similar OAuth errors:**
-
-1. **Check Google Cloud Settings**: Ensure all redirect URIs are added to Google Cloud Console
-2. **Verify Supabase URLs**: Make sure the Supabase callback URL is in Google's authorized redirects
-3. **Match Exactly**: URLs must match exactly (no trailing slashes, correct protocols)
-
-### **❌ "Missing environment variables"**
-
-**App crashes with environment variable errors:**
-
-1. **File Location**: Ensure `.env.local` is in the project root (same folder as `package.json`)
-2. **File Format**: No spaces around the `=` sign: `VITE_SUPABASE_URL="value"`
-3. **Restart Required**: Always restart dev server after changing environment variables
-
-### **❌ Google OAuth Setup Issues**
-
-**Google authentication not working:**
-
-1. **Enable APIs**: Make sure Google+ API is enabled in Google Cloud Console
-2. **Consent Screen**: Complete the OAuth consent screen configuration
-3. **Authorized Domains**: Add your Supabase domain to Google's authorized domains
-4. **Wait for Propagation**: Changes can take 5-10 minutes to propagate
-
-### **❌ AI Features Not Working**
-
-**Groq API or AI search not functioning:**
-
-1. **Check API Key**: Verify your Groq API key is correct and active
-2. **Rate Limits**: Ensure you haven't exceeded free tier limits
-3. **Fallback Mode**: Platform should still work with algorithmic alternatives
-
----
-
-## 🎮 **Using the Platform**
-
-### **Agentic AI Campaign Builder** 🤖
-
-Experience the future of influencer marketing automation:
-
-1. **Navigate to Agentic AI**: Click on "🤖 Agentic AI" in the sidebar
-2. **Configure Business Requirements**: Fill out your campaign needs in natural language
-3. **Set Outreach Preferences**: Choose number of creators to contact (3-10) and personalization level
-4. **Launch AI Agents**: Watch as 4 AI agents work together to build your campaign
-5. **Review Results**: Get complete campaign strategy, creator matches, and automatic outreach
-
-**Real-time Progress Tracking:**
-- 📋 Campaign strategy generation
-- 🔍 Creator discovery and filtering  
-- ⚡ Intelligent creator scoring
-- 📧 Automated outreach execution
-- ✅ Complete results with analytics
-
-### **Unified Creator Discovery**
-
-The creators page features a seamless, unified interface that combines:
-
-1. **Traditional Search & Filter**: Classic search with advanced filtering options
-2. **AI-Powered Natural Language Search** ⚡: Real LLM search with intelligent insights
-
-**Easy Mode Switching**: Toggle between search modes with a single click:
-- **Traditional Search**: Use filters for platform, niche, follower count, and text search
-- **AI Search**: Ask questions in natural language and get intelligent recommendations
-
-### **AI Search Features**
-
-- **Smart Query Processing**: Understands complex, multi-criteria requests
-- **Contextual Recommendations**: Considers campaign goals and brand alignment
-- **Detailed Reasoning**: Explains why each creator was recommended
-- **Dynamic Insights**: Real-time market analysis and suggestions
-- **Confidence Scoring**: Shows how certain the AI is about matches
+- **3 API calls maximum** per workflow execution
+- **Real-time monitoring** with visual feedback
+- **Smart prioritization** for highest-impact AI usage
+- **Seamless fallbacks** to maintain 100% functionality
+- **Educational messaging** about hybrid AI/algorithmic approach
 
 ## 🌟 **What Makes This Special**
 

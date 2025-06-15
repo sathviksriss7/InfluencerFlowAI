@@ -8,16 +8,32 @@ import Creators from './pages/creators'
 import CreatorProfile from './pages/creator-profile'
 import Campaigns from './pages/campaigns'
 import CreateCampaign from './pages/create-campaign'
+import CampaignDetailPage from './pages/campaign-detail'
+import CampaignEditPage from './pages/CampaignEditPage'
 import Negotiations from './pages/negotiations'
 import Contracts from './pages/contracts'
 import Payments from './pages/payments'
 import Analytics from './pages/analytics'
 import Outreaches from './pages/outreaches'
 import AgenticAI from './pages/agentic-ai'
+import { ToastContainer } from 'react-toastify'
+import 'react-toastify/dist/ReactToastify.css'
 
 function App() {
   return (
     <AuthProvider>
+      <ToastContainer
+        position="top-right"
+        autoClose={5000}
+        hideProgressBar={false}
+        newestOnTop={false}
+        closeOnClick
+        rtl={false}
+        pauseOnFocusLoss
+        draggable
+        pauseOnHover
+        theme="light"
+      />
       <Routes>
         {/* Public Routes */}
         <Route path="/login" element={<Login />} />
@@ -80,6 +96,26 @@ function App() {
             <ProtectedRoute>
               <Layout>
                 <CreateCampaign />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/campaigns/:campaignId"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <CampaignDetailPage />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/campaigns/:campaignId/edit"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <CampaignEditPage />
               </Layout>
             </ProtectedRoute>
           }
