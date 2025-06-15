@@ -12,6 +12,7 @@ from functools import wraps # For decorator
 from supabase import create_client, Client # Supabase client
 from datetime import datetime, timedelta, timezone # Added timezone
 import re # For date validation
+from postgrest.exceptions import APIError # IMPORTED APIError
 
 # Import Twilio and ElevenLabs
 from twilio.rest import Client as TwilioClient
@@ -107,19 +108,42 @@ MAX_TRANSCRIPTS_PER_OUTREACH = 3 # Store last 3 transcripts for context
 # Key: call_sid, Value: { recording_url: str, transcript: str, duration: str, outreach_id: str }
 call_artifacts_store = {}
 
+# Define the Niche Map at the module level (outside any function)
+NICHE_MAP = {
+    "ai in finance": ["finance", "technology", "fintech"],
+    "big data analytics": ["technology", "data science", "analytics"],
+    "cloud solutions": ["technology", "saas", "it infrastructure"],
+    "cloud solutions for enterprises": ["technology", "saas", "enterprise software", "b2b"],
+    "tech and automotive": ["technology", "automotive"],
+    "lifestyle and travel": ["lifestyle", "travel"],
+    "ai and big data": ["technology", "ai", "big data"],
+    # Add common niches from your mock data as keys if they might be specific inputs
+    "fitness": ["fitness", "health", "wellness"],
+    "health": ["health", "wellness", "medical"],
+    "lifestyle": ["lifestyle"],
+    "technology": ["technology", "tech"],
+    "gaming": ["gaming", "esports"],
+    "fashion": ["fashion", "style", "apparel"],
+    "food": ["food", "cooking", "culinary"],
+    "travel": ["travel", "tourism"],
+    "beauty": ["beauty", "skincare", "cosmetics"],
+    "education": ["education", "learning"],
+    "finance": ["finance", "fintech", "investing"],
+    "wellness": ["wellness", "health", "mindfulness"],
+    "yoga": ["yoga", "wellness", "fitness", "mindfulness"],
+    # ... add more mappings as needed based on typical AI campaign niche outputs
+    # and the niches present in your creator data.
+}
+
 # --- JWT Authentication Decorator ---
 def token_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # Allow OPTIONS requests to pass through without token validation (for CORS preflight)
-        if request.method == 'OPTIONS':
-            # Return a simple 200 OK response for OPTIONS.
-            # Flask-CORS will add the necessary Access-Control-Allow-* headers.
-            response = app.make_response(jsonify(message="OPTIONS request successful"))
-            response.status_code = 200
-            # Flask-CORS should automatically add headers like 'Access-Control-Allow-Origin',
-            # 'Access-Control-Allow-Methods', 'Access-Control-Allow-Headers' based on your CORS setup.
-            return response
+        # REMOVED: Explicit OPTIONS handling block. Flask-CORS will handle preflight requests.
+        # if request.method == 'OPTIONS':
+        #     response = app.make_response(jsonify(message="OPTIONS request successful"))
+        #     response.status_code = 200
+        #     return response
 
         token = None
         if "Authorization" in request.headers:
@@ -684,7 +708,7 @@ def handle_generate_outreach_message():
 # --- Helper: Build Campaign Generation Prompt (Python version) ---
 def build_campaign_generation_prompt(requirements_data):
     # Extracting data with defaults to prevent KeyErrors
-    company_name = requirements_data.get('companyName', '[Company Name]')
+    company_name = requirements_data.get('companyName', 'the client')
     # MODIFIED: Handle industry as a list, join for the prompt or use a default
     industry_list = requirements_data.get('industry', [])
     industry_str = ', '.join(industry_list) if industry_list else '[General Industry]'
@@ -693,7 +717,16 @@ def build_campaign_generation_prompt(requirements_data):
     business_goals = ", ".join(business_goals_list) if business_goals_list else '[Business Goals]'
     target_audience = requirements_data.get('targetAudience', '[Target Audience]')
     demographics = requirements_data.get('demographics', '[Demographics]') # Assuming this key might exist
-    campaign_objective = requirements_data.get('campaignObjective', '[Campaign Objective]')
+    
+    # Handle campaignObjective, ensuring it's a string for the prompt
+    campaign_objectives_input = requirements_data.get('campaignObjective', ['Not specified']) # Default to list with 'Not specified'
+    if isinstance(campaign_objectives_input, list):
+        campaign_objective_str_for_prompt = ", ".join(campaign_objectives_input) if campaign_objectives_input else 'Not specified'
+    elif isinstance(campaign_objectives_input, str):
+        campaign_objective_str_for_prompt = campaign_objectives_input if campaign_objectives_input else 'Not specified'
+    else:
+        campaign_objective_str_for_prompt = 'Not specified' # Fallback for unexpected types
+
     key_message = requirements_data.get('keyMessage', '[Key Message]') # Assuming this key might exist
     budget_min_req = requirements_data.get('budgetRange', {}).get('min', 0)
     budget_max_req = requirements_data.get('budgetRange', {}).get('max', 10000)
@@ -711,64 +744,86 @@ def build_campaign_generation_prompt(requirements_data):
     prompt = f"""You are an expert campaign strategist. Based on the following business requirements, generate a comprehensive and creative influencer marketing campaign plan.
 
 Business Requirements:
-- Company Name: {company_name}
-- Industry: {industry_str}  # MODIFIED to use industry_str
-- Product/Service: {product_service}
-- Business Goals: {business_goals}
-- Target Audience: {target_audience}
-- Demographics: {demographics}
-- Campaign Objective: {campaign_objective}
-- Key Message: {key_message}
-- Budget Range (Requirement): ₹{budget_min_req}-₹{budget_max_req}
-- Timeline: {timeline}
-- Preferred Platforms: {preferred_platforms}
-- Content Types: {content_types}
-- Special Requirements: {special_requirements}
+Company Name: {company_name}
+Industry: {requirements_data.get('industry', 'Not specified')}
+Product/Service: {requirements_data.get('productServiceName', 'Not specified')}
+Campaign Objective: {campaign_objective_str_for_prompt}
+Target Audience: {requirements_data.get('targetAudience', 'Not specified')}
+Key Message: {requirements_data.get('keyMessage', 'Not specified')}
+Budget Range: {requirements_data.get('budgetMin', 'N/A')} - {requirements_data.get('budgetMax', 'N/A')}
+Timeline: {requirements_data.get('timeline', 'Not specified')}
+Content Requirements/Deliverables: {", ".join(requirements_data.get('contentRequirements', ['Not specified']))}
+Preferred Platforms: {", ".join(requirements_data.get('platforms', ['Not specified']))}
+Geographic Focus: {", ".join(requirements_data.get('locations', ['Not specified']))}
+Tone/Voice: {requirements_data.get('toneOfVoice', 'Professional and engaging')}
+Existing Brand Guidelines: {requirements_data.get('brandGuidelines', 'None specified')}
+KPIs for Success: {", ".join(requirements_data.get('kpis', ['Not specified']))}
 
 CAMPAIGN GENERATION REQUIREMENTS:
-1. STRATEGIC TITLE: Create compelling campaign title (5-8 words)
-2. PLATFORM OPTIMIZATION: Choose 2-4 platforms based on audience and objectives
-3. AUDIENCE SIZING: Determine optimal follower count requirements (e.g., 10000+)
-4. NICHE TARGETING: Select 2-5 relevant content niches
-5. GEO-TARGETING: Choose appropriate locations (default to India if not specified)
-6. DELIVERABLE STRATEGY: Design content mix (e.g., Instagram Posts, Stories, Reels)
-7. BUDGET OPTIMIZATION: Distribute budget efficiently (provide a range, e.g., budgetMin, budgetMax based on requirement)
-8. TIMELINE PLANNING: Set realistic start/end/application deadlines (YYYY-MM-DD format)
-9. SUCCESS METRICS & AI INSIGHTS: Define KPIs, success factors, potential challenges, and optimization suggestions.
+Your response MUST be a single, valid JSON object and NOTHING ELSE.
+NO INTRODUCTORY TEXT. NO EXPLANATIONS. NO MARKDOWN CODE FENCES (```json or ```).
+ADHERE STRICTLY TO THE JSON FORMAT AND ALL SYNTAX RULES.
 
-PLATFORM DECISION MATRIX (Consider these):
-- Instagram: Visual products, lifestyle, fashion, food, travel
-- YouTube: Educational, tech reviews, detailed demos, storytelling
-- TikTok: Gen Z audience, viral content, entertainment, challenges
-- LinkedIn: B2B, professional services, thought leadership
-- Twitter: News, tech, real-time engagement
+JSON Structure and Rules:
+1.  **`title` (String)**: Catchy and descriptive. Must be a single string in double quotes (e.g., "My Awesome Campaign").
+2.  **`brand` (String)**: Brand name for the campaign (use "{company_name}"). Must be a single string in double quotes.
+3.  **`description` (String)**: Short, compelling overview (2-3 sentences). Must be a single string in double quotes.
+4.  **`brief` (String)**: Detailed brief (3-5 sentences) expanding on the objective and target audience. Must be a single string in double quotes. Do NOT use arrays or lists for this field.
+5.  **`platforms` (Array of Strings)**: Recommended platforms. Must be a JSON array of strings (e.g., ["Instagram", "YouTube", "TikTok"]). Each string in the array must be in double quotes.
+6.  **`minFollowers` (Integer)**: Suggested minimum follower count for influencers (e.g., 5000).
+7.  **`niches` (Array of Strings)**: Target influencer niches. Must be a JSON array of strings (e.g., ["Technology", "Finance", "AI"]).
+8.  **`locations` (Array of Strings)**: Target geographic locations for influencers. Must be a JSON array of strings (e.g., ["USA", "Global"]).
+9.  **`deliverables` (Array of Strings)**: Specific content deliverables. Must be a JSON array of strings (e.g., ["1 Instagram Post", "2 Stories"]).
+10. **`budgetMin` (Integer)**: Estimated minimum budget for the campaign (USD) (e.g., 5000).
+11. **`budgetMax` (Integer)**: Estimated maximum budget for the campaign (USD) (e.g., 15000).
+12. **`startDate` (String)**: "YYYY-MM-DD" format (e.g., "2024-08-01"). Must be a single string in double quotes.
+13. **`endDate` (String)**: "YYYY-MM-DD" format (e.g., "2024-09-30"). Must be a single string in double quotes.
+14. **`applicationDeadline` (String)**: "YYYY-MM-DD" format (e.g., "2024-07-15"). Must be a single string in double quotes.
+15. **`aiInsights` (Object)**: Detailed AI-driven analysis. This MUST be a JSON object containing the following keys:
+    *   `strategy` (String): Overall strategic approach. Must be a single string in double quotes.
+    *   `reasoning` (String): Justification for choices. Must be a single string in double quotes.
+    *   `successFactors` (Array of Strings): Key elements for success. Must be a JSON array of strings.
+    *   `potentialChallenges` (Array of Strings): Foreseeable obstacles. Must be a JSON array of strings.
+    *   `optimizationSuggestions` (Array of Strings): Tips for improvement. Must be a JSON array of strings.
+16. **`confidence` (Float)**: Your confidence in this campaign plan (0.0 to 1.0, e.g., 0.9).
 
-Generate response in this EXACT JSON format. Ensure all strings are double-quoted and all values are valid JSON types:
+CRITICAL JSON SYNTAX REMINDERS:
+- Every key MUST be in double quotes (e.g., "title").
+- Every string value MUST be in double quotes (e.g., "My Campaign"). This includes all items within arrays of strings.
+- Key-value pairs are separated by a colon (`:`). (e.g., "title": "My Campaign").
+- Pairs are separated by commas (`,`). THE LAST PAIR IN AN OBJECT OR THE LAST ITEM IN AN ARRAY SHOULD NOT HAVE A TRAILING COMMA.
+- JSON objects are enclosed in curly braces (`{{` and `}}`).
+- JSON arrays are enclosed in square brackets (`[` and `]`).
+
+Example of the REQUIRED JSON output format:
+```json
 {{
-  "title": "Strategic campaign title",
+  "title": "Example Campaign: AI for Small Business Growth",
   "brand": "{company_name}",
-  "description": "Compelling 2-3 sentence campaign description",
-  "brief": "Detailed campaign brief (200-300 words) including objectives, messaging, audience insights, and success metrics",
-  "platforms": ["platform1", "platform2"],
-  "minFollowers": 10000,
-  "niches": ["niche1", "niche2", "niche3"],
-  "locations": ["India"], 
-  "deliverables": ["Instagram Posts", "Stories"],
-  "budgetMin": {budget_min_ai},
-  "budgetMax": {budget_max_ai},
-  "startDate": "YYYY-MM-DD",
-  "endDate": "YYYY-MM-DD", 
-  "applicationDeadline": "YYYY-MM-DD",
+  "description": "A dynamic campaign to promote AI solutions for SMBs, driving adoption and engagement.",
+  "brief": "This campaign targets small to medium-sized business owners and decision-makers, educating them on the benefits of AI tools for marketing, operations, and customer service. The goal is to generate leads and establish the brand as a leader in AI for SMBs.",
+  "platforms": ["LinkedIn", "YouTube"],
+  "minFollowers": 5000,
+  "niches": ["Small Business", "Entrepreneurship", "Marketing Technology", "AI"],
+  "locations": ["USA", "Canada"],
+  "deliverables": ["2 LinkedIn Articles", "1 Explainer Video on YouTube", "3 Short LinkedIn Posts"],
+  "budgetMin": 5000,
+  "budgetMax": 15000,
+  "startDate": "2024-08-01",
+  "endDate": "2024-09-30",
+  "applicationDeadline": "2024-07-15",
   "aiInsights": {{
-    "strategy": "Strategic approach explanation",
-    "reasoning": "Why these choices were made based on requirements",
-    "successFactors": ["factor1", "factor2", "factor3"],
-    "potentialChallenges": ["challenge1", "challenge2"],
-    "optimizationSuggestions": ["suggestion1", "suggestion2"]
+    "strategy": "Focus on educational content showcasing real-world AI applications for SMBs. Partner with influencers who are trusted voices in the small business community.",
+    "reasoning": "SMB owners respond well to practical advice and case studies. LinkedIn is key for B2B, YouTube for deeper explanations.",
+    "successFactors": ["High-quality educational content", "Credible influencers with engaged SMB audiences", "Clear call-to-action for lead generation"],
+    "potentialChallenges": ["Cutting through the noise in the AI space", "Ensuring content is accessible and not overly technical"],
+    "optimizationSuggestions": ["Run A/B tests on LinkedIn ad copy", "Host a Q&A webinar with an influencer", "Repurpose video content into short clips for social media"]
   }},
-  "confidence": 0.85 
+  "confidence": 0.9
 }}
-Ensure the entire response is a single, valid JSON object with no extra text, and all strings are properly quoted and elements correctly comma-separated. Dates should be placeholders like YYYY-MM-DD unless specific dates can be inferred.
+```
+
+Now, generate the campaign plan. Remember, ONLY the JSON object.
 """
     return prompt
 
@@ -776,8 +831,19 @@ Ensure the entire response is a single, valid JSON object with no extra text, an
 def generate_fallback_campaign_py(requirements_data):
     print("🤖 Campaign Agent (Backend): Generating campaign using OFFLINE algorithmic strategy...")
     company_name = requirements_data.get('companyName', '[Company]')
-    campaign_objective_list = requirements_data.get('campaignObjective', 'Achieve Goal').split(' ')
-    campaign_objective_short = campaign_objective_list[0] if campaign_objective_list else 'Campaign'
+    
+    campaign_objective_input = requirements_data.get('campaignObjective') 
+
+    campaign_objective_short_for_title = "Campaign" # Default for title
+    campaign_objective_str_for_description = "achieve business objectives" # Default for description
+
+    if isinstance(campaign_objective_input, list) and campaign_objective_input: # If it's a non-empty list
+        campaign_objective_short_for_title = campaign_objective_input[0] # Use the first objective string
+        campaign_objective_str_for_description = ", ".join(campaign_objective_input)
+    elif isinstance(campaign_objective_input, str) and campaign_objective_input: # If it's a non-empty string
+        campaign_objective_short_for_title = campaign_objective_input
+        campaign_objective_str_for_description = campaign_objective_input
+    # If campaign_objective_input is None, empty list, empty string, or other type, the defaults will be used.
     
     industry_value = requirements_data.get('industry', 'General') # This can be a list or a string
     product_service = requirements_data.get('productService', '[Product/Service]')
@@ -807,9 +873,9 @@ def generate_fallback_campaign_py(requirements_data):
     niches = list(set([first_industry_niche, 'lifestyle']))
 
     return {
-        "title": f"{company_name} {campaign_objective_short} Fallback Campaign",
+        "title": f"{company_name} {campaign_objective_short_for_title} Fallback Campaign",
         "brand": company_name,
-        "description": f"Algorithmic fallback campaign to {requirements_data.get('campaignObjective', 'achieve objectives')} for {product_service}.",
+        "description": f"Algorithmic fallback campaign to {campaign_objective_str_for_description} for {product_service}.",
         "brief": f"This fallback campaign aims to support {company_name}'s objectives for {product_service} targeting {target_audience} using {', '.join(platforms)}.",
         "platforms": platforms,
         "minFollowers": 10000,
@@ -871,7 +937,10 @@ def save_campaign_to_db(campaign_payload, user_id, original_requirements, raw_jw
         "status": "active",  # AI campaigns default to 'active'
         "creation_method": "ai", # Mark as AI created
         "platforms": campaign_payload.get("platforms"),
-        "min_followers": campaign_payload.get("minFollowers") or campaign_payload.get("min_followers"),
+        # Use minFollowers if present from LLM, otherwise fall back to followers, then to min_followers (database column name convention if different)
+        "min_followers": campaign_payload.get("minFollowers") if campaign_payload.get("minFollowers") is not None 
+                         else campaign_payload.get("followers") if campaign_payload.get("followers") is not None 
+                         else campaign_payload.get("min_followers"), # Last check for direct db column name if somehow present
         "niches": campaign_payload.get("niches"),
         "locations": campaign_payload.get("locations"),
         "deliverables": campaign_payload.get("deliverables"),
@@ -986,27 +1055,74 @@ def handle_generate_campaign():
             ai_response_data = response.json()
             ai_message_content = ai_response_data['choices'][0]['message']['content']
             try:
-                json_str = ai_message_content 
-                json_start_index = ai_message_content.find('{')
-                json_end_index = ai_message_content.rfind('}')
-                if json_start_index != -1 and json_end_index != -1 and json_start_index < json_end_index:
-                    json_str = ai_message_content[json_start_index : json_end_index + 1]
+                json_str = None
+                # 1. Try to extract JSON from markdown code fence ```json ... ``` (case-insensitive for 'json')
+                match_md_json = re.search(r"```json\s*(\{.*?\})\s*```", ai_message_content, re.DOTALL | re.IGNORECASE)
+                if match_md_json:
+                    json_str = match_md_json.group(1)
+                    print("🤖 Campaign Agent (Backend): Extracted JSON from markdown code fence.")
                 else:
-                    if not (ai_message_content.strip().startswith("{") and ai_message_content.strip().endswith("}")):
-                        raise ValueError("Could not find a valid JSON block in AI response (no clear braces).")
-                    json_str = ai_message_content.strip()
-                content = json.loads(json_str)
-                if "body" in content and "message" not in content: content["message"] = content.pop("body")
-                if not all(k in content for k in ["title", "brand", "description", "platforms"]):
-                    raise ValueError("AI campaign response JSON missing required keys (title, brand, description, platforms)")
-                content['agentVersion'] = 'campaign-builder-py-v1.1'
+                    # 2. If no markdown, find the first '{' and last '}' as a broader fallback
+                    first_brace_index = ai_message_content.find('{')
+                    last_brace_index = ai_message_content.rfind('}')
+                    if first_brace_index != -1 and last_brace_index != -1 and first_brace_index < last_brace_index:
+                        json_str = ai_message_content[first_brace_index : last_brace_index + 1]
+                        print("🤖 Campaign Agent (Backend): Extracted JSON using first '{' and last '}'.")
+                
+                if not json_str:
+                    raise ValueError(f"Could not find any JSON-like block in AI response. Raw content prefix: {ai_message_content[:300]}")
+                
+                # 3. Basic cleaning of the extracted string - strip whitespace
+                json_str_cleaned = json_str.strip()
+                
+                # Ensure it still looks like a JSON object after stripping
+                if not (json_str_cleaned.startswith("{") and json_str_cleaned.endswith("}")):
+                    s_idx = json_str_cleaned.find('{')
+                    e_idx = json_str_cleaned.rfind('}')
+                    if s_idx != -1 and e_idx != -1 and s_idx < e_idx:
+                        json_str_cleaned = json_str_cleaned[s_idx : e_idx+1]
+                    else:
+                        raise ValueError(f"Extracted string block does not appear to be a valid JSON object. Snippet: {json_str_cleaned[:200]}")
+                
+                # 4. Attempt to parse
+                print(f"🤖 Campaign Agent (Backend): Attempting to parse THIS JSON string:\n---\n{json_str_cleaned}\n---") # ADDED LOG
+                content = json.loads(json_str_cleaned)
+                
+                if not isinstance(content, dict):
+                    raise ValueError(f"Parsed JSON is not a dictionary. Type: {type(content)}, Content snippet: {str(content)[:200]}")
+
+                # 5. Validate essential keys (Update these keys to match your exact expected JSON structure from the LLM prompt)
+                # Allow either 'minFollowers' (from prompt) or 'followers' (actual LLM output seen)
+                essential_keys_check = ["title", "brand", "description", "brief", "platforms", 
+                                 "niches", "locations", "deliverables", "budgetMin", 
+                                 "budgetMax", "startDate", "endDate", "applicationDeadline", "aiInsights"]
+                
+                has_minfollowers_key = "minFollowers" in content
+                has_followers_key = "followers" in content
+
+                if not (has_minfollowers_key or has_followers_key):
+                    # If neither key for followers is present, add one to missing_keys to trigger error
+                    missing_keys = [key for key in essential_keys_check if key not in content] # Re-check without follower keys first
+                    missing_keys.append("minFollowers_or_followers") # Indicate the specific lack of any follower key
+                else:
+                    missing_keys = [key for key in essential_keys_check if key not in content]
+
+                if missing_keys: # If there are still missing keys after aiInsights check
+                    raise ValueError(f"AI campaign response JSON missing required keys: {', '.join(missing_keys)}. Found keys: {list(content.keys())}")
+                
+                # Legacy adaptation (if still needed for some LLM responses)
+                if "body" in content and "message" not in content:
+                    content["message"] = content.pop("body")
+                
+                content['agentVersion'] = 'campaign-builder-py-v1.5' # increment version
                 content['generatedAt'] = datetime.now(timezone.utc).isoformat()
-                if 'confidence' not in content: content['confidence'] = 0.85
-                print(f"✨ Campaign Agent (Backend): AI campaign generated successfully: {content.get('title')}")
+                if 'confidence' not in content: content['confidence'] = 0.85 # Default confidence
+                
+                print(f"✨ Campaign Agent (Backend): AI campaign JSON successfully parsed & validated: {content.get('title')}")
                 campaign_to_save = content
                 generation_method = "ai_generated"
             except (json.JSONDecodeError, ValueError) as e_parse:
-                error_msg = f"Error parsing AI campaign JSON response: {e_parse}. Raw (first 500 chars): {ai_message_content[:500]}"
+                error_msg = f"Error parsing or validating AI campaign JSON response: {e_parse}. Raw content snippet (first 500 chars): {ai_message_content[:500]}"
                 print(error_msg)
                 error_during_generation = error_msg 
                 campaign_to_save = generate_fallback_campaign_py(requirements_data)
@@ -1193,6 +1309,7 @@ def handle_score_creator():
 
     campaign_data = data['campaign']
     creator_data = data['creator']
+    ai_message_content = "" # Initialize for robust logging in except block
 
     if not groq_api_key:
         print("🤖 Creator Scoring (Backend): Groq API key not configured. Using fallback scoring.")
@@ -1201,71 +1318,73 @@ def handle_score_creator():
 
     prompt = build_creator_scoring_prompt(campaign_data, creator_data)
     try:
-        print(f"🤖 Creator Scoring (Backend): Making AI API call for {creator_data.get('name', 'N/A')}...")
-        headers = {
-            "Authorization": f"Bearer {groq_api_key}",
-            "Content-Type": "application/json"
-        }
+        print(f"🤖 Creator Scoring (Backend): Making AI API call for {creator_data.get('name', 'N/A')}. Prompt length: {len(prompt)}")
+        headers = {"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"}
         payload = {
-            "model": "llama3-70b-8192",
+            "model": "llama3-8b-8192", # Switched to 8b for potentially better instruction following / JSON adherence
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.2, # More factual for scoring
-            "max_tokens": 1000 
+            "temperature": 0.2,
+            "max_tokens": 1500, 
+            "response_format": { "type": "json_object" }
         }
         
         response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
         response.raise_for_status()
         
         ai_response_data = response.json()
-        ai_message_content = ai_response_data['choices'][0]['message']['content']
+        ai_message_content = ai_response_data.get('choices', [{}])[0].get('message', {}).get('content', '')
+        print(f"🤖 Creator Scoring (Backend): Raw LLM response for {creator_data.get('name', 'N/A')}:\n{ai_message_content[:1000]}...")
         
-        try:
-            json_str = ai_message_content # Default to the full content
-            # Attempt to strip markdown fences if present
-            if ai_message_content.strip().startswith("```json"):
-                # Find the start of the actual JSON after the ```json
-                json_block_start = ai_message_content.find('{')
-                # Find the end of the JSON before the closing ```
-                json_block_end = ai_message_content.rfind('}')
-                if json_block_start != -1 and json_block_end != -1 and json_block_start < json_block_end:
-                    json_str = ai_message_content[json_block_start : json_block_end + 1]
-            elif ai_message_content.strip().startswith("{") and ai_message_content.strip().endswith("}"):
-                json_str = ai_message_content.strip() # It's already a JSON string (hopefully)
-            else: # If no clear JSON structure, try finding the first { and last }
-                json_start_index = ai_message_content.find('{')
-                json_end_index = ai_message_content.rfind('}')
-                if json_start_index != -1 and json_end_index != -1 and json_start_index < json_end_index:
-                    json_str = ai_message_content[json_start_index : json_end_index + 1]
-                else:
-                    raise ValueError("Could not find any JSON-like block in AI response.")
+        json_str_cleaned = None
+        if ai_message_content.strip().startswith("{") and ai_message_content.strip().endswith("}"):
+            json_str_cleaned = ai_message_content.strip()
+        else: # Try to find JSON within markdown or preamble/postamble
+            match_md_json = re.search(r"```json\s*(\{.*?\})\s*```", ai_message_content, re.DOTALL | re.IGNORECASE)
+            if match_md_json:
+                json_str_cleaned = match_md_json.group(1).strip()
+                print(f"🤖 Creator Scoring (Backend): Extracted JSON from markdown for {creator_data.get('name', 'N/A')}.")
+            else:
+                first_brace = ai_message_content.find('{')
+                last_brace = ai_message_content.rfind('}')
+                if first_brace != -1 and last_brace != -1 and first_brace < last_brace:
+                    json_str_cleaned = ai_message_content[first_brace : last_brace + 1].strip()
+                    print(f"🤖 Creator Scoring (Backend): Extracted JSON using braces for {creator_data.get('name', 'N/A')}.")
+        
+        if not json_str_cleaned:
+            raise ValueError(f"Could not find any JSON-like block in AI response for {creator_data.get('name', 'N/A')}. Raw: {ai_message_content[:300]}")
 
-            content = json.loads(json_str) 
+        print(f"🤖 Creator Scoring (Backend): Attempting to parse THIS JSON for {creator_data.get('name', 'N/A')}:\n---\n{json_str_cleaned}\n---")
+        content = json.loads(json_str_cleaned)
+        
+        if not isinstance(content, dict):
+            raise ValueError(f"Parsed JSON for scoring is not a dictionary for {creator_data.get('name', 'N/A')}.")
+
+        # Validate essential keys for the scoring response
+        required_keys = ["score", "reasoning", "strengths", "concerns", "fitAnalysis", "recommendedAction", "estimatedPerformance"]
+        missing_keys = [key for key in required_keys if key not in content]
+        if missing_keys:
+            raise ValueError(f"AI scoring response JSON missing required keys: {', '.join(missing_keys)} for {creator_data.get('name', 'N/A')}. Found keys: {list(content.keys())}")
+        
+        # Further validation for nested structures can be added if needed
+        # e.g., if not isinstance(content.get('fitAnalysis'), dict) or not content.get('fitAnalysis').get('audienceAlignment'): ...
             
-            # Adapt the 'body' field from AI to 'message' for consistent response structure with other endpoints
-            if "body" in content and "message" not in content:
-                content["message"] = content.pop("body")
+        print(f"✅ Creator Scoring (Backend): AI score generated and validated for {creator_data.get('name', 'N/A')}: {content.get('score')}")
+        return jsonify({"success": True, "creatorMatch": content, "method": "ai_generated"})
 
-            # Basic validation for expected keys after adaptation
-            if not all(k in content for k in ["score", "reasoning", "recommendedAction"]):
-                raise ValueError("AI scoring response JSON missing required keys")
-            
-            print(f"✅ Creator Scoring (Backend): AI score generated for {creator_data.get('name', 'N/A')}: {content.get('score')}")
-            # The CreatorMatch object might be more complex, this returns the AI's direct output
-            # The frontend might still do some final assembly of the full CreatorMatch object if needed
-            return jsonify({"success": True, "creatorMatch": content, "method": "ai_generated"})
-        except (json.JSONDecodeError, ValueError) as e:
-            print(f"Error parsing AI scoring JSON response: {e}. Raw: {ai_message_content}")
-            fallback_match_data = generate_fallback_scoring_py(campaign_data, creator_data)
-            return jsonify({"success": True, "creatorMatch": fallback_match_data, "method": "algorithmic_fallback", "error": "AI response parsing failed, using fallback."})
-
-    except requests.exceptions.RequestException as e:
-        print(f"Groq API request failed for creator scoring: {e}")
+    except (json.JSONDecodeError, ValueError) as e_parse_validate:
+        print(f"❌ Error parsing/validating AI scoring JSON for {creator_data.get('name', 'N/A')}: {e_parse_validate}. Raw content snippet: {ai_message_content[:500]}")
         fallback_match_data = generate_fallback_scoring_py(campaign_data, creator_data)
-        return jsonify({"success": True, "creatorMatch": fallback_match_data, "method": "algorithmic_fallback", "error": str(e)})
-    except Exception as e:
-        print(f"An unexpected error occurred during AI creator scoring: {e}")
+        return jsonify({"success": True, "creatorMatch": fallback_match_data, "method": "algorithmic_fallback", "error_details": str(e_parse_validate)})
+    except requests.exceptions.RequestException as e_req:
+        print(f"❌ Groq API request failed for creator scoring for {creator_data.get('name', 'N/A')}: {e_req}")
         fallback_match_data = generate_fallback_scoring_py(campaign_data, creator_data)
-        return jsonify({"success": True, "creatorMatch": fallback_match_data, "method": "algorithmic_fallback", "error": "Unexpected backend error during AI creator scoring."})
+        return jsonify({"success": True, "creatorMatch": fallback_match_data, "method": "algorithmic_fallback", "error_details": str(e_req)})
+    except Exception as e_gen:
+        print(f"❌ Unexpected error during AI creator scoring for {creator_data.get('name', 'N/A')}: {e_gen}")
+        import traceback
+        traceback.print_exc()
+        fallback_match_data = generate_fallback_scoring_py(campaign_data, creator_data)
+        return jsonify({"success": True, "creatorMatch": fallback_match_data, "method": "algorithmic_fallback", "error_details": str(e_gen)})
 
 # --- Helper: Build Creator Query Analysis Prompt (Python version) ---
 def build_creator_query_analysis_prompt(user_query_text, conversation_context_text=None):
@@ -1425,65 +1544,33 @@ def handle_analyze_creator_query():
 # --- Helper: Build Initial Outreach Prompt (Python version) ---
 def build_initial_outreach_prompt_py(creator_data, brand_info_data, campaign_context_str):
     creator_name = creator_data.get('name', '[Creator Name]')
-    creator_username = creator_data.get('username', '[username]')
     creator_platform = creator_data.get('platform', '[Platform]')
-    creator_followers = creator_data.get('metrics', {}).get('followers', 0)
-    creator_engagement = creator_data.get('metrics', {}).get('engagementRate', 0)
-    creator_niches = ", ".join(creator_data.get('niche', []))
-    creator_location = creator_data.get('location', '[Location]')
-    creator_rating = creator_data.get('rating', 0)
-    creator_response_time = creator_data.get('responseTime', '[Response Time]')
-    creator_verified = "Verified ✓" if creator_data.get('verified') else "Not verified"
-    creator_post_rate = creator_data.get('rates', {}).get('post', 0)
+    # ... (other variable extractions for context are fine) ...
 
-    brand_name = brand_info_data.get('name', '[Brand Name]')
-    brand_industry = brand_info_data.get('industry', '[Industry]')
-    brand_campaign_goals = ", ".join(brand_info_data.get('campaignGoals', []))
-    brand_budget_min = brand_info_data.get('budget', {}).get('min', 0)
-    brand_budget_max = brand_info_data.get('budget', {}).get('max', 0)
-    brand_timeline = brand_info_data.get('timeline', '[Timeline]')
-    brand_deliverables = ", ".join(brand_info_data.get('contentRequirements', []))
+    prompt = f"""You are an AI tasked with generating a JSON object for an outreach email.
 
-    prompt = f"""You are an expert influencer marketing strategist. Generate a highly personalized, compelling outreach email.
+Use the following CREATOR PROFILE and BRAND COLLABORATION details to craft the email content:
+CREATOR NAME: {creator_name}
+CREATOR PLATFORM: {creator_platform}
+CAMPAIGN CONTEXT: {campaign_context_str}
+BRAND NAME: {brand_info_data.get('name', '[Brand Name]')}
+CAMPAIGN OBJECTIVES: {", ".join(brand_info_data.get('campaignGoals', []))}
+DELIVERABLES: {", ".join(brand_info_data.get('contentRequirements', []))}
 
-CREATOR PROFILE:
-- Name: {creator_name} (@{creator_username})
-- Platform: {creator_platform}
-- Followers: {creator_followers:,}
-- Engagement: {creator_engagement}% ({'HIGH' if creator_engagement > 3 else 'GOOD' if creator_engagement > 1.5 else 'NEEDS IMPROVEMENT'})
-- Niches: {creator_niches}
-- Location: {creator_location}
-- Rating: {creator_rating}/5
-- Response Time: {creator_response_time}
-- Verified: {creator_verified}
-- Est. Rate: ₹{creator_post_rate:,}
+IMPORTANT INSTRUCTIONS:
+1. Your entire response MUST be a single, valid JSON object.
+2. DO NOT include any text before or after the JSON object (e.g., no "Here is the JSON:" or ```json markdown).
+3. The JSON object MUST contain exactly two keys: "subject" and "message".
+4. The value for "subject" MUST be a string suitable for an email subject line.
+5. The value for "message" MUST be a string containing the full email body. This string can include newlines (which should be represented as \n in the JSON string value).
 
-BRAND COLLABORATION:
-- Brand: {brand_name}
-- Industry: {brand_industry}
-- Campaign Objectives: {brand_campaign_goals}
-- Budget: ₹{brand_budget_min:,} - ₹{brand_budget_max:,}
-- Timeline: {brand_timeline}
-- Deliverables: {brand_deliverables}
-- Campaign Context: {campaign_context_str}
-
-OUTREACH STRATEGY:
-1. PERSONALIZATION: Reference specific content or achievements.
-2. VALUE PROPOSITION: Clear mutual benefits.
-3. ENGAGEMENT: Acknowledge audience quality.
-4. TONE: Respectful, enthusiastic, not pushy.
-5. NEXT STEPS: Clear call-to-action.
-
-JSON Response Format (ONLY JSON, no other text):
+Example of the REQUIRED JSON output format:
 {{
-  "subject": "Compelling subject line (6-10 words, e.g., Collaboration: {brand_name} x {creator_name}?)",
-  "body": "Personalized email (200-300 words): Greeting, personalized intro, brand opportunity, why they fit, benefits, next steps, closing.",
-  "reasoning": "Strategic explanation of personalization and messaging choices for this specific creator.",
-  "keyPoints": ["Personalization element 1", "Value prop 1", "Relationship building tactic"],
-  "nextSteps": ["Creator action (e.g., Reply with availability)", "Brand action (e.g., Send detailed brief)"],
-  "confidence": 0.90
+  "subject": "Collaboration for {campaign_context_str} with {brand_info_data.get('name', '[Brand Name]')}",
+  "message": "Hi {creator_name},\n\nI saw your content on {creator_platform} and was impressed. We at {brand_info_data.get('name', '[Brand Name]')} are running a campaign for '{campaign_context_str}' about {brand_info_data.get('campaignGoals', [])[0] if brand_info_data.get('campaignGoals') else 'our new initiative'}. We think you'd be a great fit to help create {brand_info_data.get('contentRequirements', [])[0] if brand_info_data.get('contentRequirements') else 'engaging content'}.\n\nWould you be interested in discussing this?\n\nThanks,\n[Your Name]"
 }}
-Focus on authentic connection for long-term partnership.
+
+Generate ONLY the JSON object now based on the CREATOR and BRAND details provided above.
 """
     return prompt
 
@@ -1513,6 +1600,10 @@ The {brand_name} Team"""
 @token_required
 def handle_generate_initial_outreach():
     data = request.json
+    # Add null checks for data and its properties if necessary
+    if not data or not data.get('creator') or not data.get('brandInfo') or not data.get('campaignContext'):
+        return jsonify({"success": False, "error": "Missing required data for initial outreach."}), 400
+
     creator_data = data['creator']
     brand_info_data = data['brandInfo']
     campaign_context_str = data['campaignContext']
@@ -1523,54 +1614,68 @@ def handle_generate_initial_outreach():
         return jsonify({"success": True, **fallback_content, "method": "algorithmic_fallback"})
 
     prompt = build_initial_outreach_prompt_py(creator_data, brand_info_data, campaign_context_str)
-    try: # Outer try for the API call and subsequent processing
-        print(f"🤖 Initial Outreach (Backend): Calling Groq for {creator_data.get('name', 'N/A')}")
+    ai_message_content = "" # Initialize to ensure it's defined for the except block's logging
+    try:
+        print(f"🤖 Initial Outreach (Backend): Calling Groq for {creator_data.get('name', 'N/A')}. Prompt length: {len(prompt)}")
         headers = {"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"}
-        payload = {"model": "llama3-70b-8192", "messages": [{"role": "user", "content": prompt}], "temperature": 0.4, "max_tokens": 1000}
+        # Using a model known for good instruction following and JSON output if available
+        payload = {"model": "llama3-8b-8192", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 1024, "response_format": { "type": "json_object" } }
         
         response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
         response.raise_for_status()
         
         ai_response_data = response.json()
-        ai_message_content = ai_response_data['choices'][0]['message']['content']
-        
-        try: # Inner try for JSON parsing
-            # More aggressive cleaning: find the first '{' and last '}'
-            first_brace = ai_message_content.find('{')
-            last_brace = ai_message_content.rfind('}')
+        ai_message_content = ai_response_data.get('choices', [{}])[0].get('message', {}).get('content', '')
+        print(f"🤖 Initial Outreach (Backend): Raw LLM response for {creator_data.get('name', 'N/A')}:\n{ai_message_content[:1000]}...")
 
-            if first_brace != -1 and last_brace != -1 and first_brace < last_brace:
-                json_str = ai_message_content[first_brace : last_brace + 1]
+        if not ai_message_content.strip().startswith("{") or not ai_message_content.strip().endswith("}"):
+            # Attempt to find the JSON block if there's preamble/postamble
+            match_md_json = re.search(r"```json\s*(\{.*?\})\s*```", ai_message_content, re.DOTALL | re.IGNORECASE)
+            if match_md_json:
+                json_str_cleaned = match_md_json.group(1).strip()
+                print(f"🤖 Initial Outreach (Backend): Extracted JSON from markdown for {creator_data.get('name', 'N/A')}.")
             else:
-                # If we can't find a clear start and end, the content is likely not usable JSON
-                raise ValueError(f"Could not find a valid JSON block (no clear '{{' and '}}' boundaries). Raw content snippet: {ai_message_content[:100]}")
-            
-            content = json.loads(json_str) # Attempt to parse the extracted string
-            
-            # Adapt the 'body' field from AI to 'message' for consistent response structure
-            if "body" in content and "message" not in content:
-                content["message"] = content.pop("body")
+                first_brace_index = ai_message_content.find('{')
+                last_brace_index = ai_message_content.rfind('}')
+                if first_brace_index != -1 and last_brace_index != -1 and first_brace_index < last_brace_index:
+                    json_str_cleaned = ai_message_content[first_brace_index : last_brace_index + 1].strip()
+                    print(f"🤖 Initial Outreach (Backend): Extracted JSON using braces for {creator_data.get('name', 'N/A')}.")
+                else:
+                    raise ValueError(f"Could not find a valid JSON block. Raw: {ai_message_content[:300]}")
+        else:
+            json_str_cleaned = ai_message_content.strip()
 
-            # Basic validation for expected keys after adaptation
-            if not all(k in content for k in ["subject", "message"]):
-                raise ValueError(f"AI initial outreach response JSON missing required keys (subject, message) after adaptation. Keys found: {list(content.keys())}")
-            
-            return jsonify({"success": True, **content, "method": "ai_generated"})
-        except (json.JSONDecodeError, ValueError) as e:
-            print(f"Error parsing AI initial outreach JSON: {e}. Raw content received: {ai_message_content}")
-            fallback_content = generate_fallback_initial_outreach_py(creator_data, brand_info_data, campaign_context_str)
-            return jsonify({"success": True, **fallback_content, "method": "algorithmic_fallback", "error": f"AI response parsing failed ({e}), using fallback."})
+        print(f"🤖 Initial Outreach (Backend): Attempting to parse THIS JSON for {creator_data.get('name', 'N/A')}:\n---\n{json_str_cleaned}\n---")
+        content = json.loads(json_str_cleaned)
+        
+        if not isinstance(content, dict):
+             raise ValueError(f"Parsed JSON is not a dictionary for {creator_data.get('name', 'N/A')}. Type: {type(content)}")
 
-    except requests.exceptions.RequestException as e:
-        print(f"Groq API request failed for initial outreach: {e}")
+        if "body" in content and "message" not in content: content["message"] = content.pop("body")
+        required_keys = ["subject", "message"]
+        missing_keys = [key for key in required_keys if key not in content]
+        if missing_keys:
+            raise ValueError(f"AI initial outreach JSON missing required keys: {', '.join(missing_keys)} for {creator_data.get('name', 'N/A')}. Found: {list(content.keys())}")
+        if not isinstance(content["subject"], str) or not isinstance(content["message"], str):
+            raise ValueError(f"'subject' or 'message' is not a string for {creator_data.get('name', 'N/A')}.")
+        
+        # Correctly unindented return statement:
+        return jsonify({"success": True, **content, "method": "ai_generated"})
+
+    except (json.JSONDecodeError, ValueError) as e_parse_validate:
+        print(f"❌ Error parsing/validating AI initial outreach JSON for {creator_data.get('name', 'N/A')}: {e_parse_validate}. Raw content snippet: {ai_message_content[:500]}")
         fallback_content = generate_fallback_initial_outreach_py(creator_data, brand_info_data, campaign_context_str)
-        return jsonify({"success": True, **fallback_content, "method": "algorithmic_fallback", "error": str(e)})
-    except Exception as e:
-        print(f"Unexpected error during AI initial outreach: {e}")
+        return jsonify({"success": True, **fallback_content, "method": "algorithmic_fallback", "error_details": str(e_parse_validate)})
+    except requests.exceptions.RequestException as e_req:
+        print(f"❌ Groq API request failed for initial outreach for {creator_data.get('name', 'N/A')}: {e_req}")
+        fallback_content = generate_fallback_initial_outreach_py(creator_data, brand_info_data, campaign_context_str)
+        return jsonify({"success": True, **fallback_content, "method": "algorithmic_fallback", "error_details": str(e_req)})
+    except Exception as e_gen:
+        print(f"❌ Unexpected error during AI initial outreach for {creator_data.get('name', 'N/A')}: {e_gen}")
         import traceback
         traceback.print_exc() 
         fallback_content = generate_fallback_initial_outreach_py(creator_data, brand_info_data, campaign_context_str)
-        return jsonify({"success": True, **fallback_content, "method": "algorithmic_fallback", "error": "Unexpected backend error."})
+        return jsonify({"success": True, **fallback_content, "method": "algorithmic_fallback", "error_details": str(e_gen)})
 
 # --- Helper: Determine Follow-up Strategy (Python version) ---
 def determine_follow_up_strategy_py(days_since_last_contact, _previous_email_type):
@@ -2960,6 +3065,254 @@ def transform_campaign_for_frontend(campaign_data):
         "applicants": campaign_data.get('applicants', 0), # Placeholder, assuming you might add this
         "selected": campaign_data.get('selected', 0)     # Placeholder
     }
+
+def get_common_creator_niche_examples():
+    # This list should be representative of the general niche terms used in your 'creators' table.
+    # Curate this list based on your actual creator data for best results.
+    return ["adventure","ai","animals","art","beauty","business","cooking","crafts","creativity","dance","design","diy","education","entertainment","entrepreneurship","family","fashion","finance","fitness","food","gaming","health","home","home improvement","investing","lifestyle","music","outdoor","parenting","pets","photography","productivity","programming","science","skincare","sports","streetwear","sustainability","technology","travel","wellness","yoga"]
+
+
+
+def build_niche_reinterpretation_prompt(specific_niches: list[str], common_niche_examples: list[str]) -> str:
+    prompt = f"""You are an expert in categorizing content niches.
+Given a list of specific campaign niches: {json.dumps(specific_niches)}
+And a list of common creator niche examples: {json.dumps(common_niche_examples)}
+
+Your task is to identify which of the common creator niche examples are relevant broader categories or direct matches for the given specific campaign niches.
+Consider semantic similarity and hierarchical relationships (e.g., "AI in Finance" is related to both "Technology" and "Finance").
+
+Return your answer as a JSON list of strings, containing only the relevant common niche examples from the provided list. 
+If a specific campaign niche is already very common and present in the examples, include it.
+If no common niche examples seem relevant, return an empty list.
+
+Example:
+Specific Campaign Niches: ["Sustainable Dog Food", "Luxury Pet Travel Accessories"]
+Common Creator Niche Examples: ["pets", "food", "travel", "luxury", "sustainability", "fashion"]
+Expected JSON Output: ["pets", "food", "travel", "luxury", "sustainability"]
+
+Ensure your output is ONLY the JSON list of strings and nothing else.
+"""
+    return prompt
+
+def get_broader_creator_niches_with_llm(specific_niches: list[str]):
+    global groq_api_key
+    if not groq_api_key or not specific_niches:
+        print("⚠️ LLM Niche Reinterpretation: Groq API key missing or no specific niches provided. Returning original niches.")
+        return [n.lower() for n in specific_niches] # Fallback to original specific niches (lowercased)
+
+    common_examples = get_common_creator_niche_examples()
+    prompt = build_niche_reinterpretation_prompt(specific_niches, common_examples)
+    
+    print(f"🧠 LLM Niche Reinterpretation: Calling Groq with prompt for niches: {specific_niches}")
+    headers = {"Authorization": f"Bearer {groq_api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": "llama3-8b-8192", # Using a smaller, faster model for this task
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2, # Low temperature for more deterministic categorization
+        "max_tokens": 500,
+        "response_format": { "type": "json_object" } # Request JSON output if model supports
+    }
+    
+    try:
+        response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
+        response.raise_for_status()
+        ai_response_data = response.json()
+        
+        response_content = ai_response_data.get('choices', [{}])[0].get('message', {}).get('content', '')
+        if not response_content:
+            raise ValueError("LLM response content for niche reinterpretation is empty.")
+
+        print(f"💬 LLM Niche Reinterpretation: Raw response content: {response_content}")
+        
+        # LLM should return a JSON string that is a list, e.g., '["tech", "finance"]'
+        # We need to parse this string into a Python list.
+        try:
+            # The response_content itself might be a stringified JSON list.
+            # Or, if the LLM wraps it in a JSON object (due to response_format: { "type": "json_object" })
+            # we need to extract the list from that object.
+            parsed_outer_json = json.loads(response_content)
+            broader_niches_from_llm = []
+            if isinstance(parsed_outer_json, list):
+                broader_niches_from_llm = [str(n).lower() for n in parsed_outer_json if isinstance(n, str)]
+            elif isinstance(parsed_outer_json, dict):
+                # Try to find a list within the dict, e.g., under a key like 'relevant_niches' or 'result'
+                # This depends on how the LLM structures its JSON object output.
+                # For now, let's assume it might return a list directly or a simple object containing one.
+                # This part might need adjustment based on actual LLM output with response_format json_object
+                for key in parsed_outer_json:
+                    if isinstance(parsed_outer_json[key], list):
+                        broader_niches_from_llm = [str(n).lower() for n in parsed_outer_json[key] if isinstance(n, str)]
+                        break # Take the first list found
+                if not broader_niches_from_llm:
+                    print(f"⚠️ LLM Niche Reinterpretation: LLM returned a JSON object, but no identifiable list of niches found. Object: {parsed_outer_json}")
+
+            if not broader_niches_from_llm: # If parsing failed or list is empty
+                 print(f"⚠️ LLM Niche Reinterpretation: Parsed list is empty or invalid. Raw: {response_content}. Using original niches.")
+                 return [n.lower() for n in specific_niches]
+
+            print(f"✅ LLM Niche Reinterpretation: Successfully reinterpreted to: {broader_niches_from_llm}")
+            return broader_niches_from_llm
+        except json.JSONDecodeError as e_json_inner:
+            print(f"❌ LLM Niche Reinterpretation: Failed to decode JSON list from LLM response content. Error: {e_json_inner}. Content: {response_content}. Using original niches.")
+            return [n.lower() for n in specific_niches]
+
+    except requests.exceptions.RequestException as e_req:
+        print(f"❌ LLM Niche Reinterpretation: API request failed: {e_req}. Using original niches.")
+        return [n.lower() for n in specific_niches]
+    except Exception as e_gen:
+        print(f"❌ LLM Niche Reinterpretation: General error: {e_gen}. Using original niches.")
+        return [n.lower() for n in specific_niches]
+
+@app.route('/api/creators/discover', methods=['POST'])
+@token_required
+def discover_creators():
+    if not supabase_client or not hasattr(supabase_client, 'postgrest'):
+        return jsonify({"success": False, "error": "Supabase client not configured."}), 500
+
+    criteria = request.json
+    if not criteria:
+        return jsonify({"success": False, "error": "No discovery criteria provided."}), 400
+
+    print(f"ℹ️ Creator Discovery - Original criteria: {criteria}")
+
+    active_client_for_query = supabase_admin_client if supabase_admin_client else supabase_client
+    original_postgrest_headers = None
+    if not supabase_admin_client:
+        original_postgrest_headers = active_client_for_query.postgrest.session.headers.copy()
+        active_client_for_query.postgrest.auth(request.raw_jwt)
+    
+    query_builder = active_client_for_query.table('creators').select('*')
+
+    # Location Filter
+    location_criteria = criteria.get('location')
+    if location_criteria and isinstance(location_criteria, str):
+        print(f"ℹ️ Applying DB location filter: ilike '%{location_criteria}%'")
+        query_builder = query_builder.ilike('location', f"%{location_criteria}%")
+    else:
+        print(f"ℹ️ No location criteria provided or not a string: {location_criteria}")
+
+    # Niche Filter
+    specific_campaign_niches = criteria.get('niches')
+    if specific_campaign_niches and isinstance(specific_campaign_niches, list) and len(specific_campaign_niches) > 0:
+        print(f"ℹ️ Original campaign niches for discovery: {specific_campaign_niches}")
+        
+        # Use LLM or map to get broader/mapped creator niches.
+        # get_broader_creator_niches_with_llm has a fallback to use specific_campaign_niches (lowercased) if LLM/API key is not available.
+        expanded_creator_niches = get_broader_creator_niches_with_llm(specific_campaign_niches)
+        
+        if expanded_creator_niches and len(expanded_creator_niches) > 0:
+            print(f"ℹ️ Applying DB niche filter (overlaps) with: {expanded_creator_niches} on 'niche' column.")
+            # Assumes 'niche' column in 'creators' table is of array type (e.g., text[])
+            query_builder = query_builder.overlaps('niche', expanded_creator_niches) 
+        else:
+            print(f"ℹ️ No expanded/valid niches to filter by after processing: {expanded_creator_niches}")
+    else:
+        print(f"ℹ️ No niche criteria provided, not a list, or empty list: {specific_campaign_niches}")
+
+    # Verified Filter
+    if 'verified' in criteria and criteria['verified'] is not None:
+        if isinstance(criteria['verified'], bool):
+            print(f"ℹ️ Applying DB verified filter: {criteria['verified']}")
+            query_builder = query_builder.eq('verified', criteria['verified'])
+
+    fetched_creators = []
+    try:
+        print(f"Executing Supabase query (before Python platform/follower filters) - Query Object: {query_builder}")
+        # Fetch more candidates initially, filter in Python
+        response = query_builder.limit(500).execute() 
+        print(f"Supabase response (before Python filters): {response}")
+
+        if response.data:
+            fetched_creators = response.data
+            print(f"ℹ️ Supabase query (before Python filters) returned {len(fetched_creators)} creators.")
+        else:
+            # This handles cases where response.data is None or an empty list from a successful query
+            print(f"ℹ️ Supabase query (before Python filters) returned 0 creators (response.data is empty/None).")
+            # If there's a specific error object in response (though data check is primary)
+            if hasattr(response, 'error') and response.error:
+                 print(f"⚠️ Supabase query error details: {response.error}")
+
+    except APIError as e_api:
+        print(f"❌ Supabase API Error during creator discovery: {e_api}")
+        return jsonify({"success": False, "error": f"Database API error: {e_api.message}"}), 500
+    except Exception as e:
+        print(f"❌ Unexpected error during Supabase query execution: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": f"Unexpected error fetching creators: {str(e)}"}), 500
+    finally:
+        if not supabase_admin_client and original_postgrest_headers is not None:
+            active_client_for_query.postgrest.session.headers = original_postgrest_headers
+            # print("Restored original PostgREST client session headers for user-context client.")
+
+    # --- Python-based Filtering (Platforms and Followers) ---
+    # (This part remains the same, it will operate on fetched_creators)
+    # ... (platform filter logic) ...
+    # ... (follower filter logic) ...
+    # ... (return jsonify(...) logic) ...
+    # For brevity, the Python filtering part is not repeated here but assume it's the same as the last correct version.
+    # The critical part is to see what `fetched_creators` contains after the MODIFIED DB query.
+
+    # --- (Existing Python filtering logic for platforms and followers would go here) ---
+    # This is the Python filtering logic from the last working version for platforms and followers:
+    filtered_by_python = []
+    target_platforms_lower = []
+    if 'platforms' in criteria and criteria['platforms']:
+        if isinstance(criteria['platforms'], list):
+            target_platforms_lower = [p.lower() for p in criteria['platforms']]
+        elif isinstance(criteria['platforms'], str):
+            target_platforms_lower = [criteria['platforms'].lower()]
+    
+    print(f"ℹ️ Python Filter: Target platforms (lowercase): {target_platforms_lower}")
+
+    min_f = criteria.get('min_followers')
+    max_f = criteria.get('max_followers')
+    print(f"ℹ️ Python Filter: Min followers={min_f}, Max followers={max_f}")
+
+    for creator in fetched_creators:
+        passes_platform = False
+        if not target_platforms_lower: # If no platform criteria, it passes
+            passes_platform = True
+        elif creator.get('platform') and isinstance(creator.get('platform'), str) and creator.get('platform').lower() in target_platforms_lower:
+            passes_platform = True
+        
+        if not passes_platform:
+            continue
+
+        passes_followers = True
+        current_followers = None
+        if creator.get('metrics') and isinstance(creator['metrics'], dict) and 'followers' in creator['metrics']:
+            try:
+                current_followers = int(creator['metrics']['followers'])
+            except (ValueError, TypeError):
+                print(f"⚠️ Could not parse followers for creator {creator.get('id')}: {creator['metrics']['followers']}")
+                passes_followers = False # Or treat as not matching if unparseable
+        
+        if passes_followers and current_followers is not None:
+            if min_f is not None:
+                try:
+                    if current_followers < int(min_f):
+                        passes_followers = False
+                except ValueError:
+                    print(f"⚠️ Invalid min_followers criteria: {min_f}")
+                    passes_followers = False 
+            
+            if passes_followers and max_f is not None:
+                try:
+                    if current_followers > int(max_f):
+                        passes_followers = False
+                except ValueError:
+                    print(f"⚠️ Invalid max_followers criteria: {max_f}")
+                    passes_followers = False
+        elif min_f is not None or max_f is not None: # If follower criteria exist but no follower data for creator
+            passes_followers = False
+            
+        if passes_platform and passes_followers:
+            filtered_by_python.append(creator)
+
+    final_creators = filtered_by_python[:100] # Cap final results
+    print(f"ℹ️ Found {len(final_creators)} creators after ALL filters.")
+    return jsonify({"success": True, "creators": final_creators})
 
 if __name__ == '__main__':
     app.run(debug=True, port=int(os.getenv('PORT', 5001))) # Use PORT from env if available

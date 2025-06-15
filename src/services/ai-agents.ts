@@ -262,12 +262,12 @@ interface BrandInfo {
 
 export interface BusinessRequirements {
   companyName: string;
-  industry: string[]; // MODIFIED from string to string[]
+  industry: string[];
   productService: string;
   businessGoals: string[];
   targetAudience: string;
   demographics?: string; 
-  campaignObjective: string;
+  campaignObjective: string[];
   keyMessage?: string;
   budgetRange: { min: number; max: number; }; 
   timeline: string;
@@ -276,12 +276,14 @@ export interface BusinessRequirements {
   specialRequirements?: string;
   outreachCount: number; 
   personalizedOutreach: boolean;
+  locations: string[];
 }
 
 export interface GeneratedCampaign { // This is what CampaignBuildingAgent produces
   title: string; brand: string; description: string; brief: string; platforms: string[];
   minFollowers: number; niches: string[]; locations: string[]; deliverables: string[];
   budgetMin: number; budgetMax: number; startDate: string; endDate: string; applicationDeadline: string;
+  campaign_objective?: string[] | undefined;
   aiInsights: { strategy: string; reasoning: string; successFactors: string[]; potentialChallenges: string[]; optimizationSuggestions: string[]; };
   confidence: number; agentVersion: string; generatedAt: Date | string; // Allow string for data from backend, convert to Date in FE
 }
@@ -426,9 +428,98 @@ class CampaignBuildingAgent {
         throw new Error(backendResponse.error || 'Invalid campaign data from backend');
       }
       console.log(`✅ CB Agent (FE): Received campaign from backend (${backendResponse.method}).`);
-      const campaignData = backendResponse.campaign as GeneratedCampaign; // Type assertion
+      
+      // Parse campaign_objective if it's a string
+      // The type of backendResponse.campaign.campaign_objective could be string | string[] | undefined from backend
+      let parsedCampaignObjective: string[] | undefined = undefined;
+      const rawCampaignObjective = backendResponse.campaign.campaign_objective;
+
+      if (typeof rawCampaignObjective === 'string') {
+        try {
+          const objectives = JSON.parse(rawCampaignObjective);
+          if (Array.isArray(objectives) && objectives.every(obj => typeof obj === 'string')) {
+            parsedCampaignObjective = objectives as string[];
+          } else {
+            console.warn(`[CampaignBuildingAgent] campaign_objective was a string but not a valid JSON array of strings: ${rawCampaignObjective}. Setting to undefined.`);
+            // Keep as undefined or could set to [rawCampaignObjective] if a single string objective is acceptable
+          }
+        } catch (e) {
+          console.warn(`[CampaignBuildingAgent] Failed to parse campaign_objective string: ${rawCampaignObjective}. Error: ${e}. Setting to undefined.`);
+        }
+      } else if (Array.isArray(rawCampaignObjective) && rawCampaignObjective.every(obj => typeof obj === 'string')) {
+        parsedCampaignObjective = rawCampaignObjective as string[];
+      } else if (rawCampaignObjective !== undefined) {
+        // It's some other type we don't expect for campaign_objective
+        console.warn(`[CampaignBuildingAgent] campaign_objective from backend was an unexpected type: ${typeof rawCampaignObjective}. Value: ${rawCampaignObjective}. Setting to undefined.`);
+      }
+      // If rawCampaignObjective was undefined, parsedCampaignObjective remains undefined, which is fine.
+
+      const campaignData = {
+        ...backendResponse.campaign,
+        campaign_objective: parsedCampaignObjective // Use the parsed/validated value
+      } as GeneratedCampaign; // Asserting to GeneratedCampaign after modification
+
+      // ---- START: Heuristic for default platforms and niches ----
+      if (!campaignData.platforms || campaignData.platforms.length === 0) {
+        const suggestedPlatforms = new Set<string>();
+        const reqIndustries = requirements.industry?.map(i => i.toLowerCase()) || [];
+        const campObjectives = (campaignData.campaign_objective || requirements.campaignObjective)?.map(o => o.toLowerCase()) || [];
+
+        if (reqIndustries.includes('technology') || reqIndustries.includes('finance') || reqIndustries.includes('b2b')) {
+          suggestedPlatforms.add('linkedin');
+          suggestedPlatforms.add('twitter');
+        }
+        if (reqIndustries.includes('fashion') || reqIndustries.includes('beauty') || reqIndustries.includes('travel') || reqIndustries.includes('food & beverage')) {
+          suggestedPlatforms.add('instagram');
+          suggestedPlatforms.add('tiktok');
+        }
+        if (reqIndustries.includes('gaming')) {
+          suggestedPlatforms.add('twitch');
+          suggestedPlatforms.add('youtube');
+          suggestedPlatforms.add('twitter');
+        }
+        if (campObjectives.includes('increase brand awareness') || campObjectives.includes('build community')) {
+          suggestedPlatforms.add('instagram');
+          suggestedPlatforms.add('tiktok');
+          // suggestedPlatforms.add('facebook'); // Example if we add more
+        }
+        if (campObjectives.includes('drive sales') || campObjectives.includes('lead generation')) {
+          suggestedPlatforms.add('linkedin'); // Good for B2B
+          suggestedPlatforms.add('instagram'); // Good for B2C
+        }
+        
+        // General default if still empty
+        if (suggestedPlatforms.size === 0) {
+            suggestedPlatforms.add('instagram');
+            suggestedPlatforms.add('youtube');
+        }
+        campaignData.platforms = Array.from(suggestedPlatforms);
+        console.log(`[CampaignBuildingAgent] Applied heuristic default platforms: ${campaignData.platforms.join(', ')}`);
+      }
+
+      if (!campaignData.niches || campaignData.niches.length === 0) {
+        if (requirements.industry && requirements.industry.length > 0) {
+          campaignData.niches = [requirements.industry[0]]; // Use the first industry as a default niche
+          console.log(`[CampaignBuildingAgent] Applied heuristic default niche from industry: ${campaignData.niches.join(', ')}`);
+        } else if (requirements.productService) {
+           // Basic attempt to use product service if it's a single word, otherwise a generic default
+           const productWords = requirements.productService.split(' ');
+           if (productWords.length <= 2 && productWords[0].length > 3) { // Avoid very generic words like "A" or "The"
+             campaignData.niches = [productWords[0]];
+           } else {
+             campaignData.niches = ['general interest'];
+           }
+           console.log(`[CampaignBuildingAgent] Applied heuristic default niche from product/service or generic: ${campaignData.niches.join(', ')}`);
+        } else {
+          campaignData.niches = ['general interest']; // Ultimate fallback
+          console.log(`[CampaignBuildingAgent] Applied heuristic generic default niche: ${campaignData.niches.join(', ')}`);
+        }
+      }
+      // ---- END: Heuristic for default platforms and niches ----
+
       return {
         ...campaignData,
+        agentVersion: backendResponse.method === 'ai_generated' ? 'backend-ai-generated-v1.x' : (backendResponse.method || 'backend-fallback-v1.x'),
         generatedAt: new Date(campaignData.generatedAt || Date.now()),
         startDate: campaignData.startDate || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
         endDate: campaignData.endDate || new Date(Date.now() + 37 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
@@ -442,23 +533,87 @@ class CampaignBuildingAgent {
 
   private generateLocalFallbackCampaign(requirements: BusinessRequirements): GeneratedCampaign {
     const now = new Date();
-    const startDate = now.toISOString().split('T')[0];
-    const endDate = new Date(now.setDate(now.getDate() + 30)).toISOString().split('T')[0];
-    const appDeadline = new Date(now.setDate(now.getDate() - 7)).toISOString().split('T')[0]; // App deadline 1 week before start
+    const startDateDate = new Date(now);
+    const endDateDate = new Date(now);
+    endDateDate.setDate(startDateDate.getDate() + 30);
+    const appDeadlineDate = new Date(startDateDate);
+    appDeadlineDate.setDate(startDateDate.getDate() - 7);
 
-    // Handle industry array for fallback
+    const startDate = startDateDate.toISOString().split('T')[0];
+    const endDate = endDateDate.toISOString().split('T')[0];
+    const appDeadline = appDeadlineDate.toISOString().split('T')[0];
+
     const industryText = requirements.industry && requirements.industry.length > 0 
       ? requirements.industry.join(', ') 
       : 'General';
+
+    // MODIFIED: Use campaignObjective array directly or undefined
+    const campaignObjectivesArray: string[] | undefined = requirements.campaignObjective && requirements.campaignObjective.length > 0
+      ? requirements.campaignObjective
+      : undefined;
+      
+    const campaignObjectiveTextForBrief = campaignObjectivesArray ? campaignObjectivesArray.join(', ') : 'Not specified';
+
+    // ---- START: Heuristic for default platforms and niches in FALLBACK ----
+    let finalPlatforms = requirements.preferredPlatforms || [];
+    if (!finalPlatforms || finalPlatforms.length === 0) {
+        const suggestedPlatforms = new Set<string>();
+        const reqIndustries = requirements.industry?.map(i => i.toLowerCase()) || [];
+        const campObjectives = requirements.campaignObjective?.map(o => o.toLowerCase()) || [];
+
+        if (reqIndustries.includes('technology') || reqIndustries.includes('finance') || reqIndustries.includes('b2b')) {
+            suggestedPlatforms.add('linkedin');
+            suggestedPlatforms.add('twitter');
+        }
+        if (reqIndustries.includes('fashion') || reqIndustries.includes('beauty') || reqIndustries.includes('travel') || reqIndustries.includes('food & beverage')) {
+            suggestedPlatforms.add('instagram');
+            suggestedPlatforms.add('tiktok');
+        }
+        if (reqIndustries.includes('gaming')) {
+            suggestedPlatforms.add('twitch');
+            suggestedPlatforms.add('youtube');
+            suggestedPlatforms.add('twitter');
+        }
+         if (campObjectives.includes('increase brand awareness') || campObjectives.includes('build community')) {
+            suggestedPlatforms.add('instagram');
+            suggestedPlatforms.add('tiktok');
+        }
+        if (campObjectives.includes('drive sales') || campObjectives.includes('lead generation')) {
+            suggestedPlatforms.add('linkedin');
+            suggestedPlatforms.add('instagram');
+        }
+        if (suggestedPlatforms.size === 0) { // General default if still empty
+            suggestedPlatforms.add('instagram');
+            suggestedPlatforms.add('youtube');
+        }
+        finalPlatforms = Array.from(suggestedPlatforms);
+        console.log(`[FallbackCampaign] Applied heuristic default platforms: ${finalPlatforms.join(', ')}`);
+    }
+
+    let finalNiches = (requirements.industry && requirements.industry.length > 0) ? [...requirements.industry] : [];
+    if (!finalNiches || finalNiches.length === 0) {
+        if (requirements.productService) {
+            const productWords = requirements.productService.split(' ');
+            if (productWords.length <= 2 && productWords[0].length > 3) {
+                finalNiches = [productWords[0]];
+            } else {
+                finalNiches = ['general interest'];
+            }
+        } else {
+            finalNiches = ['general interest'];
+        }
+        console.log(`[FallbackCampaign] Applied heuristic default niches: ${finalNiches.join(', ')}`);
+    }
+     // ---- END: Heuristic for default platforms and niches in FALLBACK ----
 
     return {
       title: `Exciting Campaign for ${requirements.companyName}`,
       brand: requirements.companyName,
       description: `A dynamic campaign focusing on ${requirements.productService} for the ${industryText} sector. We aim to ${requirements.businessGoals.join(', ')}. Target audience: ${requirements.targetAudience}`,
-      brief: `Campaign Objective: ${requirements.campaignObjective}. Key Message: ${requirements.keyMessage || 'Experience the best!'}. Platforms: ${(requirements.preferredPlatforms || []).join(', ')}. Content: ${(requirements.contentTypes || []).join(', ')}. Special Notes: ${requirements.specialRequirements || 'None'}`,
-      platforms: requirements.preferredPlatforms || ['instagram', 'youtube'],
+      brief: `Campaign Objectives: ${campaignObjectiveTextForBrief}. Key Message: ${requirements.keyMessage || 'Experience the best!'}. Platforms: ${finalPlatforms.join(', ')}. Content: ${(requirements.contentTypes || []).join(', ')}. Special Notes: ${requirements.specialRequirements || 'None'}`,
+      platforms: finalPlatforms,
       minFollowers: 5000,
-      niches: requirements.industry && requirements.industry.length > 0 ? [...requirements.industry] : ['general interest'],
+      niches: finalNiches,
       locations: ['Global'],
       deliverables: ['1 Instagram Post', '2 Instagram Stories'],
       budgetMin: requirements.budgetRange.min || 500,
@@ -466,6 +621,7 @@ class CampaignBuildingAgent {
       startDate: startDate,
       endDate: endDate,
       applicationDeadline: appDeadline,
+      campaign_objective: campaignObjectivesArray,
       aiInsights: {
         strategy: "Standard engagement strategy. Focus on clear calls to action and visually appealing content.",
         reasoning: "Fallback strategy due to API limitations or errors. Provides a basic but functional campaign structure.",
@@ -474,7 +630,7 @@ class CampaignBuildingAgent {
         optimizationSuggestions: ["Boost posts with paid ads", "Run contests or giveaways"]
       },
       confidence: 0.4,
-      agentVersion: 'local_fallback_v1.1',
+      agentVersion: 'local_fallback_v1.2',
       generatedAt: new Date(),
     };
   }
@@ -485,41 +641,137 @@ class CampaignBuildingAgent {
 // ============================================================================
 class CreatorDiscoveryAgent {
   async findCreators(campaign: GeneratedCampaign, searchQuery?: string): Promise<Creator[]> {
-    console.log('🔍 CD Agent (FE): Starting discovery. Will call backend for query analysis.');
+    console.log('🔍 CD Agent (FE): Entered findCreators. Campaign Title:', campaign.title);
+    
     let effectiveSearchQuery = searchQuery || this.generateSearchQueryFromCampaign(campaign);
     const baseBackendUrl = import.meta.env.VITE_BACKEND_API_URL || "http://localhost:5001";
-    const backendApiUrl = `${baseBackendUrl}/api/creator/analyze-query`;
+    const analyzeQueryUrl = `${baseBackendUrl}/api/creator/analyze-query`;
     let analysisResult: BackendQueryAnalysis | null = null;
+
+    console.log('🔍 CD Agent (FE): Preparing for Step 1 - Analyze Query. URL:', analyzeQueryUrl);
     try {
-      await GlobalRateLimiter.getInstance().waitIfNeeded('CreatorDiscoveryAgent');
+      await GlobalRateLimiter.getInstance().waitIfNeeded('CreatorDiscoveryAgent.analyzeQuery');
+      console.log('🔍 CD Agent (FE): Passed rate limiter for analyzeQuery.');
       const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-      if (sessionError || !session) throw new Error('No Supabase session for CreatorDiscoveryAgent backend call.');
+      if (sessionError || !session) {
+        console.error('❌ CD Agent (FE): No Supabase session for analyze-query.');
+        throw new Error('No Supabase session for analyze-query');
+      }
+      console.log('🔍 CD Agent (FE): Got session for analyze-query. Token:', session.access_token ? ' vorhanden' : 'FEHLT');
       
       const payload = { query: effectiveSearchQuery, campaignContext: {title: campaign.title, niches: campaign.niches, platforms: campaign.platforms } };
-      const response = await fetch(backendApiUrl, {
+      console.log('🔍 CD Agent (FE): Sending to analyze-query:', JSON.stringify(payload));
+      const analyzeResponse = await fetch(analyzeQueryUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
         body: JSON.stringify(payload)
       });
-      if (!response.ok) { 
-        const errResp = await response.json().catch(()=>({error: `Backend error: ${response.status} ${response.statusText}`})); 
-        throw new Error(errResp.error);
+      console.log('🔍 CD Agent (FE): analyze-query response status:', analyzeResponse.status);
+      if (!analyzeResponse.ok) { 
+        const errText = await analyzeResponse.text();
+        console.error('❌ CD Agent (FE): analyze-query fetch error text:', errText);
+        const errResp = JSON.parse(errText || '{}');
+        throw new Error(errResp.error || `Backend error (analyze-query): ${analyzeResponse.status} ${analyzeResponse.statusText}`);
       }
-      const backendResponse: BackendQueryAnalysisResponse = await response.json();
-      if (backendResponse.success && backendResponse.analysis) {
-        analysisResult = backendResponse.analysis;
-        console.log(`✅ CD Agent (FE): Query analysis from backend (${backendResponse.method}). Intent: ${analysisResult.intent}`);
+      const backendAnalysis: BackendQueryAnalysisResponse = await analyzeResponse.json();
+      if (backendAnalysis.success && backendAnalysis.analysis) {
+        analysisResult = backendAnalysis.analysis;
+        console.log(`✅ CD Agent (FE): Query analysis from backend (${backendAnalysis.method}). Intent: ${analysisResult.intent}`);
       } else {
-        throw new Error(backendResponse.error || 'Invalid analysis from backend for creator discovery');
+        console.error('❌ CD Agent (FE): Invalid analysis from backend for creator discovery.', backendAnalysis.error);
+        throw new Error(backendAnalysis.error || 'Invalid analysis from backend for creator discovery');
       }
     } catch (error) {
-      console.error('❌ CD Agent (FE): Error calling backend for query analysis, using local fallback.', error);
+      console.error('❌ CD Agent (FE): CATCH block for analyze-query. Error:', error);
       analysisResult = this.localFallbackQueryAnalysis(effectiveSearchQuery);
+      console.log('🔍 CD Agent (FE): Using local fallback for analysisResult due to error.');
     }
-    if (!analysisResult) analysisResult = this.localFallbackQueryAnalysis("general influencer search (critical fallback)");
+
+    if (!analysisResult) { // Should not happen if fallback is assigned, but as a safeguard
+      console.error('❌ CD Agent (FE): CRITICAL - analysisResult is null even after fallback. Using emergency fallback.');
+      analysisResult = this.localFallbackQueryAnalysis("general influencer search (critical fallback)");
+    }
+
+    console.log('🔍 CD Agent (FE): Preparing for Step 2 - Discover Creators from DB.');
+    const discoverUrl = `${baseBackendUrl}/api/creators/discover`;
     
-    console.log('📝 CD Agent (FE): Filtering mockCreators with analysis:', analysisResult.extractedCriteria);
-    return this.filterMockCreatorsWithAnalysis(mockCreators, analysisResult, campaign);
+    const discoveryCriteria: any = {};
+    if (campaign.platforms && campaign.platforms.length > 0) {
+      discoveryCriteria.platforms = campaign.platforms;
+    }
+    if (campaign.niches && campaign.niches.length > 0) {
+      discoveryCriteria.niches = campaign.niches;
+    }
+    if (campaign.minFollowers) {
+      discoveryCriteria.min_followers = campaign.minFollowers;
+    }
+
+    // MODIFIED: Always set location to India for discovery
+    discoveryCriteria.location = "India";
+    // REMOVED: Old logic for locationForFilter
+    /*
+    let locationForFilter: string | undefined = undefined;
+    if (campaign.locations && campaign.locations.length > 0) {
+      if (campaign.locations.length === 1 && campaign.locations[0].toLowerCase() === 'global') {
+        // If the campaign location is explicitly "Global", use "India" for filtering
+        locationForFilter = "India";
+      } else if (!campaign.locations.some(loc => loc.toLowerCase() === 'global')) {
+        // If there are specific locations and none of them are "Global", use the first one
+        locationForFilter = campaign.locations[0];
+      } else {
+        // If there are multiple locations and one of them is "Global", or other complex cases,
+        // default to "India" for now. This could be refined if more specific handling for mixed lists is needed.
+        locationForFilter = "India"; 
+      }
+    } else {
+      // If campaign.locations is empty or undefined, default to India
+      locationForFilter = "India";
+    }
+    
+    if (locationForFilter) {
+      discoveryCriteria.location = locationForFilter;
+    }
+    */
+    
+    console.log('🔍 CD Agent (FE): Criteria for DB discovery:', JSON.stringify(discoveryCriteria));
+
+    try {
+      await GlobalRateLimiter.getInstance().waitIfNeeded('CreatorDiscoveryAgent.discoverFromDB');
+      console.log('🔍 CD Agent (FE): Passed rate limiter for discoverFromDB.');
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError || !session) {
+        console.error('❌ CD Agent (FE): No Supabase session for discover-from-db.');
+        throw new Error('No Supabase session for discover-from-db');
+      }
+      console.log('🔍 CD Agent (FE): Got session for discover-from-db. Token:', session.access_token ? ' vorhanden' : 'FEHLT');
+
+      console.log('🔍 CD Agent (FE): Sending to discover-from-db. URL:', discoverUrl);
+      const discoverResponse = await fetch(discoverUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
+        body: JSON.stringify(discoveryCriteria)
+      });
+      console.log('🔍 CD Agent (FE): discover-from-db response status:', discoverResponse.status);
+
+      if (!discoverResponse.ok) {
+        const errText = await discoverResponse.text();
+        console.error('❌ CD Agent (FE): discover-from-db fetch error text:', errText);
+        const errResp = JSON.parse(errText || '{}');
+        throw new Error(errResp.error || `Failed to discover creators from DB`);
+      }
+
+      const discoverData = await discoverResponse.json();
+      if (discoverData.success && Array.isArray(discoverData.creators)) {
+        console.log(`✅ CD Agent (FE): Received ${discoverData.creators.length} creators from backend DB discovery.`);
+        return discoverData.creators as Creator[];
+      } else {
+        console.warn('CD Agent (FE): Backend DB discovery did not return a successful creator list.', discoverData.error);
+        return [];
+      }
+    } catch (error) {
+      console.error('❌ CD Agent (FE): CATCH block for discover-from-db. Error:', error);
+      return [];
+    }
   }
 
   private generateSearchQueryFromCampaign(campaign: GeneratedCampaign): string {
@@ -1075,18 +1327,23 @@ class WorkflowOrchestrationAgent {
   private negotiationAgentInternal = new NegotiationAgent(); 
 
   async executeFullWorkflow(requirements: BusinessRequirements): Promise<AgentWorkflowResult> {
-    console.log("🚀 Workflow Orchestrator (FE): Starting full agentic workflow...");
+    console.log("🚀 Workflow Orchestrator (FE): Entered executeFullWorkflow. Requirements:", JSON.stringify(requirements, null, 2));
     const startTime = Date.now();
     const initialGlobalCalls = GlobalRateLimiter.getInstance().getRemainingCalls();
+    console.log(`🚀 Workflow Orchestrator (FE): Initial global calls remaining: ${initialGlobalCalls}`);
       
+    try {
       const generatedCampaign = await this.campaignAgent.generateCampaign(requirements);
-    console.log(`Workflow Step 1 (Campaign): ${generatedCampaign.title} (using ${generatedCampaign.agentVersion.includes('fallback') ? 'Fallback' : 'AI'})`);
+      console.log(`🚀 Workflow Orchestrator (FE): Step 1 (Campaign Generation) COMPLETE. Title: ${generatedCampaign.title} (using ${generatedCampaign.agentVersion.includes('fallback') ? 'Fallback' : 'AI'})`);
+      console.log("🚀 Workflow Orchestrator (FE): Generated Campaign Object:", JSON.stringify(generatedCampaign, null, 2));
 
+      console.log("🚀 Workflow Orchestrator (FE): Attempting Step 2 - Creator Discovery...");
     const discoveredCreators = await this.discoveryAgent.findCreators(generatedCampaign, requirements.targetAudience );
-    console.log(`Workflow Step 2 (Discovery): Found ${discoveredCreators.length} potential creators.`);
+      console.log(`🚀 Workflow Orchestrator (FE): Step 2 (Discovery) COMPLETE. Found ${discoveredCreators.length} potential creators.`);
+      console.log("🚀 Workflow Orchestrator (FE): Discovered Creators (first 3):", JSON.stringify(discoveredCreators.slice(0,3), null, 2));
 
     if (discoveredCreators.length === 0) {
-        console.warn("Workflow Halted: No creators discovered. Cannot proceed to scoring or outreach.");
+          console.warn("🚀 Workflow Orchestrator (FE): Workflow Halted at Discovery - No creators discovered. Cannot proceed to scoring or outreach.");
         return {
             generatedCampaign,
             creatorMatches: [],
@@ -1100,20 +1357,20 @@ class WorkflowOrchestrationAgent {
         };
     }
       
+      console.log("🚀 Workflow Orchestrator (FE): Attempting Step 3 - Matching & Scoring...");
       const creatorMatches = await this.scoringAgent.scoreCreators(generatedCampaign, discoveredCreators);
-    console.log(`Workflow Step 3 (Scoring): Scored ${creatorMatches.length} creators.`);
+      console.log(`🚀 Workflow Orchestrator (FE): Step 3 (Scoring) COMPLETE. Scored ${creatorMatches.length} creators.`);
+      console.log("🚀 Workflow Orchestrator (FE): Creator Matches (first 3):", JSON.stringify(creatorMatches.slice(0,3), null, 2));
       
+      console.log("🚀 Workflow Orchestrator (FE): Attempting Step 4 - Outreach...");
       const outreachSummary = await this.outreachAgent.executeOutreach(generatedCampaign, creatorMatches, requirements);
-    console.log(`Workflow Step 4 (Outreach): ${outreachSummary.totalSent} messages sent.`);
-
-    // Example: Potentially use the internal negotiation agent for some automated follow-up insights
-    // For now, it's not directly part of this simplified executeFullWorkflow
-    // const negotiationInsights = await this.negotiationAgentInternal.getEligibleForNegotiation(); 
-    // console.log(`Workflow Info: ${negotiationInsights.length} outreaches eligible for negotiation followup by internal agent.`);
+      console.log(`🚀 Workflow Orchestrator (FE): Step 4 (Outreach) COMPLETE. Messages considered: ${outreachSummary?.outreaches?.length || 0}, Sent successfully: ${outreachSummary?.totalSent || 0}.`);
+      console.log("🚀 Workflow Orchestrator (FE): Outreach Summary Object received by orchestrator:", JSON.stringify(outreachSummary, null, 2));
 
     const processingTime = Date.now() - startTime;
     const finalGlobalCalls = GlobalRateLimiter.getInstance().getRemainingCalls();
     const callsUsedThisWorkflow = initialGlobalCalls - finalGlobalCalls;
+      console.log(`🚀 Workflow Orchestrator (FE): Workflow complete. Total time: ${processingTime}ms. API calls used this run: ${callsUsedThisWorkflow}`);
 
     return {
         generatedCampaign,
@@ -1122,10 +1379,21 @@ class WorkflowOrchestrationAgent {
         workflowInsights: {
           totalProcessingTime: processingTime,
           agentsUsed: ['CampaignBuilder', 'CreatorDiscovery', 'MatchingScoring', 'Outreach'],
-          confidenceScore: Math.min(0.95, (generatedCampaign.confidence + (creatorMatches.length > 0 ? (creatorMatches.reduce((s,m)=>s+(m.score||0),0)/creatorMatches.length/100) : 0.5))/2 + (callsUsedThisWorkflow > 0 ? 0.1 : 0) ),
-          recommendedNextSteps: [`Review ${outreachSummary.totalSent} outreaches.`, "Monitor responses for negotiation.", `Frontend API calls used: ${callsUsedThisWorkflow}`]
+            confidenceScore: Math.min(0.95, (generatedCampaign.confidence + (creatorMatches.length > 0 && creatorMatches.reduce((s,m)=>s+(m.score||0),0) > 0 ? (creatorMatches.reduce((s,m)=>s+(m.score||0),0)/creatorMatches.length/100) : 0.5))/2 + (callsUsedThisWorkflow > 0 ? 0.1 : 0) ),
+            recommendedNextSteps: [
+              `Review ${outreachSummary ? outreachSummary.totalSent : 0} outreaches.`,
+              "Monitor responses for negotiation.", 
+              `Frontend API calls used: ${callsUsedThisWorkflow}`
+            ]
         }
     };
+
+    } catch (error) {
+      console.error("❌🚀 Workflow Orchestrator (FE): CRITICAL ERROR within executeFullWorkflow:", error);
+      // Rethrow or return a specific error structure if needed for the UI to handle
+      // For now, rethrowing will let the caller (runAgenticWorkflow in agentic-ai.tsx) catch it.
+      throw error; 
+    }
   }
 
   // Method to access the internal negotiation agent if needed by other parts of aiAgentsService
@@ -1159,20 +1427,21 @@ export const aiAgentsService = new WorkflowOrchestrationAgent();
 
 export const createExampleRequirements = (): BusinessRequirements => ({
   companyName: 'Innovatech Solutions',
-  industry: ['Technology'], // MODIFIED to be an array
+  industry: ['Technology'],
   productService: 'Cloud-based AI Analytics Platform',
   businessGoals: ['Generate B2B leads', 'Increase enterprise demo requests by 20%'],
   targetAudience: 'CTOs, VPs of Engineering, Data Science Managers in mid-to-large enterprises',
   demographics: 'Tech-savvy decision-makers, interested in AI, Big Data, Cloud Solutions',
-  campaignObjective: 'Drive sign-ups for our upcoming webinar on AI in Finance.',
-  keyMessage: 'Unlock financial insights with Innovatech\'s next-gen AI analytics.',
+  campaignObjective: ['Drive sign-ups for our upcoming webinar on AI in Finance.'],
+  keyMessage: "Unlock financial insights with Innovatech's next-gen AI analytics.",
   budgetRange: { min: 100000, max: 500000 },
   timeline: '4 weeks until webinar',
   preferredPlatforms: ['linkedin', 'twitter'],
   contentTypes: ['Thought leadership articles', 'Webinar promotion posts', 'Short video explainers'],
+  specialRequirements: 'Focus on creators with strong LinkedIn presence and case studies in finance.',
   outreachCount: 5,
   personalizedOutreach: true,
-  specialRequirements: 'Focus on creators with strong LinkedIn presence and case studies in finance.'
+  locations: ['India'],
 }); 
 
 // Export the instance of the negotiation agent service (this was the last line before)

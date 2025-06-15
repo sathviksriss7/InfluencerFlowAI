@@ -748,9 +748,9 @@ export const mockCreators: Creator[] = [
     responseTime: "within 8 hours"
   },
 
-  // Adding remaining creators with diverse backgrounds...
-  ...Array.from({ length: 75 }, (_, index) => {
-    const creatorId = `cr_${String(index + 26).padStart(3, '0')}`;
+  // Adding approximately 900 more creators with diverse backgrounds...
+  ...Array.from({ length: 1000 }, (_, index) => {
+    const creatorId = `cr_gen_${String(index + 1).padStart(4, '0')}`;
     const platforms = ['instagram', 'youtube', 'twitter', 'linkedin'] as const;
     const niches = [
       ['fitness', 'health'],
@@ -810,10 +810,14 @@ export const mockCreators: Creator[] = [
     const platform = platforms[index % platforms.length];
     const selectedNiches = niches[index % niches.length];
     const location = indianCities[index % indianCities.length];
-    const name = indianNames[index % indianNames.length];
-    const username = `@${name.toLowerCase().replace(' ', '_')}_${usernames[index % usernames.length]}`;
     
-    // Vary follower counts more realistically
+    const nameIndex = index % indianNames.length;
+    const name = indianNames[nameIndex];
+    
+    const usernameBase = name.toLowerCase().replace(' ', '_');
+    const usernameSuffix = usernames[index % usernames.length];
+    const username = `@${usernameBase}_${usernameSuffix}_${index % 10}`;
+    
     const followerRanges = [
       { min: 5000, max: 25000 },    // Nano influencers
       { min: 25000, max: 100000 },  // Micro influencers  
@@ -824,13 +828,11 @@ export const mockCreators: Creator[] = [
     const range = followerRanges[Math.floor(Math.random() * followerRanges.length)];
     const followers = Math.floor(Math.random() * (range.max - range.min) + range.min);
     
-    // Calculate other metrics based on followers
-    const engagementRate = Math.max(1.5, 12 - (followers / 100000)); // Higher engagement for smaller accounts
+    const engagementRate = Math.max(1.5, parseFloat((12 - (followers / 100000)).toFixed(1)));
     const avgViews = Math.floor(followers * (engagementRate / 100) * (Math.random() * 3 + 1));
     const avgLikes = Math.floor(avgViews * (engagementRate / 100));
     const avgComments = Math.floor(avgLikes * 0.05);
     
-    // Calculate rates based on followers and platform (in Indian Rupees)
     const baseRate = Math.max(50, Math.floor(followers / 1000) * (platform === 'youtube' ? 2 : 1));
     const postRate = Math.floor(baseRate * (Math.random() * 0.4 + 0.8));
     const storyRate = Math.floor(postRate * 0.5);
@@ -841,15 +843,15 @@ export const mockCreators: Creator[] = [
       name: name,
       username: username,
       platform: platform,
-      avatar: generateAvatar(name.toLowerCase().replace(' ', '_')),
+      avatar: generateAvatar(username),
       niche: selectedNiches,
       location: location,
-      bio: `${selectedNiches.join(' and ')} content creator sharing authentic experiences and tips.`,
+      bio: `${selectedNiches.join(' and ')} content creator from ${location}. Passionate about sharing authentic experiences and tips.`,
       verified: followers > 100000 && Math.random() > 0.3,
       metrics: {
         followers,
         avgViews,
-        engagementRate: Math.round(engagementRate * 10) / 10,
+        engagementRate,
         avgLikes,
         avgComments
       },
@@ -868,8 +870,8 @@ export const mockCreators: Creator[] = [
           other: 2
         }
       },
-      rating: Math.round((Math.random() * 1.5 + 3.5) * 10) / 10,
-      responseTime: ['within 1 hour', 'within 2 hours', 'within 4 hours', 'within 6 hours', 'within 8 hours', 'within 12 hours'][Math.floor(Math.random() * 6)]
+      rating: parseFloat((Math.random() * 1.5 + 3.5).toFixed(1)),
+      responseTime: ['within 1 hour', 'within 2 hours', 'within 4 hours', 'within 6 hours', 'within 8 hours', 'within 12 hours'][Math.floor(Math.random() * 6)],
     } as Creator;
   })
 ]; 

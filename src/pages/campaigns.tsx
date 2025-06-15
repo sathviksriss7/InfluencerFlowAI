@@ -86,6 +86,7 @@ export default function Campaigns() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [cancellingCampaignId, setCancellingCampaignId] = useState<string | null>(null); // For disabling cancel button
+  const [selectedStatusFilter, setSelectedStatusFilter] = useState<string>("all"); // State for status filter
   const auth = useAuth(); // Use the AuthContext
 
   useEffect(() => {
@@ -121,6 +122,10 @@ export default function Campaigns() {
     }
     // Re-run if auth.session changes (e.g., user logs in/out) or auth.loading status changes
   }, [auth.session, auth.loading]); 
+
+  const handleStatusFilterChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    setSelectedStatusFilter(event.target.value);
+  };
 
   const handleCancelAICampaignOnCard = async (campaignId: string) => {
     if (!auth.session?.access_token) {
@@ -164,6 +169,13 @@ export default function Campaigns() {
       setCancellingCampaignId(null);
     }
   };
+
+  const filteredCampaigns = campaigns.filter(campaign => {
+    if (selectedStatusFilter === "all" || selectedStatusFilter === "") {
+      return true; // Show all if "all" or empty is selected
+    }
+    return campaign.status === selectedStatusFilter;
+  });
 
   const getStatusBadge = (status?: string | null) => {
     const baseClasses = "px-2 py-1 text-xs font-medium rounded-full";
@@ -281,12 +293,17 @@ export default function Campaigns() {
       {/* Filter Bar - Consider making these functional later */}
       <div className="bg-white rounded-lg shadow p-4">
         <div className="flex gap-4">
-          <select className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
-            <option>All Status</option>
-            <option>Active</option>
-            <option>Draft</option>
-            <option>In Review</option>
-            <option>Completed</option>
+          <select 
+            className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+            value={selectedStatusFilter}
+            onChange={handleStatusFilterChange}
+          >
+            <option value="all">All Status</option>
+            <option value="active">Active</option>
+            <option value="draft">Draft</option>
+            <option value="in_review">In Review</option>
+            <option value="completed">Completed</option>
+            <option value="cancelled">Cancelled</option>
           </select>
           <input
             type="text"
@@ -297,7 +314,7 @@ export default function Campaigns() {
       </div>
 
       {/* Campaign Grid */}
-      {campaigns.length === 0 ? (
+      {filteredCampaigns.length === 0 ? (
          <div className="text-center py-12 bg-white rounded-lg shadow">
          <div className="max-w-md mx-auto">
            <svg className="w-12 h-12 text-gray-400 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -315,7 +332,7 @@ export default function Campaigns() {
        </div>
       ) : (
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {campaigns.map((campaign) => {
+          {filteredCampaigns.map((campaign) => {
             const daysUntilDeadline = campaign.timeline.applicationDeadline ? getDaysUntilDeadline(campaign.timeline.applicationDeadline) : null;
             const progressPercentage = Math.round(((campaign.selected ?? 0) / Math.max(campaign.applicants ?? 1, 1)) * 100);
             
@@ -328,7 +345,7 @@ export default function Campaigns() {
           return (
               <div key={campaign.id} className="bg-white rounded-lg shadow-lg overflow-hidden flex flex-col hover:shadow-xl transition-shadow duration-300">
                 <div className="p-6 flex-grow">
-                  <div className="flex justify-between items-start mb-3">
+                <div className="flex justify-between items-start mb-3">
                     <h2 className="text-xl font-semibold text-gray-800 truncate" title={campaign.title}>{campaign.title}</h2>
                     {/* Status and Creation Method Badges */}
                     <div className="flex items-center flex-shrink-0">
@@ -337,9 +354,9 @@ export default function Campaigns() {
                         <span className={getCreationMethodBadge(campaign.creation_method)}>
                           {campaign.creation_method === 'ai' ? 'AI' : 'Human'}
                         </span>
-                      )}
-                    </div>
-                  </div>
+                        )}
+                </div>
+              </div>
                   <p className="text-sm text-gray-600 mb-1">Brand: {campaign.brand || 'N/A'}</p>
                   <p className="text-sm text-gray-500 mb-4 line-clamp-2" title={campaign.description}>{campaign.description || 'No description available.'}</p>
 
@@ -349,7 +366,7 @@ export default function Campaigns() {
                       {displayBudget ? (
                         `${budgetMinDisplay} - ${budgetMaxDisplay}`
                       ) : 'Not specified'}
-                    </div>
+              </div>
                     <div>
                       <span className="font-medium">Apply by:</span> 
                       {campaign.timeline.applicationDeadline ? formatDate(campaign.timeline.applicationDeadline) : 'Not set'}
@@ -359,18 +376,18 @@ export default function Campaigns() {
                       )}
                       {campaign.status !== 'completed' && campaign.status !== 'cancelled' && daysUntilDeadline !== null && daysUntilDeadline < 0 && (
                           <span className="text-xs text-gray-500">(Deadline passed)</span>
-                      )}
+                        )}
                     </div>
                     {campaign.timeline.startDate && (
                       <div><span className="font-medium">Starts:</span> {formatDate(campaign.timeline.startDate)}</div>
                     )}
-                  </div>
+                    </div>
                 </div>
 
                 <div className="bg-gray-50 p-4 border-t border-gray-200">
                   <div className="flex justify-between items-center">
                     <div className="text-sm text-gray-600 space-x-4">
-                      <span>Creators: {campaign.applicants || 0}</span>
+                      {/* <span>Creators: {campaign.applicants || 0}</span> */}
                       {/* Placeholder for selected count if available */}
                       {/* | Selected: {campaign.selected || 0} */}
                       
@@ -378,13 +395,13 @@ export default function Campaigns() {
                       {campaign.creation_method === 'ai' && 
                        campaign.status !== 'cancelled' && 
                        campaign.status !== 'completed' && (
-                        <button
+                    <button 
                           onClick={() => handleCancelAICampaignOnCard(campaign.id)}
                           disabled={cancellingCampaignId === campaign.id}
                           className="text-sm font-medium text-red-600 hover:text-red-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
+                    >
                           {cancellingCampaignId === campaign.id ? 'Cancelling...' : 'Cancel Campaign'}
-                        </button>
+                  </button>
                       )}
                     </div>
                     <Link 
@@ -393,16 +410,31 @@ export default function Campaigns() {
                     >
                       View Details &rarr;
                     </Link>
-                  </div>
                 </div>
               </div>
-            );
-          })}
-        </div>
+            </div>
+          );
+        })}
+      </div>
       )}
 
       {/* Empty State for additional campaigns - This might be redundant if the campaigns.length === 0 check above handles it well */}
       {/* Conditionally render this only if there ARE campaigns, but you want to encourage more */}
+      {campaigns.length > 0 && filteredCampaigns.length === 0 && selectedStatusFilter !== 'all' && (
+        <div className="text-center py-12 bg-white rounded-lg shadow">
+          <div className="max-w-md mx-auto">
+            <svg className="w-12 h-12 text-gray-400 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9.172 16.172a4 4 0 015.656 0m9.172-9.172a4 4 0 010 5.656m-5.656 5.656a4 4 0 01-5.656 0M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+            <h3 className="text-lg font-medium text-gray-900 mb-2">No Campaigns Match "{selectedStatusFilter}"</h3>
+            <p className="text-gray-500 mb-4">Try selecting a different status or viewing all campaigns.</p>
+            <button 
+              onClick={() => setSelectedStatusFilter("all")}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
+            >
+              Show All Campaigns
+            </button>
+          </div>
+        </div>
+      )}
       {campaigns.length > 0 && (
       <div className="text-center py-12 bg-white rounded-lg shadow">
         <div className="max-w-md mx-auto">

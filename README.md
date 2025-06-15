@@ -226,38 +226,38 @@
 ### Backend Setup
 
 1.  **Clone the repository (if you haven't already):**
-    ```bash
+   ```bash
     git clone https://github.com/yourusername/influencerflowai.git # Replace with your repo URL
-    cd influencerflowai
-    ```
+   cd influencerflowai
+   ```
 
 2.  **Navigate to the backend directory:**
     ```bash
     cd backend
     ```
 3.  **Create and activate a Python virtual environment:**
-    ```bash
+   ```bash
     python3 -m venv venv
     source venv/bin/activate  # On Windows use `venv\Scripts\activate`
-    ```
+   ```
 4.  **Install Python dependencies:**
-    ```bash
+   ```bash
     pip install -r requirements.txt
     ```
 5.  **🚨 CRITICAL: Create Backend Environment File**
     Ensure you are in the `backend` directory.
-    ```bash
+   ```bash
     cp .env.example .env
     ```
 6.  **Configure Backend Environment Variables** ⚡
     Edit `backend/.env` with your actual values:
     ```env
     # Supabase Configuration
-    VITE_SUPABASE_URL="https://YOUR_PROJECT_REF.supabase.co"
+   VITE_SUPABASE_URL="https://YOUR_PROJECT_REF.supabase.co"
     VITE_SUPABASE_SERVICE_KEY="YOUR_SUPABASE_SERVICE_ROLE_KEY" # For backend admin/service operations
-
+   
     # Groq API Configuration
-    VITE_GROQ_API_KEY="gsk_YOUR_ACTUAL_API_KEY_HERE"
+   VITE_GROQ_API_KEY="gsk_YOUR_ACTUAL_API_KEY_HERE"
 
     # Twilio Configuration
     TWILIO_ACCOUNT_SID="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
@@ -275,7 +275,7 @@
 
 7.  **Run the Flask backend server:**
     From the `backend` directory:
-    ```bash
+   ```bash
     python app.py
     ```
     The backend will typically start on `http://127.0.0.1:5000`. Check the terminal output.

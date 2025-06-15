@@ -62,10 +62,10 @@ const CampaignDetailPage: React.FC = () => {
 
     if (!session?.access_token) {
       setError("Authentication token not found. Please log in.");
-      setLoading(false);
-      return;
-    }
-
+        setLoading(false);
+        return;
+      }
+      
     if (campaignId) {
       const accessToken = session.access_token;
       
@@ -103,7 +103,7 @@ const CampaignDetailPage: React.FC = () => {
         .catch(err => {
           console.error("Error fetching campaign details:", err);
           if (!passedCampaign) {
-            setError(err.message);
+          setError(err.message);
           }
         })
         .finally(() => {
@@ -210,12 +210,12 @@ const CampaignDetailPage: React.FC = () => {
                 {isCancelling ? 'Cancelling...' : 'Cancel AI Campaign'}
               </button>
             )}
-            <Link 
-              to="/campaigns" 
+          <Link 
+            to="/campaigns" 
               className="text-sm bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-3 rounded-md transition duration-150 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-white"
-            >
-              &larr; Back to Campaigns
-            </Link>
+          >
+            &larr; Back to Campaigns
+          </Link>
           </div>
         </div>
 
