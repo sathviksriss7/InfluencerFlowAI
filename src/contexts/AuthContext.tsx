@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
 import type { User, Session, AuthError } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 
@@ -32,20 +32,21 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   useEffect(() => {
     // Get initial session
     const getInitialSession = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      setSession(session);
-      setUser(session?.user ?? null);
+      const { data: { session: initialSession } } = await supabase.auth.getSession();
+      setSession(initialSession);
+      setUser(initialSession?.user ?? null);
       setLoading(false);
+      console.log('Auth event: INITIAL_SESSION', initialSession);
     };
 
     getInitialSession();
 
     // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        console.log('Auth event:', event);
-        setSession(session);
-        setUser(session?.user ?? null);
+      async (event, currentSession) => {
+        console.log('Auth event:', event, currentSession);
+        setSession(currentSession);
+        setUser(currentSession?.user ?? null);
         setLoading(false);
       }
     );
@@ -68,13 +69,13 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     return { error };
   };
 
-  const value: AuthContextType = {
+  const value = useMemo(() => ({
     user,
     session,
     loading,
     signInWithGoogle,
     signOut,
-  };
+  }), [user, session, loading]);
 
   return (
     <AuthContext.Provider value={value}>

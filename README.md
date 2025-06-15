@@ -47,30 +47,33 @@
 - **Seamless Fallbacks**: Advanced algorithmic alternatives when API limits reached
 - **Real-time Feedback**: Live API usage tracking with visual indicators
 
-### 🤝 **AI Negotiation Agent** (NEW!) ⚡
+### 🤝 **AI Negotiation Agent** (NEW & ENHANCED!) ⚡
 
-**Revolutionary AI-powered negotiation system with conversation memory and stage-aware strategies.**
+**Revolutionary AI-powered negotiation system with conversation memory, stage-aware strategies, and live voice call capabilities.**
 
 #### **Key Features**
-- **Conversation History Tracking**: Complete message history with metadata storage
-- **Stage-Aware Negotiations**: AI understands negotiation phases (interested → negotiating → deal closed)
-- **Context-Aware Responses**: AI remembers previous conversations for natural flow
-- **Professional Message Separation**: Clean messages to creators, metadata stored separately
-- **Batch Processing**: Auto-negotiate with multiple creators simultaneously
-- **Strategic Insights**: Real-time negotiation tactics and offer recommendations
+- **📞 Live Voice Negotiation Calls**: Initiate and conduct real-time voice negotiations with creators.
+- **Conversation History Tracking**: Complete message history (email and call transcripts) with metadata storage.
+- **Stage-Aware Negotiations**: AI understands negotiation phases (interested → negotiating → deal closed).
+- **Context-Aware Responses**: AI remembers previous email and call conversations for natural flow.
+- **Improved Speech Handling**: Robust handling of low-confidence speech recognition during calls to ensure clarity.
+- **Professional Message Separation**: Clean messages to creators, metadata stored separately.
+- **Batch Processing**: Auto-negotiate with multiple creators simultaneously via email.
+- **Strategic Insights**: Real-time negotiation tactics and offer recommendations.
 
-#### **Conversation Management**
-- **Memory-Enabled AI**: Builds on previous discussion points naturally
-- **Message Threading**: Complete conversation history with timestamps
-- **Sender Identification**: Clear tracking of brand, creator, and AI messages
-- **Metadata Storage**: Strategy information separate from actual messages
-- **Real-time Sync**: Updates across negotiation and outreach interfaces
+#### **Conversation Management** (Enhanced!)
+- **Memory-Enabled AI**: Builds on previous discussion points naturally, leveraging full email history (including creator replies) and live call transcripts.
+- **Message Threading**: Complete conversation history with timestamps for all interactions.
+- **Sender Identification**: Clear tracking of brand, creator, and AI messages across all communication channels.
+- **Metadata Storage**: Strategy information, call details (SIDs, recordings), and AI insights stored separately from actual messages.
+- **Real-time Sync**: Updates across negotiation and outreach interfaces.
 
 #### **Intelligent Negotiations**
-- **Multi-Phase Handling**: Adapts strategy based on negotiation stage
-- **Strategic Pricing**: AI-recommended offers with detailed reasoning
-- **Professional Communication**: Business-appropriate messages without AI metadata
-- **Success Tracking**: Comprehensive analytics on negotiation outcomes
+- **Multi-Phase Handling**: Adapts strategy based on negotiation stage (email and voice).
+- **Contextual Voice Agent Prompts**: Voice agent is primed with both prior email summaries and the ongoing live call transcript.
+- **Strategic Pricing**: AI-recommended offers with detailed reasoning.
+- **Professional Communication**: Business-appropriate messages without AI metadata.
+- **Success Tracking**: Comprehensive analytics on negotiation outcomes.
 
 ### 🤖 **Real AI-Powered Features** (Enhanced!)
 
@@ -183,6 +186,23 @@
 - **Real-time Synchronization**: Live updates across all platform components
 - **Comprehensive Mock Database**: 100+ creators, 18 campaigns, 25 deals, 14 contracts, 35 payments
 - **RESTful API Design**: Scalable and maintainable data architecture
+
+### Backend
+- **Python 3.10+** with **Flask** for robust API development
+- **Twilio Integration**: For programmable voice call capabilities.
+- **ElevenLabs Integration**: For dynamic, high-quality Text-to-Speech generation.
+- **Groq API Integration**: For LLM-powered decision making and text generation in voice calls and email.
+- **Environment Variable Management**: Secure configuration using `.env` files
+- **CORS Enabled**: For seamless frontend-backend communication
+- **Detailed Logging**: For easier debugging and monitoring
+- **Data Validation**: Using Pydantic or similar for request/response validation (implied)
+- **Error Handling**: Consistent error responses
+- **New Voice Endpoints**:
+    - `/api/voice/make-call`: Initiates outbound Twilio calls.
+    - `/api/voice/handle_user_speech`: Processes speech input from Twilio during a call.
+    - `/api/voice/call-status`: Polls for call status and retrieves artifacts.
+    - `/api/voice/call-artifacts`: Retrieves specific call artifacts like recordings and transcripts.
+- Manages call state, conversation history for live calls, and interaction with AI services.
 
 ## 🚀 Getting Started
 

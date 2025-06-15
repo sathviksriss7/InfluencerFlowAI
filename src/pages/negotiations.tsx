@@ -341,19 +341,19 @@ export default function Negotiations() {
                             
                             {/* Display Other Metadata (e.g., from negotiation) */}
                             {message.type === 'negotiation' && message.metadata && (
-                              <div className="mt-2 text-xs opacity-75">
+                        <div className="mt-2 text-xs opacity-75">
                                 {message.metadata.suggestedOffer && (
                                   <p>💰 Suggested: ₹{message.metadata.suggestedOffer.toLocaleString()}</p>
                                 )}
                                 {message.metadata.strategy && (
                                   <p>🎯 Phase: {message.metadata.strategy.replace('_', ' ')}</p>
-                                )}
-                              </div>
-                            )}
-                            <p className="text-xs opacity-50 mt-1">
-                              {formatTime(message.timestamp)}
-                            </p>
-                      </div>
+                          )}
+                        </div>
+                      )}
+                      <p className="text-xs opacity-50 mt-1">
+                        {formatTime(message.timestamp)}
+                      </p>
+                    </div>
                   </div>
                 ))}
                     </div>

@@ -247,14 +247,14 @@ class AIOutreachService {
       id: `fallback_followup_${Date.now()}_${creator.id}`,
       creatorId: creator.id, subject, body, type: 'follow_up', timestamp: new Date(), brandInfo
     };
-    return { 
+    return {
       email, reasoning: "Standard local fallback follow-up.", keyPoints: ["Gentle reminder"], 
       nextSteps: ["Monitor for response"], confidence: 0.35, method: 'algorithmic_fallback' 
     };
   }
 
   // Example BrandInfo can be kept for testing or UI examples
-  getExampleBrandInfo(): BrandInfo { 
+  getExampleBrandInfo(): BrandInfo {
     return {
         name: "EcoWear Collective", industry: "Sustainable Fashion",
         campaignGoals: ["Increase brand awareness", "Drive sales for new recycled apparel line"],

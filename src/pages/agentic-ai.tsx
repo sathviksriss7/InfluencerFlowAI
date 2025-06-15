@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { 
-  aiAgentsService, 
+  aiAgentsService,
   createExampleRequirements,
   type BusinessRequirements,
   type AgentWorkflowResult,
@@ -61,70 +61,54 @@ export default function AgenticAI() {
     setWorkflowResult(null);
     setCurrentStep(0);
 
-    // Reset workflow steps
     setWorkflowSteps(steps => steps.map(step => ({ ...step, status: 'pending', duration: undefined })));
 
     try {
-      // const stepTimings: number[] = [];
-      // const startTime = Date.now();
-
-      // Step 1: Campaign Building
-      setWorkflowSteps(steps => steps.map((step, index) => 
-        index === 0 ? { ...step, status: 'running' } : step
-      ));
+      setWorkflowSteps(steps => steps.map((s, i) => i === 0 ? { ...s, status: 'running' } : s));
       setCurrentStep(1);
-
-      const step1Start = Date.now();
+      
       const result = await aiAgentsService.executeFullWorkflow(requirements);
-      const step1Duration = Date.now() - step1Start;
 
-      // Simulate step progression for better UX
+      const totalReportedTime = result.workflowInsights.totalProcessingTime || 2000;
+
       setWorkflowSteps(steps => steps.map((step, index) => 
-        index === 0 ? { ...step, status: 'completed', duration: Math.floor(step1Duration / 3) } : step
+        index === 0 ? { ...step, status: 'completed', duration: Math.floor(totalReportedTime * 0.3) } : step
       ));
 
-      // Step 2: Creator Discovery
       setWorkflowSteps(steps => steps.map((step, index) => 
         index === 1 ? { ...step, status: 'running' } : step
       ));
       setCurrentStep(2);
-
-      await new Promise(resolve => setTimeout(resolve, 500)); // Visual delay
+      await new Promise(resolve => setTimeout(resolve, 300)); 
       setWorkflowSteps(steps => steps.map((step, index) => 
-        index === 1 ? { ...step, status: 'completed', duration: Math.floor(step1Duration / 3) } : step
+        index === 1 ? { ...step, status: 'completed', duration: Math.floor(totalReportedTime * 0.3) } : step
       ));
 
-      // Step 3: Scoring & Matching
       setWorkflowSteps(steps => steps.map((step, index) => 
         index === 2 ? { ...step, status: 'running' } : step
       ));
       setCurrentStep(3);
-
-      await new Promise(resolve => setTimeout(resolve, 300)); // Visual delay
+      await new Promise(resolve => setTimeout(resolve, 200));
       setWorkflowSteps(steps => steps.map((step, index) => 
-        index === 2 ? { ...step, status: 'completed', duration: Math.floor(step1Duration / 3) } : step
+        index === 2 ? { ...step, status: 'completed', duration: Math.floor(totalReportedTime * 0.2) } : step
       ));
 
-      // Step 4: Outreach
       setWorkflowSteps(steps => steps.map((step, index) => 
         index === 3 ? { ...step, status: 'running' } : step
       ));
       setCurrentStep(4);
-
-      await new Promise(resolve => setTimeout(resolve, 200)); // Visual delay
+      await new Promise(resolve => setTimeout(resolve, 100)); 
       setWorkflowSteps(steps => steps.map((step, index) => 
-        index === 3 ? { ...step, status: 'completed', duration: 200 } : step
+        index === 3 ? { ...step, status: 'completed', duration: Math.floor(totalReportedTime * 0.1) } : step
       ));
 
-      // Step 5: Finalization
       setWorkflowSteps(steps => steps.map((step, index) => 
         index === 4 ? { ...step, status: 'running' } : step
       ));
       setCurrentStep(5);
-
-      await new Promise(resolve => setTimeout(resolve, 200)); // Visual delay
+      await new Promise(resolve => setTimeout(resolve, 100)); 
       setWorkflowSteps(steps => steps.map((step, index) => 
-        index === 4 ? { ...step, status: 'completed', duration: 200 } : step
+        index === 4 ? { ...step, status: 'completed', duration: Math.floor(totalReportedTime * 0.1) } : step
       ));
 
       setWorkflowResult(result);
@@ -134,7 +118,6 @@ export default function AgenticAI() {
       console.error('Agentic AI Workflow Error:', error);
       const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred';
       
-      // Provide specific UI feedback for rate limiting
       if (errorMessage.includes('Rate limit exceeded')) {
         setError('⏳ API rate limit reached. The system automatically uses offline algorithms when this happens. You can try again in a few minutes for full AI analysis, or proceed with the current results.');
       } else if (errorMessage.includes('API authentication failed')) {
@@ -175,7 +158,6 @@ export default function AgenticAI() {
 
   return (
     <div className="space-y-6">
-      {/* Header with Tabs */}
       <div className="bg-gradient-to-r from-purple-600 via-blue-600 to-indigo-600 text-white rounded-lg shadow-lg">
         <div className="p-6">
           <div className="flex items-center justify-between mb-6">
@@ -198,7 +180,6 @@ export default function AgenticAI() {
             </div>
           </div>
 
-          {/* Tab Navigation */}
           <div className="flex space-x-1 bg-white bg-opacity-10 rounded-lg p-1">
             <button
               onClick={() => setActiveTab('campaign-builder')}
@@ -224,10 +205,8 @@ export default function AgenticAI() {
         </div>
       </div>
 
-      {/* Tab Content */}
       {activeTab === 'campaign-builder' && (
         <>
-          {/* API Key Warning */}
           {!isAIAvailable && (
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
               <div className="flex items-start gap-3">
@@ -235,17 +214,17 @@ export default function AgenticAI() {
                   <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.232 16.5c-.77.833.192 2.5 1.732 2.5z"/>
                 </svg>
                 <div>
-                  <h3 className="font-medium text-amber-800">Setup Required</h3>
+                  <h3 className="font-medium text-amber-800">Setup Required for Full AI Features</h3>
                   <p className="text-amber-700 text-sm mt-1">
                     Add <code className="bg-amber-100 px-1 rounded">VITE_GROQ_API_KEY="your-key"</code> to your .env.local file.
-                    Get your free API key from <a href="https://console.groq.com/" target="_blank" rel="noopener noreferrer" className="underline">console.groq.com</a>
+                    Get your free API key from <a href="https://console.groq.com/" target="_blank" rel="noopener noreferrer" className="underline">console.groq.com</a>.
+                    Negotiation Agent voice calls will still work if backend is configured.
                   </p>
                 </div>
               </div>
             </div>
           )}
 
-          {/* Rate Limiting Info */}
           {isAIAvailable && (
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
               <div className="flex items-start gap-3">
@@ -257,14 +236,14 @@ export default function AgenticAI() {
                     <h3 className="font-medium text-blue-800">Smart Rate Limiting</h3>
                     <div className="flex items-center gap-2">
                       <div className="text-sm font-medium text-blue-700">
-                        API Calls: {aiAgentsService.getGlobalStatus().remaining}/3 available
+                        API Calls: {aiAgentsService.getGlobalStatus().remaining}/{aiAgentsService.getGlobalStatus().total} available
                       </div>
                       <div className="flex gap-1">
-                        {[1,2,3].map(i => (
+                        {[...Array(aiAgentsService.getGlobalStatus().total)].map((_, i) => (
                           <div 
                             key={i} 
                             className={`w-2 h-2 rounded-full ${
-                              i <= aiAgentsService.getGlobalStatus().remaining 
+                              i < aiAgentsService.getGlobalStatus().remaining 
                                 ? 'bg-green-400' 
                                 : 'bg-gray-300'
                             }`} 
@@ -280,7 +259,7 @@ export default function AgenticAI() {
                   {aiAgentsService.getGlobalStatus().remaining === 0 && (
                     <div className="mt-2 p-2 bg-amber-100 border border-amber-200 rounded text-amber-800 text-sm">
                       ⏳ <strong>Rate limit reached:</strong> Next requests will use advanced algorithmic analysis. 
-                      API calls reset in ~1 minute for full AI capabilities.
+                      API calls reset in ~{Math.ceil((aiAgentsService.getGlobalStatus().resetTime - Date.now()) / 60000)} minute(s) for full AI capabilities.
                     </div>
                   )}
                 </div>
@@ -288,9 +267,7 @@ export default function AgenticAI() {
             </div>
           )}
 
-          {/* Campaign Builder Content */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Input Form */}
             <div className={`${workflowResult ? 'lg:col-span-1' : 'lg:col-span-2'} space-y-6`}>
               <div className="bg-white rounded-lg shadow p-6">
                 <h2 className="text-lg font-semibold text-gray-900 mb-4">
@@ -298,7 +275,6 @@ export default function AgenticAI() {
                 </h2>
                 
                 <div className="space-y-4">
-                  {/* Company & Industry */}
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">Company Name</label>
@@ -323,7 +299,6 @@ export default function AgenticAI() {
                     </div>
                   </div>
 
-                  {/* Product/Service */}
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Product/Service</label>
                     <input
@@ -334,7 +309,6 @@ export default function AgenticAI() {
                     />
                   </div>
 
-                  {/* Business Goals */}
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Business Goals</label>
                     <div className="grid grid-cols-2 gap-2">
@@ -355,7 +329,6 @@ export default function AgenticAI() {
                     </div>
                   </div>
 
-                  {/* Target Audience */}
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Target Audience</label>
                     <input
@@ -366,7 +339,6 @@ export default function AgenticAI() {
                     />
                   </div>
 
-                  {/* Campaign Objective */}
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Campaign Objective</label>
                     <input
@@ -377,7 +349,6 @@ export default function AgenticAI() {
                     />
                   </div>
 
-                  {/* Budget Range */}
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Budget Range (₹)</label>
                     <div className="grid grid-cols-2 gap-2">
@@ -404,7 +375,6 @@ export default function AgenticAI() {
                     </div>
                   </div>
 
-                  {/* Preferred Platforms */}
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Preferred Platforms</label>
                     <div className="grid grid-cols-3 gap-2">
@@ -425,7 +395,6 @@ export default function AgenticAI() {
                     </div>
                   </div>
 
-                  {/* Outreach Configuration */}
                   <div className="border-t border-gray-200 pt-4">
                     <h3 className="text-sm font-semibold text-gray-900 mb-3">🤖 Autonomous Outreach</h3>
                     
@@ -466,7 +435,6 @@ export default function AgenticAI() {
                   </div>
                 </div>
 
-                {/* Action Buttons */}
                 <div className="flex gap-3 mt-6 pt-6 border-t border-gray-200">
                   <button
                     onClick={runAgenticWorkflow}
@@ -504,9 +472,7 @@ export default function AgenticAI() {
               </div>
             </div>
 
-            {/* Workflow Progress */}
             <div className={`${workflowResult ? 'lg:col-span-2' : 'lg:col-span-1'} space-y-6`}>
-              {/* Agent Progress */}
               <div className="bg-white rounded-lg shadow p-6">
                 <h2 className="text-lg font-semibold text-gray-900 mb-4">
                   🤖 AI Agent Progress
@@ -562,7 +528,6 @@ export default function AgenticAI() {
                 )}
               </div>
 
-              {/* Results Preview */}
               {workflowResult && (
                 <div className="bg-white rounded-lg shadow p-6">
                   <div className="flex items-center justify-between mb-4">
@@ -653,12 +618,10 @@ export default function AgenticAI() {
         </>
       )}
 
-      {/* Negotiation Agent Tab */}
       {activeTab === 'negotiation-agent' && (
-        <NegotiationAgent />
+        <NegotiationAgent key="negotiation-agent-instance" />
       )}
 
-      {/* Full Results View */}
       {activeTab === 'campaign-builder' && workflowResult && (
         <div className="bg-white rounded-lg shadow p-6">
           <h2 className="text-xl font-semibold text-gray-900 mb-6">
@@ -666,7 +629,6 @@ export default function AgenticAI() {
           </h2>
           
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Generated Campaign Details */}
             <div>
               <h3 className="text-lg font-semibold text-gray-900 mb-4">
                 📋 Generated Campaign
@@ -712,9 +674,7 @@ export default function AgenticAI() {
               </div>
             </div>
 
-            {/* Creator Matches & Outreach */}
             <div className="space-y-6">
-              {/* Creator Matches */}
               <div>
                 <h3 className="text-lg font-semibold text-gray-900 mb-4">
                   👥 Creator Matches ({workflowResult.creatorMatches.length})
@@ -757,7 +717,6 @@ export default function AgenticAI() {
                 </div>
               </div>
 
-              {/* Outreach Summary */}
               {workflowResult.outreachSummary && (
                 <div>
                   <h3 className="text-lg font-semibold text-gray-900 mb-4">
@@ -809,7 +768,6 @@ export default function AgenticAI() {
         </div>
       )}
 
-      {/* AI Outreach Manager Modal */}
       {showOutreachManager && workflowResult && (
         <AIOutreachManager
           searchResults={getTopCreators().map(match => match.creator)}

@@ -7,7 +7,7 @@ import requests
 import json
 from functools import wraps # For decorator
 from supabase import create_client, Client # Supabase client
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone # Added timezone
 
 # Import Twilio and ElevenLabs
 from twilio.rest import Client as TwilioClient
@@ -253,6 +253,64 @@ def generate_advanced_fallback_strategy(outreach_data):
         "recommendedOffer": {"amount": round(base_offer * 1.1), "reasoning": "Algorithmic suggestion based on initial offer/base value."},
         "nextSteps": ["Schedule a call", "Prepare campaign brief"]
     }
+
+# NEW FUNCTION START
+def build_live_voice_negotiation_prompt(call_sid):
+    call_data = call_artifacts_store.get(call_sid)
+    if not call_data:
+        print(f"❌ build_live_voice_negotiation_prompt: No call_data found for SID {call_sid}")
+        return None
+
+    creator_name = call_data.get('creator_name', 'the creator')
+    brand_name = call_data.get('brand_name', 'our company')
+    campaign_objective = call_data.get('campaign_objective', 'discuss a potential collaboration')
+    live_call_history_list = call_data.get('conversation_history', [])
+    # Retrieve the stored email summary
+    email_summary = call_data.get('email_conversation_summary', "No prior email conversation summary available.")
+
+    # Format live call conversation history
+    formatted_live_call_history = ""
+    if not live_call_history_list:
+        formatted_live_call_history = "The live call has just started."
+    else:
+        history_lines = []
+        for turn in live_call_history_list:
+            speaker = f"You (AI Agent)" if turn.get('speaker') == 'ai' else f"{creator_name} (User)"
+            text = turn.get('text', '[speech not transcribed]')
+            history_lines.append(f"{speaker}: {text}")
+        formatted_live_call_history = "\\n".join(history_lines)
+
+    email_context_section = ""
+    # Check if email_summary has meaningful content before including it
+    if email_summary and email_summary.strip() and \
+       email_summary not in ["No prior email conversation summary available.", "No prior email conversation summary provided."]:
+        email_context_section = f'''
+PREVIOUS EMAIL CONVERSATION SUMMARY:
+{email_summary}
+---
+'''
+
+    # Construct the main prompt using standard multi-line f-string
+    prompt = f'''You are a friendly, professional, and highly skilled AI negotiation agent representing {brand_name}.
+Your primary goal is to engage {creator_name} in a productive voice conversation to {campaign_objective}, building upon any previous email discussions.
+{email_context_section}
+LIVE CALL CONVERSATION HISTORY SO FAR:
+{formatted_live_call_history.strip()}
+
+YOUR TASK:
+Based on ALL available context (previous emails and this live call), generate the *next thing you should say* to {creator_name}.
+- Refer to the email summary if relevant to bridge the conversation, but focus on the live interaction.
+- Keep your response concise (1-2 sentences) and natural for a voice call.
+- Actively listen to the user. If their response is unclear, confusing, or off-topic, acknowledge it briefly and gently guide the conversation back towards the campaign objective or seek clarification. Example: "I see. To help me understand better, could you tell me more about [relevant aspect]?" or "That's interesting. Coming back to our discussion about [campaign objective], what are your initial thoughts on...?"
+- Proactively steer the conversation towards achieving the {campaign_objective}. Don't just ask questions; also offer brief, relevant information about the potential collaboration when appropriate.
+- If the user asks a question, answer it directly if possible. If you don't know the answer, politely say so and offer to find out.
+- Maintain a positive and engaging tone.
+- Do NOT use any special characters, markdown, or formatting. Output only the plain text of your spoken response.
+
+Your response:'''
+    
+    return prompt
+# NEW FUNCTION END
 
 @app.route('/api/negotiation/generate-strategy', methods=['POST'])
 @token_required # Apply the JWT authentication decorator
@@ -969,7 +1027,7 @@ Response format (JSON only):
     "location": "e.g., USA"
   }},
   "keyRequirements": ["most important requirement 1", "requirement 2"],
-  "confidence": 0.85 // Your confidence in this analysis (0.0-1.0)
+  "confidence": 0.85
 }}
 
 Ensure the entire response is a single, valid JSON object. If a criterion is not mentioned, omit it or use null/empty list.
@@ -1433,26 +1491,35 @@ def generate_audio_with_elevenlabs(text_to_speak, call_sid_for_filename="unknown
     temp_file_path = None # Initialize to ensure it has a value in case of early exit
     try:
         print(f"🔊 ElevenLabs: Attempting TTS for: {text_to_speak[:50]}...")
+        start_time_tts_api = datetime.now() # Timing start for API call
         
         audio_stream = elevenlabs_client.text_to_speech.stream(
             text=text_to_speak,
             voice_id=elevenlabs_voice_id, 
-            model_id="eleven_multilingual_v2"
+            model_id="eleven_turbo_v2_5",
+            output_format="mp3_44100_32"  # CHANGED for potentially lower latency
         )
         
-        filename = f"{call_sid_for_filename}_{uuid.uuid4()}.mp3" # Include call_sid for better tracking
+        filename = f"{call_sid_for_filename}_{uuid.uuid4()}.mp3"
         temp_file_path = os.path.join(TEMP_AUDIO_DIR, filename)
         
         print(f"👂 ElevenLabs: Stream object created. Attempting to save to {temp_file_path}...")
         bytes_written = 0
+        start_time_save_file = datetime.now() # Timing start for file save
         with open(temp_file_path, "wb") as f:
             for chunk in audio_stream:
                 if chunk:
                     f.write(chunk)
                     bytes_written += len(chunk)
-            print(f"👂 ElevenLabs: Finished writing to stream. Total bytes attempted: {bytes_written}.")
         
-        # Check if file was actually created and has content
+        end_time_save_file = datetime.now() # Timing end for file save
+        time_taken_save_file = (end_time_save_file - start_time_save_file).total_seconds()
+        print(f"👂 ElevenLabs: Finished writing to stream. Total bytes attempted: {bytes_written}. File save took: {time_taken_save_file:.2f}s.")
+            
+        end_time_tts_api = datetime.now() # Timing end for API call + stream handling
+        time_taken_tts_api = (end_time_tts_api - start_time_tts_api).total_seconds()
+        print(f"⏱️ ElevenLabs TTS API call & stream handling took: {time_taken_tts_api:.2f}s (includes file write).")
+
         if not os.path.exists(temp_file_path) or os.path.getsize(temp_file_path) == 0:
             print(f"⚠️ ElevenLabs TTS Error: File not created or is empty at {temp_file_path} after generation attempt. Bytes written: {bytes_written}.")
             if os.path.exists(temp_file_path): # If it exists but is empty
@@ -1489,79 +1556,96 @@ def generate_audio_with_elevenlabs(text_to_speak, call_sid_for_filename="unknown
 @token_required
 def make_outbound_call():
     if not twilio_client:
-        return jsonify({"success": False, "error": "Twilio client not configured on backend."}), 500
+        return jsonify({"success": False, "error": "Twilio client not initialized"}), 500
 
-    data = request.json
-    to_phone_number = data.get('to_phone_number')
-    initial_message_text = data.get('message', "Hello from InfluencerFlowAI. This is a test call.")
-    outreach_id = data.get('outreach_id', 'unknown_outreach') 
-
-    if not to_phone_number:
-        return jsonify({"success": False, "error": "Missing 'to_phone_number' in request body."}), 400
-
-    # Step 1: Generate audio for the initial message
-    # CallSid is not known yet, so use outreach_id or a generic marker for the filename suggestion
-    initial_audio_url_for_twilio, temp_initial_audio_path = generate_audio_with_elevenlabs(initial_message_text, f"initial_{outreach_id}")
-    
     try:
-        base_url_for_callbacks = os.getenv("BACKEND_PUBLIC_URL", f"http://localhost:{os.getenv('PORT', 5001)}").rstrip('/')
+        data = request.get_json()
+        to_phone_number = data.get('to_phone_number')
+        initial_message_text = data.get('message') 
+        outreach_id = data.get('outreach_id') 
+        creator_name = data.get('creator_name', 'Valued Creator') 
+        brand_name = data.get('brand_name', 'Our Brand')       
+        campaign_objective = data.get('campaign_objective', 'Discuss potential collaboration') 
+        # ADDED: Get email conversation summary from the request
+        email_conversation_summary = data.get('conversationHistorySummary', "No prior email conversation summary provided.")
+
+        if not to_phone_number or not initial_message_text:
+            return jsonify({"success": False, "error": "Missing to_phone_number or message"}), 400
         
-        # The URL Twilio will request for the agent's first turn.
-        agent_turn_twiml_url_base = f"{base_url_for_callbacks}/api/voice/agent_turn_twiml"
-        
-        from urllib.parse import urlencode
-        twiml_params = {
-            "outreach_id": outreach_id
-        }
-        if initial_audio_url_for_twilio:
-            twiml_params['ai_audio_url'] = initial_audio_url_for_twilio
+        twiml_to_use = None
+        temp_audio_public_url = None 
+        backend_public_url = os.getenv("BACKEND_PUBLIC_URL", f"http://localhost:{os.getenv('PORT', 5001)}").rstrip('/')
+        handle_user_speech_url = f"{backend_public_url}/api/voice/handle_user_speech"
+        print(f"DEBUG: handle_user_speech_url in make_outbound_call: {handle_user_speech_url}") # DEBUG LINE ADDED
+
+        if not elevenlabs_client and not elevenlabs_api_key: 
+            print("📞 ElevenLabs client/key not available, using Twilio basic TTS for initial message.")
+            response = VoiceResponse()
+            response.say(initial_message_text, voice='alice')
+            gather = Gather(input='speech', action=handle_user_speech_url, method='POST', speechTimeout='auto')
+            response.append(gather)
+            response.say("We didn't catch that. Could you please repeat?", voice='alice') 
+            response.hangup() 
+            twiml_to_use = str(response)
         else:
-            # Fallback to sending text if ElevenLabs failed for the initial message
-            twiml_params['ai_message_text'] = initial_message_text
+            try:
+                generated_url, _ = generate_audio_with_elevenlabs(initial_message_text, call_sid_for_filename=f"initial_{outreach_id or 'ad_hoc'}")
+                temp_audio_public_url = generated_url 
+                
+                if not temp_audio_public_url:
+                    raise Exception("ElevenLabs audio generation failed to return a URL.")
 
-        final_agent_turn_url = f"{agent_turn_twiml_url_base}?{urlencode(twiml_params)}"
-        
-        recording_status_callback_url = f"{base_url_for_callbacks}/api/voice/recording-status?outreach_id={outreach_id}"
+                response = VoiceResponse()
+                response.play(temp_audio_public_url) 
+                gather = Gather(input='speech', action=handle_user_speech_url, method='POST', speechTimeout='auto')
+                response.append(gather)
+                response.say("We didn't catch that. Could you please repeat?", voice='alice')
+                response.hangup()
+                twiml_to_use = str(response)
 
-        print(f"📞 Twilio: Making call to {to_phone_number} from {twilio_phone_number} using TwiML URL for agent's first turn: {final_agent_turn_url}")
-        print(f"   Full call recording callback: {recording_status_callback_url}")
-        
+            except Exception as e_elevenlabs:
+                print(f"❌ ElevenLabs TTS usage or subsequent TwiML construction failed: {e_elevenlabs}. Falling back to Twilio basic TTS for initial message.")
+                response = VoiceResponse()
+                response.say(initial_message_text, voice='alice')
+                gather = Gather(input='speech', action=handle_user_speech_url, method='POST', speechTimeout='auto')
+                response.append(gather)
+                response.say("We didn't catch that. Could you please repeat?", voice='alice')
+                response.hangup()
+                twiml_to_use = str(response)
+                temp_audio_public_url = None 
+
         call = twilio_client.calls.create(
-            to=str(to_phone_number),
-            from_=str(twilio_phone_number),
-            url=str(final_agent_turn_url), 
-            method="POST", # TwiML fetching endpoint should be POST
-            record=True, 
-            recording_status_callback=str(recording_status_callback_url),
-            recording_status_callback_method="POST",
-            recording_status_callback_event=['completed'] 
+            twiml=twiml_to_use,
+            to=to_phone_number,
+            from_=twilio_phone_number,
+            status_callback=f'{backend_public_url}/api/voice/recording-status',
+            status_callback_event=['completed'],
+            record=True,
         )
-        print(f"✅ Twilio call (2-way setup) initiated. SID: {call.sid}, Status: {call.status}")
 
-        # Initialize artifact store for this call
-        if call.sid not in call_artifacts_store:
-            call_artifacts_store[call.sid] = {
-                'outreach_id': outreach_id,
-                'conversation_history': [],
-                'full_recording_url': None, # Will be populated by callback
-                'full_recording_duration': None # Will be populated by callback
-            }
-        # Add initial AI message to history
-        call_artifacts_store[call.sid]['conversation_history'].append({
-            'speaker': 'ai',
-            'text': initial_message_text,
-            'audio_url': initial_audio_url_for_twilio # Store the audio URL if generated
-        })
-        # Note: temp_initial_audio_path could be cleaned up later, e.g., after the call ends or via a periodic job
+        call_sid = call.sid
+        print(f"📞 Call initiated with SID: {call_sid} to {to_phone_number}. Outreach ID: {outreach_id}")
 
-        return jsonify({"success": True, "call_sid": call.sid, "status": call.status, "initial_audio_url": initial_audio_url_for_twilio}), 200
+        call_artifacts_store[call_sid] = {
+            "status": "initiated", 
+            "outreach_id": outreach_id,
+            "initial_message_text": initial_message_text,
+            "creator_name": creator_name, 
+            "brand_name": brand_name,     
+            "campaign_objective": campaign_objective, 
+            "email_conversation_summary": email_conversation_summary, # ADDED: Store the summary
+            "conversation_history": [
+                {"speaker": "ai", "text": initial_message_text, "timestamp": datetime.now(timezone.utc).isoformat()}
+            ], 
+            "temp_initial_audio_url": temp_audio_public_url 
+        }
+        
+        return jsonify({"success": True, "call_sid": call_sid, "status": "initiated", "message": "Call initiated successfully."})
 
     except Exception as e:
-        print(f"❌ Twilio call initiation failed: {e}")
-        # Cleanup temporary audio file if it was created and call failed
-        if temp_initial_audio_path and os.path.exists(temp_initial_audio_path):
-            try: os.remove(temp_initial_audio_path)
-            except OSError as ose: print(f"Error deleting temp initial audio file {temp_initial_audio_path}: {ose}")
+        print(f"Error in make_outbound_call: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
 # --- Endpoint to receive call recording status updates from Twilio ---
@@ -1681,70 +1765,194 @@ def agent_turn_twiml():
 # --- NEW Endpoint to Handle User's Speech (from Gather) ---
 @app.route("/api/voice/handle_user_speech", methods=['POST'])
 def handle_user_speech():
+    print("\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+    print("!!! HANDLE_USER_SPEECH ENDPOINT ENTERED !!!")
+    request_received_time = datetime.now() # Start timing for the whole function
+    print(f"!!! Request Form Data: {request.form}")
+    print(f"!!! Request Args: {request.args}")
+    print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n")
+    
     call_sid = request.form.get('CallSid')
-    outreach_id = request.args.get('outreach_id', call_sid or 'unknown_outreach')
-    user_speech_text = request.form.get('SpeechResult')
-    
-    print(f"💬 [UserSpeech] For CallSID {call_sid} (OutreachID {outreach_id}). User said: '{user_speech_text}'")
+    user_speech_text = request.form.get('SpeechResult', '').strip()
+    speech_confidence = float(request.form.get('Confidence', 0.0)) # Get confidence
+    backend_public_url = os.getenv("BACKEND_PUBLIC_URL", f"http://localhost:{os.getenv('PORT', 5001)}").rstrip('/') 
+    handle_user_speech_url = f"{backend_public_url}/api/voice/handle_user_speech" 
 
-    # Ensure artifact store is initialized for this call_sid
-    if call_sid not in call_artifacts_store:
-        call_artifacts_store[call_sid] = {
-            'outreach_id': outreach_id,
-            'conversation_history': [],
-        }
-    
-    # Add user's speech to conversation history
-    if user_speech_text:
-        call_artifacts_store[call_sid]['conversation_history'].append({
-            'speaker': 'user',
-            'text': user_speech_text
+    print(f"🎤 User Speech on SID {call_sid}: '{user_speech_text}', Confidence: {speech_confidence}")
+
+    call_data = call_artifacts_store.get(call_sid)
+    if not call_data:
+        print(f"❌ handle_user_speech: No call_data found for SID {call_sid}. Cannot continue conversation.")
+        response = VoiceResponse()
+        response.say("I'm sorry, there was an issue retrieving our conversation context. Please try calling back later.", voice='alice')
+        response.hangup()
+        return str(response), 200, {'Content-Type': 'application/xml'}
+
+    # MODIFICATION START: Handle low confidence
+    if speech_confidence < 0.4:
+        print(f"👂 handle_user_speech: Low confidence ({speech_confidence}) for SID {call_sid}. User speech '{user_speech_text}' ignored. Asking user to repeat.")
+        ai_response_text = "I'm sorry, I didn't catch that clearly. Could you please say that again?"
+        
+        # Add AI's request to repeat to conversation history for context
+        call_data.setdefault('conversation_history', []).append({
+            "speaker": "ai", 
+            "text": ai_response_text, 
+            "timestamp": datetime.now(timezone.utc).isoformat()
         })
-    else: # Handle case where SpeechResult might be empty/None
-        print("⚠️ [UserSpeech] No SpeechResult received from Gather.")
-        # Potentially add a "silence" or "no input" marker to history
-        call_artifacts_store[call_sid]['conversation_history'].append({
-            'speaker': 'user',
-            'text': '[No speech detected]'
+        
+        temp_ai_audio_url = None
+        if elevenlabs_client:
+            try:
+                generated_url, _ = generate_audio_with_elevenlabs(ai_response_text, call_sid_for_filename=f"ai_repeat_request_{call_sid}")
+                temp_ai_audio_url = generated_url
+            except Exception as e_elevenlabs:
+                print(f"❌ ElevenLabs TTS for repeat request failed for SID {call_sid}: {e_elevenlabs}")
+        
+        response = VoiceResponse()
+        if temp_ai_audio_url:
+            response.play(temp_ai_audio_url)
+        else:
+            response.say(ai_response_text, voice='alice')
+        
+        gather = Gather(input='speech', action=handle_user_speech_url, method='POST', speechTimeout='auto')
+        response.append(gather)
+        # Fallback if gather fails
+        response.say("Sorry, I still didn't catch that. Goodbye.", voice='alice')
+        response.hangup()
+
+        function_end_time = datetime.now()
+        total_function_time = (function_end_time - request_received_time).total_seconds()
+        print(f"⏱️ Total time for handle_user_speech function (low confidence path): {total_function_time:.2f}s")
+        return str(response), 200, {'Content-Type': 'application/xml'}
+    # MODIFICATION END
+
+    if user_speech_text:
+        call_data.setdefault('conversation_history', []).append({
+            "speaker": "user", 
+            "text": user_speech_text, 
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+    else: # This handles cases where SpeechResult is empty, but not necessarily low confidence for actual speech
+        print(f"👂 handle_user_speech: User speech was empty for SID {call_sid} (Confidence was {speech_confidence}). Prompting to repeat.")
+        ai_response_text = "Sorry, I didn't catch that. Could you please say it again?"
+        
+        # Add AI's request to repeat to conversation history
+        call_data.setdefault('conversation_history', []).append({
+            "speaker": "ai",
+            "text": ai_response_text,
+            "timestamp": datetime.now(timezone.utc).isoformat()
         })
 
-    # --- AI Response Logic (Step 1: Simple Echo + Predefined) ---
-    if user_speech_text:
-        ai_response_text = f"I heard you say: \"{user_speech_text}\". I am a simple bot for now. What else can I help you with?"
-    else:
-        ai_response_text = "I didn't catch that. Could you please repeat?"
-    
-    print(f"🤖 [AIResponseSimple] AI intends to say: {ai_response_text[:60]}...")
+        temp_ai_audio_url = None
+        if elevenlabs_client:
+            try:
+                generated_url, _ = generate_audio_with_elevenlabs(ai_response_text, call_sid_for_filename=f"ai_empty_speech_repeat_{call_sid}")
+                temp_ai_audio_url = generated_url
+            except Exception as e_elevenlabs:
+                print(f"❌ ElevenLabs TTS for empty speech repeat request failed for SID {call_sid}: {e_elevenlabs}")
+        
+        response = VoiceResponse()
+        if temp_ai_audio_url:
+            response.play(temp_ai_audio_url)
+        else:
+            response.say(ai_response_text, voice='alice')
+            
+        gather = Gather(input='speech', action=handle_user_speech_url, method='POST', speechTimeout='auto')
+        response.append(gather)
+        response.say("We didn't catch that. Could you please repeat?", voice='alice') 
+        response.hangup()
+        
+        function_end_time = datetime.now()
+        total_function_time = (function_end_time - request_received_time).total_seconds()
+        print(f"⏱️ Total time for handle_user_speech function (empty speech path): {total_function_time:.2f}s")
+        return str(response), 200, {'Content-Type': 'application/xml'}
 
-    # Generate audio for AI's response
-    next_ai_audio_url, temp_ai_audio_path = generate_audio_with_elevenlabs(ai_response_text, call_sid)
-    # temp_ai_audio_path can be tracked for later cleanup if needed
+    llm_prompt = build_live_voice_negotiation_prompt(call_sid)
+    ai_response_text = "I'm having a little trouble formulating a response right now. Could you please repeat what you said?"
+    temp_ai_audio_url = None
 
-    # Add AI's response to conversation history
-    call_artifacts_store[call_sid]['conversation_history'].append({
-        'speaker': 'ai',
-        'text': ai_response_text,
-        'audio_url': next_ai_audio_url # Store AI's audio URL
+    if llm_prompt and groq_api_key:
+        try:
+            print(f"🤖 handle_user_speech: Sending prompt to Groq for SID {call_sid}")
+            request_headers = {
+                "Authorization": f"Bearer {groq_api_key}",
+                "Content-Type": "application/json"
+            }
+            request_payload = {
+                "model": "llama3-8b-8192", # CHANGED MODEL FOR TESTING
+                "messages": [{"role": "user", "content": llm_prompt}],
+                "temperature": 0.7,
+                "max_tokens": 100, # SLIGHTLY REDUCED FOR TESTING
+                "top_p": 1,
+                "stream": False
+            }
+            print(f"DEBUG GROQ REQUEST HEADERS: {request_headers}") 
+            print(f"DEBUG GROQ REQUEST PAYLOAD: {json.dumps(request_payload, indent=2)}") 
+
+            start_time_groq = datetime.now() # Timing start for Groq call
+            groq_response = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=request_headers, 
+                json=request_payload    
+            )
+            end_time_groq = datetime.now() # Timing end for Groq call
+            time_taken_groq = (end_time_groq - start_time_groq).total_seconds()
+            print(f"⏱️ Groq API call took: {time_taken_groq:.2f}s")
+
+            groq_response.raise_for_status() 
+            groq_data = groq_response.json()
+            
+            if groq_data.get('choices') and len(groq_data['choices']) > 0:
+                extracted_text = groq_data['choices'][0].get('message', {}).get('content', '').strip()
+                if extracted_text:
+                    ai_response_text = extracted_text
+                    print(f"🤖 LLM Response for SID {call_sid}: '{ai_response_text}'")
+                else:
+                    print(f"⚠️ LLM response was empty for SID {call_sid}.")
+            else:
+                print(f"⚠️ LLM response structure unexpected for SID {call_sid}: {groq_data}")
+        except requests.exceptions.RequestException as e_groq:
+            print(f"❌ Groq API call failed for SID {call_sid}: {e_groq}")
+        except Exception as e_json: 
+            print(f"❌ Error processing Groq response for SID {call_sid}: {e_json}")
+    elif not groq_api_key:
+        print("🔴 Groq API key not configured. Using fallback response.")
+    else: 
+        print(f"🔴 Failed to build LLM prompt for SID {call_sid}. Using fallback response.")
+
+    call_data.setdefault('conversation_history', []).append({
+        "speaker": "ai", 
+        "text": ai_response_text, 
+        "timestamp": datetime.now(timezone.utc).isoformat()
     })
-    
-    # --- Prepare TwiML to Redirect back to agent_turn_twiml ---
-    response = VoiceResponse()
-    from urllib.parse import urlencode
-    
-    twiml_params = {"outreach_id": outreach_id}
-    if next_ai_audio_url:
-        twiml_params['ai_audio_url'] = next_ai_audio_url
-    else: # Fallback to Twilio TTS if ElevenLabs failed
-        twiml_params['ai_message_text'] = ai_response_text 
-        print("⚠️ [AIResponseSimple] ElevenLabs failed for AI response, will use Twilio TTS via ai_message_text.")
 
-    redirect_url_base = f"{os.getenv('BACKEND_PUBLIC_URL').rstrip('/')}/api/voice/agent_turn_twiml"
-    final_redirect_url = f"{redirect_url_base}?{urlencode(twiml_params)}"
-    
-    print(f"🔁 [UserSpeech] Redirecting to agent's next turn: {final_redirect_url}")
-    response.redirect(final_redirect_url, method='POST')
-    
-    return str(response), 200, {'Content-Type': 'text/xml'}
+    if elevenlabs_client: 
+        try:
+            generated_url, _ = generate_audio_with_elevenlabs(ai_response_text, call_sid_for_filename=f"ai_turn_{call_sid}")
+            temp_ai_audio_url = generated_url 
+            if not temp_ai_audio_url:
+                print(f"⚠️ ElevenLabs audio generation did not return a URL for SID {call_sid}. Will use Twilio TTS.")
+        except Exception as e_elevenlabs:
+            print(f"❌ ElevenLabs TTS generation failed for SID {call_sid}: {e_elevenlabs}. Will use Twilio TTS.")
+    else:
+        print(f"🔊 ElevenLabs client not available. Using Twilio basic TTS for SID {call_sid}.")
+
+    response = VoiceResponse()
+    if temp_ai_audio_url:
+        response.play(temp_ai_audio_url) 
+    else:
+        response.say(ai_response_text, voice='alice') 
+
+    gather = Gather(input='speech', action=handle_user_speech_url, method='POST', speechTimeout='auto')
+    response.append(gather)
+    response.say("I didn't catch that. Could you please say it again?", voice='alice')
+    response.hangup()
+
+    function_end_time = datetime.now()
+    total_function_time = (function_end_time - request_received_time).total_seconds()
+    print(f"⏱️ Total time for handle_user_speech function execution: {total_function_time:.2f}s")
+
+    return str(response), 200, {'Content-Type': 'application/xml'}
 
 # --- Route to serve temporary audio files ---
 @app.route('/temp_audio/<filename>', methods=['GET'])

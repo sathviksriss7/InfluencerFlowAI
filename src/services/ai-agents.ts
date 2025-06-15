@@ -3,9 +3,262 @@ import { outreachStorage, type StoredOutreach, type ConversationMessage } from '
 import { type Creator, type Campaign as CoreCampaign } from '../types'; // Renamed Campaign to CoreCampaign to avoid conflict
 import { mockCreators } from '../mock-data/creators';
 
+// +++ START OF NEW POLLING LOGIC (MODULE SCOPE) +++
+
+interface CallArtifactsForService {
+  full_recording_url?: string;
+  full_recording_duration?: string;
+  creator_transcript?: string;
+  outreach_id?: string; // This is the outreach_id returned by the backend as part of call details
+  conversation_history?: any[];
+}
+
+export interface PollingState {
+  isPolling: boolean;
+  isFetchingDetails: boolean;
+  activePollingCallSid: string | null;      // The SID of the call currently being polled by the service
+  lastInitiatedCallSid: string | null;    // The SID of the most recent call successfully initiated by the service
+  currentPollOriginalOutreachId: string | null; // The original outreach_id associated when polling for activePollingCallSid started
+  statusMessage: string | null;
+  errorMessage: string | null;
+  fetchedArtifactsForLastCall: CallArtifactsForService | null; // Artifacts for lastInitiatedCallSid
+  pollingAttempts: number;
+  outreachDataUpdated: boolean; // Flag to indicate outreach data in storage was modified
+}
+
+type PollingStateListener = (newState: PollingState) => void;
+
+const MAX_POLLING_ATTEMPTS_SERVICE = 24;
+const POLLING_INTERVAL_MS = 5000;
+
+let servicePollingIntervalId: NodeJS.Timeout | null = null;
+const servicePollingListeners: PollingStateListener[] = [];
+
+let serviceCurrentPollingState: PollingState = {
+  isPolling: false,
+  isFetchingDetails: false,
+  activePollingCallSid: null,
+  lastInitiatedCallSid: null,
+  currentPollOriginalOutreachId: null,
+  statusMessage: null,
+  errorMessage: null,
+  fetchedArtifactsForLastCall: null,
+  pollingAttempts: 0,
+  outreachDataUpdated: false,
+};
+
+const _serviceGetAllOutreachesFromStorage = (): StoredOutreach[] => {
+  try {
+    if (outreachStorage && typeof outreachStorage.getAllOutreaches === 'function') {
+      return outreachStorage.getAllOutreaches();
+    }
+    console.warn("[ServicePolling] outreachStorage.getAllOutreaches is not available. Returning empty array.");
+    return [];
+  } catch (e) {
+    console.error("[ServicePolling] Error calling outreachStorage.getAllOutreaches():", e);
+    return [];
+  }
+};
+
+const _serviceNotifyListeners = () => {
+  const stateToNotify = { ...serviceCurrentPollingState };
+  if (serviceCurrentPollingState.outreachDataUpdated) {
+    serviceCurrentPollingState.outreachDataUpdated = false;
+  }
+  servicePollingListeners.forEach(listener => listener(stateToNotify));
+};
+
+const _serviceClearPollingInterval = () => {
+  if (servicePollingIntervalId) {
+    clearInterval(servicePollingIntervalId);
+    servicePollingIntervalId = null;
+  }
+};
+
+const _serviceResetPollingStateAfterCompletionOrError = (isError: boolean = false) => {
+  _serviceClearPollingInterval();
+  serviceCurrentPollingState.isPolling = false;
+  serviceCurrentPollingState.pollingAttempts = 0;
+  if (!isError && !serviceCurrentPollingState.errorMessage) {
+    serviceCurrentPollingState.statusMessage = "Polling ended.";
+  }
+  // activePollingCallSid and currentPollOriginalOutreachId are cleared by the calling function logic
+};
+
+// Forward declared, implementation is after _serviceFetchAndStoreArtifacts
+let servicePollStatusAsyncInternalImplementation: () => Promise<void>; 
+
+const _serviceFetchAndStoreArtifacts = async (callSidToFetch: string, originalOutreachIdContext: string | null) => {
+  if (!callSidToFetch) {
+    serviceCurrentPollingState.errorMessage = "Cannot fetch details: Call SID missing.";
+    serviceCurrentPollingState.isFetchingDetails = false;
+    _serviceNotifyListeners();
+    return;
+  }
+
+  console.log(`[ServicePolling] Fetching artifacts for SID: ${callSidToFetch}, Original Outreach Context ID: ${originalOutreachIdContext}`);
+  serviceCurrentPollingState.isFetchingDetails = true;
+  serviceCurrentPollingState.statusMessage = `Fetching details for ${callSidToFetch}...`;
+  serviceCurrentPollingState.errorMessage = null; 
+  serviceCurrentPollingState.outreachDataUpdated = false; 
+  _serviceNotifyListeners();
+
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) throw new Error("Not authenticated for fetching artifacts.");
+
+    const response = await fetch(`${import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:5001'}/api/voice/call-details?call_sid=${callSidToFetch}`, {
+      headers: { 'Authorization': `Bearer ${session.access_token}` }
+    });
+    const data = await response.json();
+
+    if (data.success && data.details) {
+      serviceCurrentPollingState.fetchedArtifactsForLastCall = data.details as CallArtifactsForService;
+      serviceCurrentPollingState.statusMessage = "Call details fetched.";
+
+      const outreachIdFromBackendDetails = data.details.outreach_id;
+      // Prioritize original context, then backend, then SID itself as a last resort for ID.
+      const outreachIdToUpdate = originalOutreachIdContext || outreachIdFromBackendDetails || callSidToFetch;
+      
+      const allOutreaches = _serviceGetAllOutreachesFromStorage();
+      let targetOutreach = allOutreaches.find((o: StoredOutreach) => o.id === outreachIdToUpdate);
+
+      if (targetOutreach) {
+        const existingHistory = targetOutreach.conversationHistory || [];
+        const historyWithoutThisCall = existingHistory.filter((msg: ConversationMessage) => msg.metadata?.call_sid !== callSidToFetch);
+        
+        const callTurns: Array<{ speaker: string, text: string }> = [];
+        if (data.details.conversation_history && Array.isArray(data.details.conversation_history)) {
+          data.details.conversation_history.forEach((turn: any) => {
+            callTurns.push({
+              speaker: turn.speaker || (turn.sender === 'creator' ? 'user' : 'ai'),
+              text: turn.text || "[empty message]",
+            });
+          });
+        }
+
+        let newHistory = [...historyWithoutThisCall];
+        if (callTurns.length > 0 || data.details.full_recording_url) {
+          const summaryMsg: ConversationMessage = {
+            id: `vcs-${callSidToFetch}-${Date.now()}`,
+            content: `Voice call (SID: ${callSidToFetch}).${callTurns.length > 0 ? ` ${callTurns.length} turn(s) transcribed.` : ''}`,
+            sender: 'ai', // Corrected sender type
+            type: 'voice_call_summary',
+            timestamp: new Date(),
+            metadata: {
+              call_sid: callSidToFetch,
+              full_recording_url: data.details.full_recording_url,
+              full_recording_duration: data.details.full_recording_duration,
+              turns: callTurns,
+            }
+          };
+          newHistory.push(summaryMsg);
+        }
+        
+        const updatedOutreach = { ...targetOutreach, conversationHistory: newHistory, lastContact: new Date() };
+        outreachStorage.saveOutreach(updatedOutreach);
+        serviceCurrentPollingState.outreachDataUpdated = true; // Signal UI to refresh outreach data
+        console.log(`[ServicePolling] Outreach ${outreachIdToUpdate} updated with call history.`);
+      } else {
+        console.warn(`[ServicePolling] Details fetched, but outreach ${outreachIdToUpdate} not found. Cannot save history.`);
+        serviceCurrentPollingState.errorMessage = `Details fetched, but outreach ${outreachIdToUpdate} not found to save history.`;
+      }
+    } else {
+      throw new Error(data.error || `Failed to fetch details for ${callSidToFetch}`);
+    }
+      } catch (error: any) {
+    console.error("[ServicePolling] Error fetching artifacts:", error);
+    serviceCurrentPollingState.errorMessage = error.message || "Error fetching call artifacts.";
+    serviceCurrentPollingState.fetchedArtifactsForLastCall = null; // Clear if fetch failed
+  } finally {
+    serviceCurrentPollingState.isFetchingDetails = false;
+    // If polling was active for this specific SID, and fetch completes (success or error), clear active poll state.
+    if (serviceCurrentPollingState.activePollingCallSid === callSidToFetch && serviceCurrentPollingState.isPolling) {
+      _serviceResetPollingStateAfterCompletionOrError(!!serviceCurrentPollingState.errorMessage);
+      serviceCurrentPollingState.activePollingCallSid = null; 
+      serviceCurrentPollingState.currentPollOriginalOutreachId = null;
+    }
+    _serviceNotifyListeners();
+  }
+};
+
+// Define the implementation of the polling status check function
+servicePollStatusAsyncInternalImplementation = async () => {
+  const sidToPoll = serviceCurrentPollingState.activePollingCallSid;
+  const originalOutreachIdForThisPoll = serviceCurrentPollingState.currentPollOriginalOutreachId;
+
+  if (!sidToPoll || !serviceCurrentPollingState.isPolling) {
+    _serviceClearPollingInterval();
+    return;
+  }
+
+  serviceCurrentPollingState.pollingAttempts++;
+  serviceCurrentPollingState.statusMessage = `Polling attempt ${serviceCurrentPollingState.pollingAttempts} for ${sidToPoll}...`;
+  serviceCurrentPollingState.outreachDataUpdated = false; // Reset flag before potential update
+  _serviceNotifyListeners();
+
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) throw new Error("Not authenticated for polling status.");
+
+    const response = await fetch(`${import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:5001'}/api/voice/call-progress-status?call_sid=${sidToPoll}`, {
+        headers: { 'Authorization': `Bearer ${session.access_token}` }
+    });
+    const data = await response.json();
+
+    if (data.success) {
+      serviceCurrentPollingState.statusMessage = `Status for ${sidToPoll}: ${data.status}`;
+      if (data.status === "completed") {
+        console.log(`[ServicePolling] Call ${sidToPoll} completed!`);
+        _serviceClearPollingInterval();
+        serviceCurrentPollingState.isPolling = false; // Mark as not polling *before* fetching artifacts
+        _serviceNotifyListeners(); // Notify UI that polling stopped, fetching will start
+        await _serviceFetchAndStoreArtifacts(sidToPoll, originalOutreachIdForThisPoll);
+        // State related to activePollingCallSid (activePollingCallSid, currentPollOriginalOutreachId) 
+        // is reset inside _serviceFetchAndStoreArtifacts' finally block if it was the actively polled SID.
+      } else if (["processing", "queued", "ringing", "in-progress"].includes(data.status)) {
+        if (serviceCurrentPollingState.pollingAttempts >= MAX_POLLING_ATTEMPTS_SERVICE) {
+          console.warn(`[ServicePolling] Max polling attempts reached for ${sidToPoll}.`);
+          serviceCurrentPollingState.errorMessage = `Polling for ${sidToPoll} timed out. Please fetch details manually if call completed.`;
+          _serviceResetPollingStateAfterCompletionOrError(true);
+          serviceCurrentPollingState.activePollingCallSid = null; 
+          serviceCurrentPollingState.currentPollOriginalOutreachId = null;
+        }
+      } else { // Failed, no-answer, busy, canceled etc.
+        console.warn(`[ServicePolling] Call ${sidToPoll} ended with status: ${data.status}.`);
+        serviceCurrentPollingState.errorMessage = `Call ${sidToPoll} status: ${data.status}.`;
+        _serviceResetPollingStateAfterCompletionOrError(true);
+        serviceCurrentPollingState.activePollingCallSid = null; 
+        serviceCurrentPollingState.currentPollOriginalOutreachId = null;
+      }
+    } else {
+      throw new Error(data.error || `Failed to get status for ${sidToPoll}`);
+    }
+  } catch (error: any) {
+    console.error("[ServicePolling] Error during polling status check:", error);
+    serviceCurrentPollingState.errorMessage = error.message || "Error during polling status check.";
+    _serviceResetPollingStateAfterCompletionOrError(true);
+    serviceCurrentPollingState.activePollingCallSid = null; 
+    serviceCurrentPollingState.currentPollOriginalOutreachId = null;
+  }
+  _serviceNotifyListeners();
+};
+
+// +++ END OF NEW POLLING LOGIC (MODULE SCOPE) +++
+
 // ============================================================================
 // AI AGENT SPECIFIC TYPE DEFINITIONS (Restored/Defined here)
 // ============================================================================
+
+// Define BrandInfo interface here if it's used by other agents
+interface BrandInfo {
+  name: string;
+  industry: string;
+  campaignGoals: string[];
+  budget: { min: number; max: number; currency: string; };
+  timeline: string;
+  contentRequirements: string[];
+}
 
 export interface BusinessRequirements {
   companyName: string; industry: string; productService: string; businessGoals: string[];
@@ -478,49 +731,60 @@ class OutreachAgent {
   }
 
   private async saveOutreach(campaign: GeneratedCampaign, creator: Creator, subject: string, message: string, isFailure: boolean = false, methodUsed?: string): Promise<void> {
-    console.log(`💾 OutreachAgent (Core): Saving outreach for ${creator.name} (failed: ${isFailure}, method: ${methodUsed})`);
     try {
-      const initialMessage: ConversationMessage = {
-        id: `msg-${Date.now()}-core-outreach-${creator.id}`,
-        content: message,
-        sender: 'brand',
-        timestamp: new Date(),
-        type: 'outreach',
-        metadata: { 
-            aiMethod: methodUsed as ('ai_generated' | 'algorithmic_fallback' | undefined),
-            ...(isFailure && { errorInfo: "Generation via backend failed" }) 
-        }
-      };
-      outreachStorage.saveOutreach({
-        id: `core-auto-${Date.now()}-${creator.id}`,
-        creatorId: creator.id, creatorName: creator.name, creatorAvatar: creator.avatar, creatorPlatform: creator.platform,
-        subject, body: message, 
+      const newOutreach: StoredOutreach = {
+        id: `outreach-${creator.id}-${Date.now()}`,
+        creatorId: creator.id,
+        creatorName: creator.name,
+        creatorAvatar: creator.avatar || '',
+        creatorPlatform: creator.platform,
+        creatorPhoneNumber: undefined,
+        subject: subject,
+        body: message,
         status: isFailure ? 'pending' : 'contacted',
-        confidence: isFailure ? 0 : (methodUsed === 'ai_generated' ? 85 : 60), 
-        reasoning: isFailure ? 'Failed to generate/process outreach via backend (Core)' : `Outreach ${methodUsed || 'processed'} via backend service (Core)`,
-        keyPoints: isFailure ? ['Backend processing error (Core)'] : [`Processed by backend (${methodUsed}) (Core)`],
-        nextSteps: isFailure ? ['Manual review needed (Core)'] : ['Await creator response', 'Monitor for engagement'],
-        brandName: campaign.brand, campaignContext: campaign.title,
-        createdAt: new Date(), lastContact: new Date(), 
-        notes: isFailure ? `Core: Failed for ${creator.name}.` : `Core: Initial outreach for ${creator.name} (${methodUsed}).`, 
-        conversationHistory: [initialMessage] 
-      });
+        confidence: 0,
+        reasoning: methodUsed || 'Direct outreach',
+        keyPoints: [],
+        nextSteps: [],
+        brandName: campaign.brand,
+        campaignContext: campaign.brief,
+        createdAt: new Date(),
+        lastContact: new Date(),
+        notes: isFailure ? `Failed to send outreach via ${methodUsed || 'unknown method'}` : `Initial outreach sent via ${methodUsed || 'AI'}.`,
+        conversationHistory: [],
+      };
+      outreachStorage.saveOutreach(newOutreach);
+      console.log(`[OutreachAgent] Outreach for ${creator.name} saved.`);
     } catch (error) {
-      console.error('Failed to save outreach to storage (Core OutreachAgent):', error);
+      console.error(`[OutreachAgent] Error saving outreach for ${creator.name}:`, error);
     }
   }
   // Local/direct AI/template generation methods are removed as backend handles this.
 }
 
 // ============================================================================
-// NEGOTIATION AGENT
+// NEGOTIATION AGENT (REFACTORED)
 // ============================================================================
 class NegotiationAgent {
+  // Original methods, potentially with minor corrections for consistency or to use new helpers
+  
+  // YOU NEED TO ENSURE THIS METHOD IS IMPLEMENTED OR AVAILABLE
+  private summarizeConversationHistory(history: ConversationMessage[]): string {
+    if (!history || history.length === 0) {
+      return "No prior conversation history.";
+    }
+    // Example summarization logic (replace with your actual logic)
+    const maxMessagesToSummarize = 10;
+    const relevantMessages = history.slice(-maxMessagesToSummarize);
+    return relevantMessages.map(msg => `${msg.sender === 'ai' ? 'AI' : 'Creator'}: ${msg.content.substring(0, 70)}...`).join('\n');
+  }
+
   async generateNegotiationStrategy(outreach: StoredOutreach): Promise<NegotiationResult> {
     console.log("🚀 FE: NegotiationAgent.generateNegotiationStrategy calling backend");
     const baseBackendUrl = import.meta.env.VITE_BACKEND_API_URL || "http://localhost:5001";
     const backendApiUrl = `${baseBackendUrl}/api/negotiation/generate-strategy`;
-    const conversationContext = outreachStorage.getConversationContext(outreach.id);
+    // Assuming outreachStorage.getConversationContext exists and is correct
+    const conversationContext = outreachStorage.getConversationContext(outreach.id); 
     try {
       await GlobalRateLimiter.getInstance().waitIfNeeded('NegotiationAgent');
       const { data: { session }, error: sessionError } = await supabase.auth.getSession();
@@ -533,29 +797,74 @@ class NegotiationAgent {
       });
       if (!response.ok) { 
         const errResp = await response.json().catch(()=>({error: `Backend HTTP error ${response.status}`})); 
-        throw new Error(errResp.error); 
+        throw new Error(errResp.error || `Backend error ${response.status}`); 
       }
-      const backendResponse: NegotiationResult = await response.json(); // Type assertion
-      if (!backendResponse.success || !backendResponse.insight) throw new Error(backendResponse.error || 'Invalid insight data from backend');
+      const backendResponse: NegotiationResult = await response.json();
+      if (!backendResponse.success || !backendResponse.insight) {
+        throw new Error(backendResponse.error || 'Invalid insight data from backend');
+      }
       console.log('✅ FE: NegotiationAgent received strategy from backend:', backendResponse.method);
       return backendResponse;
     } catch (error) {
-      console.error('❌ FE NegotiationAgent: Error calling backend, using local fallback.', error);
-      return { success: false, insight: this.generateLocalFallbackStrategy(outreach), method: 'algorithmic_fallback', error: (error as Error).message };
+      console.error('❌ FE NegotiationAgent: Error calling backend for strategy, using local fallback.', error);
+      return { 
+        success: false, 
+        insight: this.generateLocalFallbackStrategy(outreach), 
+        method: 'algorithmic_fallback', 
+        error: (error as Error).message 
+      };
     }
   }
 
   private generateLocalFallbackStrategy(outreach: StoredOutreach): NegotiationInsight {
     console.log(`🤖 FE NegotiationAgent: Generating LOCAL FALLBACK strategy for ${outreach.status} stage.`);
     const baseOffer = outreach.currentOffer || 10000;
-    if (outreach.status === 'interested') return { currentPhase: 'initial_interest', suggestedResponse: `Local Fallback (Interested): Hi ${outreach.creatorName}, let's discuss our exciting campaign!`, negotiationTactics: ["local_fallback", "emphasize_value"], recommendedOffer: {amount: Math.round(baseOffer * 1.1), reasoning: "Local fallback offer"}, nextSteps: ["Schedule call", "Send brief"] };
-    else if (outreach.status === 'negotiating') return { currentPhase: 'price_discussion', suggestedResponse: `Local Fallback (Negotiating): Hi ${outreach.creatorName}, let's work on the terms.`, negotiationTactics: ["local_fallback", "find_common_ground"], recommendedOffer: {amount: Math.round(baseOffer * 1.05), reasoning: "Local fallback offer adjustment"}, nextSteps: ["Clarify points", "Propose alternatives"] };
-    else return { currentPhase: 'closing', suggestedResponse: `Local Fallback (Closing): Hi ${outreach.creatorName}, glad we're moving forward!`, negotiationTactics: ["local_fallback", "confirm_details"], recommendedOffer: {amount: baseOffer, reasoning: "Local fallback final offer"}, nextSteps: ["Prepare contract", "Outline next steps"] };
+    // Simplified fallback logic based on current status
+    if (outreach.status === 'interested') {
+    return {
+        currentPhase: 'initial_interest', 
+        suggestedResponse: `Local Fallback (Interested): Hi ${outreach.creatorName}, let's discuss our exciting campaign!`, 
+        negotiationTactics: ["local_fallback", "emphasize_value"], 
+        recommendedOffer: {amount: Math.round(baseOffer * 1.1), reasoning: "Local fallback initial offer"}, 
+        nextSteps: ["Schedule call", "Send brief"] 
+      };
+    } else if (outreach.status === 'negotiating') {
+      return { 
+        currentPhase: 'price_discussion', 
+        suggestedResponse: `Local Fallback (Negotiating): Hi ${outreach.creatorName}, let's work on the terms.`, 
+        negotiationTactics: ["local_fallback", "find_common_ground"], 
+        recommendedOffer: {amount: Math.round(baseOffer * 1.05), reasoning: "Local fallback offer adjustment"}, 
+        nextSteps: ["Clarify points", "Propose alternatives"] 
+      };
+    } else { // Default to a closing-like phase for other positive statuses
+      return { 
+        currentPhase: 'closing', 
+        suggestedResponse: `Local Fallback (Closing): Hi ${outreach.creatorName}, glad we're moving forward!`, 
+        negotiationTactics: ["local_fallback", "confirm_details"], 
+        recommendedOffer: {amount: baseOffer, reasoning: "Local fallback final offer"}, 
+        nextSteps: ["Prepare contract", "Outline next steps"] 
+      };
+    }
   }
   
-  getEligibleForNegotiation(): StoredOutreach[] { return outreachStorage.getAllOutreaches().filter(o => o.status !== 'deal_closed' && o.status !== 'declined' && o.status !== 'pending' && o.status !== 'contacted'); }
-  getPositiveResponseCreators(): StoredOutreach[] { return outreachStorage.getAllOutreaches().filter(o => ['interested', 'negotiating', 'deal_closed'].includes(o.status)); }
+  // Corrected to use _serviceGetAllOutreachesFromStorage and typed parameters
+  getEligibleForNegotiation(): StoredOutreach[] { 
+    const allOutreaches = _serviceGetAllOutreachesFromStorage();
+    return allOutreaches.filter((o: StoredOutreach) => 
+      o.status !== 'deal_closed' && o.status !== 'declined' && 
+      o.status !== 'pending' && o.status !== 'contacted'
+    ); 
+  }
+
+  // Corrected to use _serviceGetAllOutreachesFromStorage and typed parameters
+  getPositiveResponseCreators(): StoredOutreach[] { 
+    const allOutreaches = _serviceGetAllOutreachesFromStorage();
+    return allOutreaches
+      .filter((o: StoredOutreach) => ['interested', 'negotiating', 'deal_closed'].includes(o.status))
+      .sort((a: StoredOutreach, b: StoredOutreach) => new Date(b.lastContact).getTime() - new Date(a.lastContact).getTime());
+  }
   
+  // Preserved original logic, check if outreachStorage.addConversationMessage/updateOutreachStatus are still correct
   updateOutreachWithNegotiation(
     outreachId: string, 
     message: string, 
@@ -566,28 +875,160 @@ class NegotiationAgent {
     console.log(`📝 FE NegotiationAgent: Updating outreach ${outreachId} via outreachStorage with new message.`);
     try {
       const messageType: ConversationMessage['type'] = insight ? 'negotiation' : 'update';
-      const sender: ConversationMessage['sender'] = insight && method === 'ai_generated' ? 'ai' : 'brand';
+      // Sender is 'brand' if manually updated, 'ai' if AI insight is provided
+      const sender: ConversationMessage['sender'] = (insight && method === 'ai_generated') ? 'ai' : 'brand'; 
       
       outreachStorage.addConversationMessage(outreachId, message, sender, messageType, 
         insight ? { 
           aiMethod: method,
-          strategy: insight.currentPhase,
+          strategy: insight.currentPhase, // Assuming this aligns with your metadata needs
           tactics: insight.negotiationTactics,
           suggestedOffer: insight.recommendedOffer.amount,
           phase: insight.currentPhase 
         } : undefined
       );
+      // Update overall status and offer
       outreachStorage.updateOutreachStatus(outreachId, 'negotiating', undefined, suggestedOffer);
+
+      // If this update should reflect in components listening to polling state (e.g., for data refresh)
+      serviceCurrentPollingState.outreachDataUpdated = true;
+      _serviceNotifyListeners();
       return true;
     } catch (error) {
       console.error('Error updating outreach in NegotiationAgent:', error); 
       return false; 
     }
   }
-  isAvailable(): boolean { return true; } 
+
+  isAvailable(): boolean { 
+    return true; // Assuming always available
+  } 
+  
   getRateLimitStatus(): { remaining: number; canMakeRequest: boolean } { 
     const globalStatus = GlobalRateLimiter.getInstance().getRemainingCalls();
     return { remaining: globalStatus, canMakeRequest: globalStatus > 0 };
+  }
+
+  // --- New Polling Service Interface Methods ---
+  subscribeToPollingState(listener: PollingStateListener): void {
+    if (!servicePollingListeners.includes(listener)) {
+      servicePollingListeners.push(listener);
+    }
+    listener({ ...serviceCurrentPollingState }); // Immediately notify with current state
+  }
+
+  unsubscribeFromPollingState(listener: PollingStateListener): void {
+    const index = servicePollingListeners.indexOf(listener);
+    if (index > -1) {
+      servicePollingListeners.splice(index, 1);
+    }
+  }
+
+  getPollingStateSnapshot(): PollingState {
+    return { ...serviceCurrentPollingState };
+  }
+
+  async initiateCallAndPoll(
+    outreachIdForCallContext: string, 
+    toPhoneNumber: string,
+    messageToSpeak: string,
+    creatorName: string,
+    brandName: string,
+    campaignObjective: string,
+    conversationHistoryForSummary: ConversationMessage[]
+  ): Promise<void> {
+    console.log(`[ServicePolling] Attempting to initiate call for outreach: ${outreachIdForCallContext} to ${toPhoneNumber}`);
+    // Clear any previous error/status from a prior attempt
+    serviceCurrentPollingState.errorMessage = null;
+    serviceCurrentPollingState.statusMessage = "Initiating call...";
+    serviceCurrentPollingState.outreachDataUpdated = false;
+    _serviceNotifyListeners();
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error("Not authenticated");
+
+      // Stop any existing polling interval before starting a new call.
+      // This ensures we only poll for the latest initiated call.
+      if (serviceCurrentPollingState.isPolling) {
+        console.warn(`[ServicePolling] Cleared existing polling interval for SID ${serviceCurrentPollingState.activePollingCallSid} because a new call is being initiated.`);
+        _serviceClearPollingInterval();
+        serviceCurrentPollingState.isPolling = false;
+        serviceCurrentPollingState.activePollingCallSid = null; // Clear active SID as polling stopped
+        serviceCurrentPollingState.currentPollOriginalOutreachId = null;
+        serviceCurrentPollingState.pollingAttempts = 0;
+      }
+      
+      // Summarize the conversation history before sending to backend
+      const summaryString = this.summarizeConversationHistory(conversationHistoryForSummary);
+
+      const response = await fetch(`${import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:5001'}/api/voice/make-call`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ 
+          to_phone_number: toPhoneNumber, 
+          message: messageToSpeak, 
+          outreach_id: outreachIdForCallContext,
+          creator_name: creatorName,
+          brand_name: brandName,
+          campaign_objective: campaignObjective,
+          conversationHistorySummary: summaryString
+        })
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success && data.call_sid) {
+        console.log(`[ServicePolling] Call initiated via service. SID: ${data.call_sid}. For Outreach Context: ${outreachIdForCallContext}`);
+        serviceCurrentPollingState.lastInitiatedCallSid = data.call_sid;
+        serviceCurrentPollingState.activePollingCallSid = data.call_sid;
+        serviceCurrentPollingState.isPolling = true;
+        serviceCurrentPollingState.statusMessage = `Call queued (SID: ${data.call_sid}). Polling started...`;
+        serviceCurrentPollingState.errorMessage = null;
+        serviceCurrentPollingState.pollingAttempts = 0;
+        
+        if (servicePollingIntervalId) clearInterval(servicePollingIntervalId);
+        servicePollingIntervalId = setInterval(servicePollStatusAsyncInternalImplementation, POLLING_INTERVAL_MS);
+        
+        _serviceNotifyListeners();
+        servicePollStatusAsyncInternalImplementation(); // Initial poll
+      } else {
+        throw new Error(data.error || `Call initiation failed: ${response.statusText}`);
+      }
+    } catch (error: any) {
+      console.error("[ServicePolling] Error in initiateCallAndPoll:", error);
+      serviceCurrentPollingState.errorMessage = error.message || "Failed to initiate call via service.";
+      serviceCurrentPollingState.isPolling = false; 
+      serviceCurrentPollingState.activePollingCallSid = null; 
+      serviceCurrentPollingState.currentPollOriginalOutreachId = null; 
+      serviceCurrentPollingState.lastInitiatedCallSid = null;
+      _serviceNotifyListeners();
+    }
+  }
+
+  async manuallyFetchCallArtifacts(callSidToFetch?: string): Promise<void> {
+    const sid = callSidToFetch || serviceCurrentPollingState.lastInitiatedCallSid;
+    if (!sid) {
+      serviceCurrentPollingState.errorMessage = "No Call SID available for manual fetch.";
+      _serviceNotifyListeners();
+      return;
+    }
+    
+    const originalOutreachIdContextForFetch = (sid === serviceCurrentPollingState.activePollingCallSid) 
+        ? serviceCurrentPollingState.currentPollOriginalOutreachId 
+        : null; 
+
+    if (serviceCurrentPollingState.isPolling && serviceCurrentPollingState.activePollingCallSid === sid) {
+      _serviceClearPollingInterval();
+      serviceCurrentPollingState.isPolling = false; 
+      serviceCurrentPollingState.statusMessage = "Polling stopped for manual fetch.";
+      _serviceNotifyListeners(); 
+    }
+    // _serviceFetchAndStoreArtifacts will handle resetting activePollingCallSid if it matches sid
+    await _serviceFetchAndStoreArtifacts(sid, originalOutreachIdContextForFetch);
   }
 }
 
@@ -599,7 +1040,9 @@ class WorkflowOrchestrationAgent {
   private discoveryAgent = new CreatorDiscoveryAgent();
   private scoringAgent = new MatchingScoringAgent();
   private outreachAgent = new OutreachAgent();
-  private negotiationAgent = new NegotiationAgent();
+  // This is an internal instance for the orchestrator's full workflow.
+  // The UI uses the separately exported negotiationAgentService for direct interaction.
+  private negotiationAgentInternal = new NegotiationAgent(); 
 
   async executeFullWorkflow(requirements: BusinessRequirements): Promise<AgentWorkflowResult> {
     console.log("🚀 Workflow Orchestrator (FE): Starting full agentic workflow...");
@@ -633,6 +1076,11 @@ class WorkflowOrchestrationAgent {
       const outreachSummary = await this.outreachAgent.executeOutreach(generatedCampaign, creatorMatches, requirements);
     console.log(`Workflow Step 4 (Outreach): ${outreachSummary.totalSent} messages sent.`);
 
+    // Example: Potentially use the internal negotiation agent for some automated follow-up insights
+    // For now, it's not directly part of this simplified executeFullWorkflow
+    // const negotiationInsights = await this.negotiationAgentInternal.getEligibleForNegotiation(); 
+    // console.log(`Workflow Info: ${negotiationInsights.length} outreaches eligible for negotiation followup by internal agent.`);
+
     const processingTime = Date.now() - startTime;
     const finalGlobalCalls = GlobalRateLimiter.getInstance().getRemainingCalls();
     const callsUsedThisWorkflow = initialGlobalCalls - finalGlobalCalls;
@@ -644,25 +1092,40 @@ class WorkflowOrchestrationAgent {
         workflowInsights: {
           totalProcessingTime: processingTime,
           agentsUsed: ['CampaignBuilder', 'CreatorDiscovery', 'MatchingScoring', 'Outreach'],
-        confidenceScore: Math.min(0.95, (generatedCampaign.confidence + (creatorMatches.length > 0 ? (creatorMatches.reduce((s,m)=>s+(m.score||0),0)/creatorMatches.length/100) : 0.5))/2 + (callsUsedThisWorkflow > 0 ? 0.1 : 0) ),
-        recommendedNextSteps: [`Review ${outreachSummary.totalSent} outreaches.`, "Monitor responses for negotiation.", `Frontend API calls used: ${callsUsedThisWorkflow}`]
-      }
+          confidenceScore: Math.min(0.95, (generatedCampaign.confidence + (creatorMatches.length > 0 ? (creatorMatches.reduce((s,m)=>s+(m.score||0),0)/creatorMatches.length/100) : 0.5))/2 + (callsUsedThisWorkflow > 0 ? 0.1 : 0) ),
+          recommendedNextSteps: [`Review ${outreachSummary.totalSent} outreaches.`, "Monitor responses for negotiation.", `Frontend API calls used: ${callsUsedThisWorkflow}`]
+        }
     };
   }
 
-  getNegotiationAgent(): NegotiationAgent { return this.negotiationAgent; }
-  isAvailable(): boolean { return true; } 
-  getRateLimitStatus(): { campaign: boolean; discovery: boolean; scoring: boolean; remaining: number } { 
-    const rem = GlobalRateLimiter.getInstance().getRemainingCalls(); 
-    return { campaign: rem>0, discovery: rem>0, scoring: rem>0, remaining: rem };
+  // Method to access the internal negotiation agent if needed by other parts of aiAgentsService
+  // However, the UI should primarily use the exported `negotiationAgentService`.
+  getInternalNegotiationAgent(): NegotiationAgent { return this.negotiationAgentInternal; }
+
+  isAvailable(): boolean {
+    // A simple check, e.g., if a master API key for the orchestration features is set.
+    // For now, let's assume it checks if the Groq API key (used by backend) might be generally available.
+    // This is a placeholder; a more robust check for VITE_GROQ_API_KEY could be implemented if needed for frontend logic.
+    return import.meta.env.VITE_GROQ_API_KEY ? true : false;
   }
+
+  getRateLimitStatus(): { campaign: boolean; discovery: boolean; scoring: boolean; remaining: number } {
+    const rem = GlobalRateLimiter.getInstance().getRemainingCalls(); 
+    // Simplified: assuming each agent part of workflow might need a call
+    return { campaign: rem > 2, discovery: rem > 1, scoring: rem > 0, remaining: rem };
+  }
+  
   getGlobalStatus(): { remaining: number; total: number; resetTime: number } {
-    return { remaining: GlobalRateLimiter.getInstance().getRemainingCalls(), total: GlobalRateLimiter.getInstance().maxRequests, resetTime: Date.now() + 60000 };
+    const limiter = GlobalRateLimiter.getInstance();
+    return {
+        remaining: limiter.getRemainingCalls(), 
+        total: limiter.maxRequests, 
+        resetTime: Date.now() + 60000 // Approximate reset, actual logic is in GlobalRateLimiter
+    };
   }
 }
 
 export const aiAgentsService = new WorkflowOrchestrationAgent();
-export const negotiationAgentService = aiAgentsService.getNegotiationAgent(); 
 
 export const createExampleRequirements = (): BusinessRequirements => ({
   companyName: 'Innovatech Solutions',
@@ -682,13 +1145,5 @@ export const createExampleRequirements = (): BusinessRequirements => ({
   specialRequirements: 'Focus on creators with strong LinkedIn presence and case studies in finance.'
 }); 
 
-// Ensure BrandInfo type definition is present if used here, or imported correctly.
-// For this edit, assuming BrandInfo is part of the imported ../types or defined globally.
-interface BrandInfo {
-  name: string;
-  industry: string;
-  campaignGoals: string[];
-  budget: { min: number; max: number; currency: string; };
-  timeline: string;
-  contentRequirements: string[];
-} 
+// Export the instance of the negotiation agent service (this was the last line before)
+export const negotiationAgentService = new NegotiationAgent();

@@ -35,6 +35,7 @@ export interface StoredOutreach {
   creatorName: string;
   creatorAvatar: string;
   creatorPlatform: string;
+  creatorPhoneNumber?: string;
   subject: string;
   body: string;
   status: 'pending' | 'contacted' | 'interested' | 'negotiating' | 'deal_closed' | 'declined';
