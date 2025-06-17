@@ -1,38 +1,73 @@
 import { useState, useMemo, useEffect } from 'react';
-import { outreachStorage, type StoredOutreach } from '../services/outreach-storage';
+import { outreachStorageService, type StoredOutreach, type ConversationMessage } from '../services/outreach-storage';
 
 export default function Negotiations() {
-  const [selectedOutreach, setSelectedOutreach] = useState<string | null>(null);
+  const [selectedOutreach, setSelectedOutreach] = useState<StoredOutreach | null>(null);
   const [statusFilter, setStatusFilter] = useState('all');
   const [newMessage, setNewMessage] = useState('');
   const [outreaches, setOutreaches] = useState<StoredOutreach[]>([]);
+  const [conversationHistory, setConversationHistory] = useState<ConversationMessage[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [proposedOffer, setProposedOffer] = useState<string>('');
 
-  // Load outreach data
+  // Load initial outreach data
   useEffect(() => {
-    const loadOutreaches = () => {
-      const allOutreaches = outreachStorage.getAllOutreaches();
-      // Filter to show only outreaches with positive responses
-      const negotiationOutreaches = allOutreaches.filter(outreach => 
-        ['interested', 'negotiating', 'deal_closed'].includes(outreach.status)
-      );
-      setOutreaches(negotiationOutreaches);
+    const fetchInitialData = async () => {
+      setLoading(true);
+      try {
+        const allOutreaches = await outreachStorageService.getAllOutreaches();
+        const negotiationOutreaches = allOutreaches.filter(o =>
+          ['negotiating', 'interested', 'deal_closed', 'pending_response'].includes(o.status) // Consider relevant statuses
+        );
+        setOutreaches(negotiationOutreaches);
+        if (negotiationOutreaches.length > 0) {
+          // If there's no selectedOutreach or the current selectedOutreach is no longer in the list, select the first one.
+          if (!selectedOutreach || !negotiationOutreaches.find(no => no.id === selectedOutreach.id)) {
+            setSelectedOutreach(negotiationOutreaches[0]);
+          }
+        } else {
+          setSelectedOutreach(null); // No relevant outreaches, so clear selection
+        }
+      } catch (error) {
+        console.error("Failed to fetch outreaches:", error);
+        setOutreaches([]);
+        setSelectedOutreach(null);
+      }
+      setLoading(false);
     };
-    
-    loadOutreaches();
-    // Refresh every 10 seconds to pick up changes from negotiation agent
-    const interval = setInterval(loadOutreaches, 10000);
-    return () => clearInterval(interval);
-  }, []);
+    fetchInitialData();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Run once on mount
+
+  // Effect to load conversation history and set proposed offer when selectedOutreach changes
+  useEffect(() => {
+    if (selectedOutreach && selectedOutreach.id) {
+      const fetchHistoryAndOffer = async () => {
+        try {
+          const history = await outreachStorageService.getConversationHistory(selectedOutreach.id);
+          setConversationHistory(history || []);
+          setProposedOffer(selectedOutreach.currentOffer?.toString() || '');
+        } catch (error) {
+          console.error(`Failed to fetch conversation history for ${selectedOutreach.id}:`, error);
+          setConversationHistory([]);
+          setProposedOffer('');
+        }
+      };
+      fetchHistoryAndOffer();
+    } else {
+      setConversationHistory([]);
+      setProposedOffer('');
+    }
+  }, [selectedOutreach]);
+
+  // Derived state for easier access in JSX, memoized for performance
+  const selectedOutreachData = useMemo(() => selectedOutreach, [selectedOutreach]);
 
   // Filter outreaches based on status
   const filteredOutreaches = useMemo(() => {
     if (statusFilter === 'all') return outreaches;
     return outreaches.filter(outreach => outreach.status === statusFilter);
   }, [outreaches, statusFilter]);
-
-  const selectedOutreachData = selectedOutreach 
-    ? filteredOutreaches.find(o => o.id === selectedOutreach) 
-    : null;
 
   const getStatusBadge = (status: string) => {
     const baseClasses = "px-2 py-1 text-xs font-medium rounded-full";
@@ -57,59 +92,78 @@ export default function Negotiations() {
     }).format(date);
   };
 
-  const handleSendMessage = () => {
+  const handleSendMessage = async () => {
     if (!newMessage.trim() || !selectedOutreachData) return;
-    
-    // Add the message to conversation history
-    outreachStorage.addConversationMessage(
-      selectedOutreachData.id,
-      newMessage,
-      'brand',
-      'update'
-    );
-    
-    // Refresh the data
-    const updatedOutreaches = outreachStorage.getAllOutreaches().filter(outreach => 
-      ['interested', 'negotiating', 'deal_closed'].includes(outreach.status)
-    );
-    setOutreaches(updatedOutreaches);
-    
-    setNewMessage('');
+    try {
+      await outreachStorageService.addConversationMessage(
+        selectedOutreachData.id,
+        newMessage,
+        'brand', // Assuming message from dashboard user is 'brand'
+        'response' // Changed from 'text' to 'response'
+      );
+      setNewMessage('');
+      const updatedHistory = await outreachStorageService.getConversationHistory(selectedOutreachData.id);
+      setConversationHistory(updatedHistory || []);
+      
+      // Re-fetch all and find the updated selected outreach
+      const allOutreaches = await outreachStorageService.getAllOutreaches();
+      const negotiationOutreaches = allOutreaches.filter(o =>
+        ['negotiating', 'interested', 'deal_closed', 'pending_response'].includes(o.status)
+      );
+      setOutreaches(negotiationOutreaches);
+      const updatedSelected = negotiationOutreaches.find(o => o.id === selectedOutreachData.id);
+      setSelectedOutreach(updatedSelected || null);
+
+    } catch (error) {
+      console.error("Error sending message:", error);
+    }
   };
 
-  const sendQuickResponse = (response: string) => {
+  const handleStatusChange = async (newStatus: StoredOutreach['status']) => {
     if (!selectedOutreachData) return;
-    
-    // Add the quick response to conversation history
-    outreachStorage.addConversationMessage(
-      selectedOutreachData.id,
-      response,
-      'brand',
-      'response'
-    );
-    
-    // Refresh the data
-    const updatedOutreaches = outreachStorage.getAllOutreaches().filter(outreach => 
-      ['interested', 'negotiating', 'deal_closed'].includes(outreach.status)
-    );
-    setOutreaches(updatedOutreaches);
+    try {
+      await outreachStorageService.updateOutreachStatus(selectedOutreachData.id, newStatus);
+      // Re-fetch all and find the updated selected outreach
+      const allOutreaches = await outreachStorageService.getAllOutreaches();
+      const negotiationOutreaches = allOutreaches.filter(o =>
+        ['negotiating', 'interested', 'deal_closed', 'pending_response'].includes(o.status)
+      );
+      setOutreaches(negotiationOutreaches);
+      const updatedSelected = negotiationOutreaches.find(o => o.id === selectedOutreachData.id);
+      setSelectedOutreach(updatedSelected || null);
+    } catch (error) {
+      console.error("Error updating status:", error);
+    }
   };
 
-  const updateDealStatus = (newStatus: 'interested' | 'negotiating' | 'deal_closed') => {
-    if (!selectedOutreachData) return;
-    
-    outreachStorage.updateOutreachStatus(
-      selectedOutreachData.id,
-      newStatus,
-      `Status updated to ${newStatus}`,
-      selectedOutreachData.currentOffer
-    );
-    
-    // Refresh the data
-    const updatedOutreaches = outreachStorage.getAllOutreaches().filter(outreach => 
-      ['interested', 'negotiating', 'deal_closed'].includes(outreach.status)
-    );
-    setOutreaches(updatedOutreaches);
+  const handleOfferUpdate = async () => {
+    if (!selectedOutreachData || proposedOffer.trim() === '') return;
+    const offerAmount = parseFloat(proposedOffer);
+    if (isNaN(offerAmount)) {
+      alert("Please enter a valid offer amount.");
+      return;
+    }
+    try {
+      await outreachStorageService.updateOutreachStatus(
+        selectedOutreachData.id,
+        selectedOutreachData.status, // Keep current status or let backend decide
+        `Offer updated to ${offerAmount}`,
+        offerAmount
+      );
+      // Re-fetch all and find the updated selected outreach
+      const allOutreaches = await outreachStorageService.getAllOutreaches();
+      const negotiationOutreaches = allOutreaches.filter(o =>
+        ['negotiating', 'interested', 'deal_closed', 'pending_response'].includes(o.status)
+      );
+      setOutreaches(negotiationOutreaches);
+      const updatedSelected = negotiationOutreaches.find(o => o.id === selectedOutreachData.id);
+      setSelectedOutreach(updatedSelected || null);
+      if (updatedSelected) {
+        setProposedOffer(updatedSelected.currentOffer?.toString() || '');
+      }
+    } catch (error) {
+      console.error("Error updating offer:", error);
+    }
   };
 
   const getMessageSenderLabel = (sender: string) => {
@@ -175,9 +229,9 @@ export default function Negotiations() {
             return (
             <div 
                 key={outreach.id}
-                onClick={() => setSelectedOutreach(outreach.id)}
+                onClick={() => setSelectedOutreach(outreach)}
               className={`bg-white rounded-lg shadow p-4 cursor-pointer transition-all ${
-                  selectedOutreach === outreach.id ? 'ring-2 ring-blue-500 bg-blue-50' : 'hover:shadow-md'
+                  selectedOutreach === outreach ? 'ring-2 ring-blue-500 bg-blue-50' : 'hover:shadow-md'
               }`}
             >
               <div className="flex items-start justify-between mb-2">
@@ -272,13 +326,13 @@ export default function Negotiations() {
                 {/* Quick Actions */}
                 <div className="flex gap-2">
                   <button 
-                    onClick={() => updateDealStatus('negotiating')}
+                    onClick={() => handleStatusChange('negotiating')}
                     className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors text-sm"
                   >
                     🤝 Negotiate
                   </button>
                   <button 
-                    onClick={() => updateDealStatus('deal_closed')}
+                    onClick={() => handleStatusChange('deal_closed')}
                     className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors text-sm"
                   >
                     ✅ Close Deal
@@ -299,9 +353,9 @@ export default function Negotiations() {
                 {/* Conversation History */}
                 <div className="space-y-4">
                   <h3 className="font-medium text-gray-900">💬 Conversation History</h3>
-                  {selectedOutreachData.conversationHistory && selectedOutreachData.conversationHistory.length > 0 ? (
+                  {conversationHistory.length > 0 ? (
                     <div className="space-y-4">
-                      {selectedOutreachData.conversationHistory.map((message) => (
+                      {conversationHistory.map((message) => (
                   <div 
                     key={message.id}
                     className={`flex ${message.sender === 'brand' ? 'justify-end' : 'justify-start'}`}
@@ -405,25 +459,25 @@ export default function Negotiations() {
               {/* Quick Responses */}
               <div className="flex gap-2 mb-4 flex-wrap">
                 <button 
-                  onClick={() => sendQuickResponse('Thanks for your interest! Let me review the proposal and get back to you.')}
+                  onClick={() => handleSendMessage()}
                   className="px-3 py-1 bg-gray-100 text-gray-700 rounded-full text-sm hover:bg-gray-200 transition-colors"
                 >
                   👍 Reviewing
                 </button>
                 <button 
-                  onClick={() => sendQuickResponse('Can we schedule a quick 15-minute call to discuss details?')}
+                  onClick={() => handleSendMessage()}
                   className="px-3 py-1 bg-gray-100 text-gray-700 rounded-full text-sm hover:bg-gray-200 transition-colors"
                 >
                   📞 Schedule Call
                 </button>
                 <button 
-                  onClick={() => sendQuickResponse('Could you provide more details about your previous brand collaborations?')}
+                  onClick={() => handleSendMessage()}
                   className="px-3 py-1 bg-gray-100 text-gray-700 rounded-full text-sm hover:bg-gray-200 transition-colors"
                 >
                   🔍 More Info
                 </button>
                 <button 
-                  onClick={() => sendQuickResponse('We\'re excited to move forward! Let\'s finalize the terms.')}
+                  onClick={() => handleSendMessage()}
                   className="px-3 py-1 bg-gray-100 text-gray-700 rounded-full text-sm hover:bg-gray-200 transition-colors"
                 >
                   🎉 Move Forward
@@ -441,7 +495,7 @@ export default function Negotiations() {
                   onKeyPress={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleSendMessage())}
                 />
                 <button 
-                  onClick={handleSendMessage}
+                  onClick={() => handleSendMessage()}
                   disabled={!newMessage.trim()}
                   className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >

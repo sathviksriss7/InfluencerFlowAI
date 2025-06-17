@@ -139,11 +139,9 @@ NICHE_MAP = {
 def token_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # REMOVED: Explicit OPTIONS handling block. Flask-CORS will handle preflight requests.
-        # if request.method == 'OPTIONS':
-        #     response = app.make_response(jsonify(message="OPTIONS request successful"))
-        #     response.status_code = 200
-        #     return response
+        if request.method == 'OPTIONS':
+            # Allow OPTIONS requests to pass through. Flask-CORS will handle them.
+            return f(*args, **kwargs)
 
         token = None
         if "Authorization" in request.headers:
@@ -2356,7 +2354,7 @@ def serve_temp_audio(filename):
         return jsonify({"error": "Error serving file"}), 500
 
 # --- NEW Endpoint to fetch call artifacts ---
-@app.route("/api/voice/call-details", methods=['GET']) # CHANGED: Removed 'OPTIONS' from methods
+@app.route("/api/voice/call-details", methods=['GET', 'OPTIONS']) # CHANGED: Removed 'OPTIONS' from methods -> ADDED 'OPTIONS' back
 @token_required # Frontend will call this, so needs auth
 def get_call_details():
     # REMOVED: Explicit OPTIONS handling block from within the route function.

@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { aiOutreachService, type BrandInfo, type OutreachEmail, type AIOutreachResponse } from '../services/ai-outreach';
-import { outreachStorage, type StoredOutreach } from '../services/outreach-storage';
+import { outreachStorageService, type StoredOutreach, type NewOutreachData } from '../services/outreach-storage';
 import { type Creator } from '../types';
 
 interface OutreachManagerProps {
   searchResults: Creator[];
   onClose: () => void;
+  campaignId: string;
 }
 
 interface CreatorOutreachStatus {
@@ -19,7 +20,7 @@ interface CreatorOutreachStatus {
   notes: string;
 }
 
-export default function AIOutreachManager({ searchResults, onClose }: OutreachManagerProps) {
+export default function AIOutreachManager({ searchResults, onClose, campaignId }: OutreachManagerProps) {
   const [selectedCreators, setSelectedCreators] = useState<Creator[]>([]);
   const [brandInfo, setBrandInfo] = useState<BrandInfo>(aiOutreachService.getExampleBrandInfo());
   const [campaignContext, setCampaignContext] = useState('');
@@ -121,29 +122,25 @@ export default function AIOutreachManager({ searchResults, onClose }: OutreachMa
         setOutreachStatuses(prev => new Map(prev.set(creator.id, status)));
 
         // ✨ NEW: Save to persistent storage
-        const storedOutreach: StoredOutreach = {
-          id: response.email.id,
+        const outreachDataForSave: NewOutreachData = {
           creatorId: creator.id,
           creatorName: creator.name,
           creatorAvatar: creator.avatar,
           creatorPlatform: creator.platform,
           subject: response.email.subject,
           body: response.email.body,
-          status: 'pending',
+          status: 'pending', // Initial status
           confidence: response.confidence,
           reasoning: response.reasoning,
           keyPoints: response.keyPoints,
           nextSteps: response.nextSteps,
           brandName: brandInfo.name,
           campaignContext: campaignContext,
-          createdAt: new Date(),
-          lastContact: new Date(),
-          conversationHistory: [],
-          notes: `AI-generated outreach email with ${(response.confidence * 100).toFixed(0)}% confidence`
+          notes: `AI-generated outreach email with ${(response.confidence * 100).toFixed(0)}% confidence`,
+          campaign_id: campaignId
         };
 
-        // Save to localStorage
-        outreachStorage.saveOutreach(storedOutreach);
+        await outreachStorageService.saveOutreach(outreachDataForSave);
       }
       
       setGeneratedEmails(newEmails);
@@ -317,7 +314,7 @@ export default function AIOutreachManager({ searchResults, onClose }: OutreachMa
       });
 
       // ✨ NEW: Update persistent storage
-      outreachStorage.updateOutreachStatus(
+      await outreachStorageService.updateOutreachStatus(
         emailResponse.email.id,
         'contacted',
         `Email sent: ${new Date().toLocaleString()}`

@@ -1,6 +1,6 @@
 import { type Creator } from '../types';
 import { supabase } from '../lib/supabase'; // For JWT token
-import { outreachStorage } from './outreach-storage'; // Added missing import
+import { outreachStorageService } from './outreach-storage'; // Corrected import
 // Assuming GlobalRateLimiter is exported from ai-agents.ts or a shared util file
 // import { GlobalRateLimiter } from './ai-agents'; // Or from '../utils/rate-limiter';
 // For now, let's mock a GlobalRateLimiter if it's not directly importable to satisfy TS for this edit.
@@ -154,7 +154,7 @@ class AIOutreachService {
 
     let conversationContext: string | undefined = undefined;
     if (outreachId) {
-      conversationContext = outreachStorage.getConversationContext(outreachId);
+      conversationContext = await outreachStorageService.getConversationContext(outreachId);
     }
 
     try {

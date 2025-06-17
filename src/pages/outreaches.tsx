@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { outreachStorage, type StoredOutreach } from '../services/outreach-storage';
+import { useState, useEffect, useMemo } from 'react';
+import { outreachStorageService, type StoredOutreach } from '../services/outreach-storage';
 import { aiOutreachService, type AIOutreachResponse, type BrandInfo } from '../services/ai-outreach';
 
 // Modal component for displaying follow-up emails
@@ -175,12 +175,18 @@ function FollowUpModal({ isOpen, onClose, followUpResponse, creatorName, onSend,
   );
 }
 
+interface EditModalState {
+  isOpen: boolean;
+  outreach: StoredOutreach | null;
+}
+
 export default function Outreaches() {
   const [outreaches, setOutreaches] = useState<StoredOutreach[]>([]);
   const [filteredOutreaches, setFilteredOutreaches] = useState<StoredOutreach[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [isLoading, setIsLoading] = useState(true);
+  const [isGeneratingFollowUp, setIsGeneratingFollowUp] = useState(false);
 
   // Follow-up modal state
   const [followUpModal, setFollowUpModal] = useState<{
@@ -197,27 +203,32 @@ export default function Outreaches() {
     isGenerating: false
   });
 
+  // Add missing state declarations for editModal and tempDetails
+  const [editModal, setEditModal] = useState<EditModalState>({ 
+    isOpen: false, 
+    outreach: null 
+  });
+  const [tempDetails, setTempDetails] = useState<Partial<StoredOutreach> | null>(null);
   // Load outreaches when component mounts
   useEffect(() => {
-    loadOutreaches();
+    const fetchOutreaches = async () => {
+      setIsLoading(true);
+      try {
+        const allOutreaches = await outreachStorageService.getAllOutreaches();
+        setOutreaches(allOutreaches || []);
+      } catch (error) {
+        console.error("Error fetching outreaches:", error);
+        setOutreaches([]); // Set to empty array on error
+      }
+      setIsLoading(false);
+    };
+    fetchOutreaches();
   }, []);
 
   // Filter outreaches when search term or status filter changes
   useEffect(() => {
     filterOutreaches();
   }, [outreaches, searchTerm, statusFilter]);
-
-  const loadOutreaches = () => {
-    setIsLoading(true);
-    try {
-      const allOutreaches = outreachStorage.getAllOutreaches();
-      setOutreaches(allOutreaches);
-    } catch (error) {
-      console.error('Error loading outreaches:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   const filterOutreaches = () => {
     let filtered = outreaches;
@@ -241,16 +252,37 @@ export default function Outreaches() {
   };
 
   // Update outreach status
-  const updateStatus = (outreachId: string, newStatus: StoredOutreach['status']) => {
-    outreachStorage.updateOutreachStatus(outreachId, newStatus);
-    loadOutreaches(); // Reload to get updated data
+  const handleUpdateStatus = async (outreachId: string, newStatus: StoredOutreach['status'], notes?: string, currentOffer?: number) => {
+    try {
+      await outreachStorageService.updateOutreachStatus(outreachId, newStatus, notes, currentOffer);
+      // Refresh data
+      const updatedOutreaches = await outreachStorageService.getAllOutreaches();
+      setOutreaches(updatedOutreaches || []);
+    } catch (error) {
+      console.error("Error updating outreach status:", error);
+    }
   };
 
   // Delete outreach
-  const deleteOutreach = (outreachId: string, creatorName: string) => {
-    if (window.confirm(`Are you sure you want to delete the outreach to ${creatorName}?`)) {
-      outreachStorage.deleteOutreach(outreachId);
-      loadOutreaches(); // Reload to get updated data
+  const handleDeleteOutreach = async (outreachId: string) => {
+    if (window.confirm('Are you sure you want to delete this outreach?')) {
+      try {
+        await outreachStorageService.deleteOutreach(outreachId);
+        // Refresh data
+        const updatedOutreaches = await outreachStorageService.getAllOutreaches();
+        setOutreaches(updatedOutreaches || []);
+        if (followUpModal.outreachId === outreachId) {
+          setFollowUpModal({
+            isOpen: false,
+            outreachId: null,
+            creatorName: '',
+            followUpResponse: null,
+            isGenerating: false
+          });
+        }
+      } catch (error) {
+        console.error("Error deleting outreach:", error);
+      }
     }
   };
 
@@ -348,26 +380,24 @@ export default function Outreaches() {
   };
 
   // Handle follow-up email send
-  const handleFollowUpSend = () => {
-    if (followUpModal.outreachId) {
-      // Update status to contacted and add note about follow-up
-      outreachStorage.updateOutreachStatus(
+  const handleSendFollowUp = async () => {
+    if (!followUpModal.outreachId || !followUpModal.creatorName || !followUpModal.followUpResponse) return;
+    setIsGeneratingFollowUp(true);
+    try {
+      console.log('Simulating sending follow-up:', followUpModal.followUpResponse.email);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      await handleUpdateStatus(
         followUpModal.outreachId,
         'contacted',
         `Follow-up email sent: ${new Date().toLocaleString()}`
       );
-      
-      // Close modal and reload data
-      setFollowUpModal({
-        isOpen: false,
-        outreachId: null,
-        creatorName: '',
-        followUpResponse: null,
-        isGenerating: false
-      });
-      
-      loadOutreaches();
-      alert('✅ Follow-up email marked as sent!');
+      setFollowUpModal({ isOpen: false, outreachId: null, creatorName: '', followUpResponse: null, isGenerating: false });
+      alert('Follow-up email sent successfully (simulated)!');
+    } catch (error) {
+      console.error('Error sending follow-up:', error);
+      alert('Failed to send follow-up.');
+    } finally {
+      setIsGeneratingFollowUp(false);
     }
   };
 
@@ -429,6 +459,40 @@ export default function Outreaches() {
     return eligibleStatuses.includes(outreach.status) && daysSinceContact >= 3;
   };
 
+  const handleSaveDetails = async () => {
+    if (!editModal.outreach || !tempDetails) {
+      console.warn("handleSaveDetails called without outreach or tempDetails selected.");
+      return;
+    }
+    
+    console.log("Saving details for:", editModal.outreach.id, tempDetails);
+
+    setIsLoading(true);
+    try {
+      // TODO: Implement actual save logic using outreachStorageService for persistence.
+      // e.g., await outreachStorageService.updateOutreachDetails(editModal.outreach.id, tempDetails);
+      // For now, we simulate success and just refresh the list.
+      await new Promise(resolve => setTimeout(resolve, 500)); // Simulate API call
+
+      const updatedOutreaches = await outreachStorageService.getAllOutreaches();
+      setOutreaches(updatedOutreaches || []);
+      
+      alert('Details updated (simulated). List refreshed.');
+    } catch (error) {
+      console.error("Error saving details and refreshing list:", error);
+      alert('Error saving details.');
+    } finally {
+      setIsLoading(false);
+    }
+    
+    setEditModal({ isOpen: false, outreach: null }); 
+    setTempDetails(null);
+  };
+
+  const sortedOutreaches = useMemo(() => {
+    // ... existing code ...
+  }, [outreaches]);
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center min-h-64">
@@ -445,7 +509,7 @@ export default function Outreaches() {
         onClose={closeFollowUpModal}
         followUpResponse={followUpModal.followUpResponse}
         creatorName={followUpModal.creatorName}
-        onSend={handleFollowUpSend}
+        onSend={handleSendFollowUp}
         isGenerating={followUpModal.isGenerating}
       />
 
@@ -515,7 +579,7 @@ export default function Outreaches() {
             Showing {filteredOutreaches.length} of {outreaches.length} outreaches
           </p>
           <button
-            onClick={loadOutreaches}
+            onClick={filterOutreaches}
             className="px-3 py-1 text-sm bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200 transition-colors"
           >
             🔄 Refresh
@@ -553,7 +617,7 @@ export default function Outreaches() {
                     {getStatusDisplayName(outreach.status)}
                   </span>
                   <button
-                    onClick={() => deleteOutreach(outreach.id, outreach.creatorName)}
+                    onClick={() => handleDeleteOutreach(outreach.id)}
                     className="text-gray-400 hover:text-red-600 transition-colors"
                   >
                     <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
@@ -596,7 +660,7 @@ export default function Outreaches() {
               <div className="flex items-center gap-2 pt-4 border-t border-gray-200">
                 <select
                   value={outreach.status}
-                  onChange={(e) => updateStatus(outreach.id, e.target.value as StoredOutreach['status'])}
+                  onChange={(e) => handleUpdateStatus(outreach.id, e.target.value as StoredOutreach['status'])}
                   className="px-3 py-1 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
                 >
                   <option value="pending">Pending</option>

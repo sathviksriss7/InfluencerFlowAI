@@ -31,13 +31,13 @@
 1. **🎯 Campaign Building Agent**: Generates comprehensive campaign strategies
 2. **🔍 Creator Discovery Agent**: Finds and filters relevant creators intelligently  
 3. **⚡ Matching & Scoring Agent**: Scores creator compatibility with advanced algorithms
-4. **📧 Outreach Agent**: Automatically generates and sends personalized outreach messages
+4. **📧 Outreach Agent**: Automatically generates and sends personalized outreach messages to a user-defined number of top creators.
 
 #### **Key Capabilities**
 - **Natural Language Input**: Describe your campaign in plain English
 - **Intelligent Campaign Generation**: AI creates complete campaign strategies with budget optimization
 - **Autonomous Creator Matching**: Multi-factor scoring with audience alignment, content quality, engagement analysis
-- **Automated Outreach**: AI-generated personalized messages with template fallbacks
+- **Automated Outreach**: AI-generated personalized messages with template fallbacks, with user control over outreach volume.
 - **Rate Limit Intelligence**: Smart API management with algorithmic fallbacks
 - **End-to-End Automation**: From business requirements to sent outreach messages
 
@@ -52,8 +52,8 @@
 **Revolutionary AI-powered negotiation system with conversation memory, stage-aware strategies, and live voice call capabilities.**
 
 #### **Key Features**
-- **📞 Live Voice Negotiation Calls**: Initiate and conduct real-time voice negotiations with creators.
-- **Conversation History Tracking**: Complete message history (email and call transcripts) with metadata storage.
+- **📞 Live Voice Negotiation Calls**: Initiate and conduct real-time voice negotiations with creators, utilizing stored creator phone numbers.
+- **Conversation History Tracking**: Complete message history (email and call transcripts) with metadata storage, including current offer details.
 - **Stage-Aware Negotiations**: AI understands negotiation phases (interested → negotiating → deal closed).
 - **Context-Aware Responses**: AI remembers previous email and call conversations for natural flow.
 - **Improved Speech Handling**: Robust handling of low-confidence speech recognition during calls to ensure clarity.
@@ -65,13 +65,13 @@
 - **Memory-Enabled AI**: Builds on previous discussion points naturally, leveraging full email history (including creator replies) and live call transcripts.
 - **Message Threading**: Complete conversation history with timestamps for all interactions.
 - **Sender Identification**: Clear tracking of brand, creator, and AI messages across all communication channels.
-- **Metadata Storage**: Strategy information, call details (SIDs, recordings), and AI insights stored separately from actual messages.
+- **Metadata Storage**: Strategy information, call details (SIDs, recordings), current offer amounts, and AI insights stored separately from actual messages within Supabase.
 - **Real-time Sync**: Updates across negotiation and outreach interfaces.
 
 #### **Intelligent Negotiations**
 - **Multi-Phase Handling**: Adapts strategy based on negotiation stage (email and voice).
 - **Contextual Voice Agent Prompts**: Voice agent is primed with both prior email summaries and the ongoing live call transcript.
-- **Strategic Pricing**: AI-recommended offers with detailed reasoning.
+- **Strategic Pricing**: AI-recommended offers with detailed reasoning, with offer values persisted reliably.
 - **Professional Communication**: Business-appropriate messages without AI metadata.
 - **Success Tracking**: Comprehensive analytics on negotiation outcomes.
 
@@ -122,10 +122,10 @@
 ### 📊 Platform Management
 
 #### Creator Discovery & Management
-- **Advanced Search & Filtering**: Filter by platform, niche, follower count, engagement rate, location
-- **Comprehensive Creator Profiles**: Detailed metrics, demographics, rates, and performance history
-- **100+ Diverse Creator Database**: Global creators across all major platforms and niches
-- **Verification System**: Verified creator badges and authenticity indicators
+- **Advanced Search & Filtering**: Filter by platform, niche, follower count, engagement rate. (Creator discovery is currently focused on the Indian market).
+- **Comprehensive Creator Profiles**: Detailed metrics, demographics, rates, and performance history.
+- **100+ Diverse Creator Database**: Featuring creators across all major platforms and niches, with an initial focus on India.
+- **Verification System**: Verified creator badges and authenticity indicators.
 
 #### Campaign Management
 - **Multi-Step Campaign Creation**: Guided campaign setup with intelligent recommendations.
@@ -185,7 +185,7 @@
 - **Fallback System**: Graceful degradation when LLM is unavailable
 
 ### Data Management
-- **Supabase PostgreSQL Database**: Secure and scalable cloud database for all persistent application data, including user profiles, campaign details (both Human-created and AI-generated), outreach information, negotiation history, etc. Row Level Security (RLS) is utilized to ensure users can only access their own data.
+- **Supabase PostgreSQL Database**: Secure and scalable cloud database for all persistent application data, including user profiles, campaign details (both Human-created and AI-generated), creator profiles (including phone numbers), outreach information (with creator phone numbers for call-enabled outreaches), negotiation history (including current offer details), etc. Row Level Security (RLS) is utilized to ensure users can only access their own data.
 - **Real-time Synchronization**: Leverages Supabase's real-time capabilities for features requiring live data updates across clients.
 - **Persistent Storage**: localStorage-based outreach and campaign data (Note: This is largely superseded by Supabase for primary data storage. localStorage might be used for UI state or non-critical caching if applicable.)
 - **Comprehensive Mock Database**: 100+ creators, 18 campaigns, 25 deals, 14 contracts, 35 payments
@@ -194,11 +194,11 @@
 ### Backend
 - **Python 3.10+** with **Flask** for robust API development.
 - **Supabase Python Client**: Used for interacting with the Supabase PostgreSQL database (CRUD operations for campaigns, user data, etc.) and leveraging RLS by passing user JWTs for operations requiring user context.
+- **Groq API Integration**: For LLM-powered decision making and text generation in campaign creation, outreach, voice calls, and email. (Note: Ensure your Groq API key is set in `.env` for the backend).
 - **Twilio Integration**: For programmable voice call capabilities.
 - **ElevenLabs Integration**: For dynamic, high-quality Text-to-Speech generation.
-- **Groq API Integration**: For LLM-powered decision making and text generation in voice calls and email.
-- **Environment Variable Management**: Secure configuration using `.env` files
-- **CORS Enabled**: For seamless frontend-backend communication
+- **Environment Variable Management**: Secure configuration using `.env` files (see setup instructions).
+- **CORS Enabled**: For seamless frontend-backend communication.
 - **Detailed Logging**: For easier debugging and monitoring
 - **Data Validation**: Using Pydantic or similar for request/response validation (implied)
 - **Error Handling**: Consistent error responses
@@ -217,9 +217,11 @@
 - **npm or yarn** (Package manager for Frontend)
 - **pip** (Package manager for Python Backend)
 - **Git** (For cloning the repository)
+- **Supabase Account & Project** (Required for authentication & database) - [Create free account](https://supabase.com/)
+  - You will need your Supabase Project URL and Anon Key for the frontend.
+  - You will need your Supabase Database Connection String (from Database settings) and Service Role Key (from Project API settings) for the backend for full admin privileges, or Anon Key if RLS is fully sufficient for backend operations.
 - **Groq API Key** (Required for AI features) - [Get free key](https://console.groq.com/)
-- **Supabase Account** (Required for authentication & database) - [Create free account](https://supabase.com/)
-- **Google Cloud Account** (Required for OAuth with Supabase Auth) - [Get started](https://console.cloud.google.com/)
+- **Google Cloud Account & OAuth Credentials** (Required for Google OAuth with Supabase Auth) - [Get started](https://console.cloud.google.com/)
 - **Twilio Account & Phone Number** (Required for Voice Call features) - [Create free account](https://www.twilio.com/)
 - **ElevenLabs Account** (Optional, for premium AI Text-to-Speech in Voice Calls) - [Create free account](https://elevenlabs.io/)
 
@@ -244,75 +246,86 @@
    ```bash
     pip install -r requirements.txt
     ```
-5.  **🚨 CRITICAL: Create Backend Environment File**
+5.  **🚨 CRITICAL: Create Backend Environment File (`backend/.env`)**
     Ensure you are in the `backend` directory.
    ```bash
     cp .env.example .env
-    ```
-6.  **Configure Backend Environment Variables** ⚡
-    Edit `backend/.env` with your actual values:
-    ```env
-    # Supabase Configuration
-   VITE_SUPABASE_URL="https://YOUR_PROJECT_REF.supabase.co"
-    VITE_SUPABASE_SERVICE_KEY="YOUR_SUPABASE_SERVICE_ROLE_KEY" # For backend admin/service operations
-   
-    # Groq API Configuration
-   VITE_GROQ_API_KEY="gsk_YOUR_ACTUAL_API_KEY_HERE"
+   ```
+    Then, open the newly created `backend/.env` file and fill in your actual credentials:
+   ```env
+    # Supabase Configuration (Backend)
+    DATABASE_URL="your_supabase_database_connection_string" # Found in Supabase > Project Settings > Database > Connection string (URI)
+    SUPABASE_URL="https://your-project-ref.supabase.co"    # Found in Supabase > Project Settings > API > Project URL
+    SUPABASE_KEY="your_supabase_service_role_key"         # Found in Supabase > Project Settings > API > Project API keys (service_role secret)
+                                                          # Alternatively, use anon key if backend RLS is fully set up for its needs.
 
-    # Twilio Configuration
-    TWILIO_ACCOUNT_SID="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    # AI Service Configuration
+    GROQ_API_KEY="your_groq_api_key"
+
+    # Application Configuration
+    JWT_SECRET_KEY="your_strong_random_jwt_secret_key" # Generate a strong random string
+
+    # Twilio Configuration (for Voice Calls)
+    TWILIO_ACCOUNT_SID="your_twilio_account_sid"
     TWILIO_AUTH_TOKEN="your_twilio_auth_token"
-    TWILIO_PHONE_NUMBER="+1234567890" # Your Twilio phone number configured for voice
+    TWILIO_PHONE_NUMBER="your_twilio_phone_number" # Include country code, e.g., +1XXXXXXXXXX
 
-    # ElevenLabs Configuration (Optional but recommended for best voice quality)
-    ELEVENLABS_API_KEY="your_elevenlabs_api_key"
-    ELEVENLABS_VOICE_ID="your_chosen_voice_id_or_leave_blank_for_default" # e.g., Rachel
+    # ElevenLabs Configuration (Optional, for Voice Calls)
+    # ELEVENLABS_API_KEY="your_elevenlabs_api_key"
+    # ELEVENLABS_VOICE_ID="your_elevenlabs_voice_id" # Optional: defaults to a standard voice if not set
+   ```
 
-    # Frontend URL (Important for CORS configuration in the backend)
-    VITE_FRONTEND_URL="http://localhost:5173" # Update if your frontend runs on a different port/URL
-    ```
-    *Note: `VITE_SUPABASE_ANON_KEY` is primarily used by the frontend but shown here for completeness if any backend logic were to mimic client-side behavior without service role privileges.*
+6.  **Run database migrations (if applicable, e.g., if you have Alembic or similar):**
+    Currently, database schema is managed via Supabase Studio or direct SQL. Ensure your tables match the application's needs.
 
-7.  **Run the Flask backend server:**
-    From the `backend` directory:
-   ```bash
+7.  **Start the Flask backend server:**
+    Ensure your virtual environment is activated.
+    ```bash
     python app.py
     ```
-    The backend will typically start on `http://127.0.0.1:5000`. Check the terminal output.
+    The backend should now be running (typically on `http://localhost:5001`).
 
 ### Frontend Setup
 
-1.  **Navigate to the project root directory** (e.g., `cd ..` if you are in `backend/`).
+1.  **Navigate to the root project directory (if you're in `backend`, go up one level):**
     ```bash
-    # Ensure you are in the main project root: influencerflowai/
+    cd .. 
     ```
+    (Or, from a fresh terminal, `cd influencerflowai`)
+
 2.  **Install frontend dependencies:**
     ```bash
     npm install
+    # or
+    # yarn install
     ```
-3.  **🚨 CRITICAL: Create Frontend Environment File**
-    Ensure you are in the project root directory.
+
+3.  **🚨 CRITICAL: Create Frontend Environment File (`./.env.local`)**
+    In the **root** project directory (not `backend`), create a file named `.env.local`.
     ```bash
-    cp .env.example .env.local
+    cp .env.example .env.local  # If you have a frontend .env.example
+    # Otherwise, create .env.local manually
     ```
-    *Vite uses `.env.local` by default for local development environment variables. These are not committed to git.*
-
-4.  **Configure Frontend Environment Variables** ⚡
-    Edit `.env.local` (in the project root) with your values.
+    Add the following environment variables to `./.env.local`:
     ```env
-    # Supabase Configuration (Client-side authentication)
-    VITE_SUPABASE_URL="https://YOUR_PROJECT_REF.supabase.co"
-    VITE_SUPABASE_ANON_KEY="YOUR_SUPABASE_PUBLIC_ANON_KEY"
+    # Supabase Configuration (Frontend)
+    VITE_SUPABASE_URL="https://your-project-ref.supabase.co" # Same as SUPABASE_URL in backend .env
+    VITE_SUPABASE_ANON_KEY="your_supabase_anon_key"       # Found in Supabase > Project Settings > API > Project API keys (anon public)
 
-    # Groq API Key (Generally NOT recommended for direct frontend use due to security)
-    # Most AI features should be proxied through your backend.
-    # VITE_GROQ_API_KEY="gsk_YOUR_ACTUAL_API_KEY_HERE"
+    # AI Service Configuration (Frontend - e.g., for displaying API limits or enabling/disabling UI features)
+    VITE_GROQ_API_KEY="your_groq_api_key" # Can be the same as backend, used for frontend checks
+
+    # Backend API URL
+    VITE_BACKEND_API_URL="http://localhost:5001" # Or your deployed backend URL
     ```
-5.  **Start the frontend development server:**
+
+4.  **Start the React frontend development server:**
     ```bash
     npm run dev
+    # or
+    # yarn dev
     ```
-    The frontend will typically start on `http://localhost:5173`.
+    The frontend should now be running (typically on `http://localhost:5173` or another port shown in the terminal).
 
 ### Full Project Structure Overview (Simplified)
 
@@ -350,19 +363,20 @@ influencerflowai/
 ### Key Environment Variables Summary
 
 **Backend (`backend/.env`):**
-- `VITE_SUPABASE_URL`: Your Supabase project URL.
-- `VITE_SUPABASE_SERVICE_KEY`: Your Supabase service role key (for backend operations requiring admin-like privileges, bypassing RLS when necessary).
-- `VITE_GROQ_API_KEY`: Your Groq Cloud API key.
+- `DATABASE_URL`: Your Supabase database connection string.
+- `SUPABASE_URL`: Your Supabase project URL.
+- `SUPABASE_KEY`: Your Supabase service role key (for backend operations requiring admin-like privileges, bypassing RLS when necessary).
+- `GROQ_API_KEY`: Your Groq Cloud API key.
+- `JWT_SECRET_KEY`: Your strong random JWT secret key.
 - `TWILIO_ACCOUNT_SID`: Your Twilio Account SID.
 - `TWILIO_AUTH_TOKEN`: Your Twilio Auth Token.
 - `TWILIO_PHONE_NUMBER`: Your Twilio phone number capable of making voice calls.
-- `ELEVENLABS_API_KEY`: (Optional) Your ElevenLabs API key for premium TTS.
-- `ELEVENLABS_VOICE_ID`: (Optional) The ElevenLabs voice ID you wish to use.
-- `VITE_FRONTEND_URL`: The URL of your running frontend (e.g., `http://localhost:5173`) for backend CORS configuration.
 
 **Frontend (`.env.local` in project root):**
 - `VITE_SUPABASE_URL`: Your Supabase project URL.
 - `VITE_SUPABASE_ANON_KEY`: Your Supabase anonymous public key (for client-side authentication with Supabase).
+- `VITE_GROQ_API_KEY`: Your Groq Cloud API key (for frontend checks).
+- `VITE_BACKEND_API_URL`: The URL of your running backend (e.g., `http://localhost:5001`) for frontend communication.
 
 ---
 **Security Note:** Always ensure that your `.env` files (in `backend/` and the project root for `.env.local`) are included in your `.gitignore` file to prevent accidentally committing sensitive API keys and credentials to your version control repository. The provided `.env.example` files serve as templates and are safe to commit.

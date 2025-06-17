@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { outreachStorage, type OutreachSummary, type StoredOutreach } from '../services/outreach-storage';
+import { outreachStorageService, type OutreachSummary, type StoredOutreach } from '../services/outreach-storage';
 
 export default function Dashboard() {
   const [outreachSummary, setOutreachSummary] = useState<OutreachSummary | null>(null);
@@ -10,18 +10,30 @@ export default function Dashboard() {
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
   const [showFilters, setShowFilters] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
   // Load outreach data when component mounts
   useEffect(() => {
-    const summary = outreachStorage.getOutreachSummary();
-    const allData = outreachStorage.getAllOutreaches();
-    setOutreachSummary(summary);
-    setAllOutreaches(allData);
-    
-    // Initialize with all statuses selected
-    if (summary && Object.keys(summary.statusCounts).length > 0) {
-      setSelectedStatuses(new Set(Object.keys(summary.statusCounts)));
-    }
+    const fetchData = async () => {
+      setIsLoading(true);
+      try {
+        const summary = await outreachStorageService.getOutreachSummary();
+        const allData = await outreachStorageService.getAllOutreaches();
+        setOutreachSummary(summary);
+        setAllOutreaches(allData);
+        
+        if (summary && Object.keys(summary.statusCounts).length > 0) {
+          setSelectedStatuses(new Set(Object.keys(summary.statusCounts)));
+        }
+      } catch (error) {
+        console.error("Error fetching dashboard data:", error);
+        // Optionally set an error state here to display to the user
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchData();
   }, []);
 
   // Filtered data based on current filters
@@ -243,7 +255,9 @@ export default function Dashboard() {
       </div>
           
           {/* Filter and Export Controls */}
-          {outreachSummary && outreachSummary.totalOutreaches > 0 && (
+          {isLoading && <p>Loading dashboard data...</p>} 
+          {!isLoading && !outreachSummary && <p>No outreach data available.</p>}
+          {!isLoading && outreachSummary && outreachSummary.totalOutreaches > 0 && (
             <div className="flex gap-2">
               <button
                 onClick={() => setShowFilters(!showFilters)}
@@ -500,15 +514,18 @@ export default function Dashboard() {
                 📧 Recent Outreaches
               </h2>
               <button
-                onClick={() => {
-                  const summary = outreachStorage.getOutreachSummary();
-                  const allData = outreachStorage.getAllOutreaches();
+                onClick={async () => {
+                  const summary = await outreachStorageService.getOutreachSummary();
+                  const allData = await outreachStorageService.getAllOutreaches();
                   setOutreachSummary(summary);
                   setAllOutreaches(allData);
                 }}
-                className="text-sm text-purple-600 hover:text-purple-700 font-medium"
+                className="px-4 py-2 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors flex items-center gap-2"
               >
-                Refresh
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m-15.357-2a8.001 8.001 0 0115.357-2m0 0H15" />
+                </svg>
+                Refresh Data
               </button>
             </div>
             <div className="space-y-3">

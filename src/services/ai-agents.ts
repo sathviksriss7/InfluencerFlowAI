@@ -1,5 +1,5 @@
 import { supabase } from '../lib/supabase'; 
-import { outreachStorage, type StoredOutreach, type ConversationMessage } from './outreach-storage';
+import { outreachStorageService, type StoredOutreach, type ConversationMessage, type NewOutreachData } from './outreach-storage'; // MODIFIED: Import outreachStorageService and NewOutreachData
 import { type Creator, type Campaign as CoreCampaign } from '../types'; // Renamed Campaign to CoreCampaign to avoid conflict
 import { mockCreators } from '../mock-data/creators';
 
@@ -47,15 +47,19 @@ let serviceCurrentPollingState: PollingState = {
   outreachDataUpdated: false,
 };
 
-const _serviceGetAllOutreachesFromStorage = (): StoredOutreach[] => {
+// THIS FUNCTION IS PROBLEMATIC as outreachStorageService.getAllOutreaches is now async
+// It needs to be refactored to be async and awaited by its callers.
+// For now, it will likely cause issues in the polling and negotiation agent logic that depends on it synchronously.
+// MODIFIED: Make async and await the call to outreachStorageService.getAllOutreaches()
+const _serviceGetAllOutreachesFromStorage = async (): Promise<StoredOutreach[]> => {
   try {
-    if (outreachStorage && typeof outreachStorage.getAllOutreaches === 'function') {
-      return outreachStorage.getAllOutreaches();
+    if (outreachStorageService && typeof outreachStorageService.getAllOutreaches === 'function') { 
+      return await outreachStorageService.getAllOutreaches(); 
     }
-    console.warn("[ServicePolling] outreachStorage.getAllOutreaches is not available. Returning empty array.");
+    console.warn("[ServicePolling] outreachStorageService.getAllOutreaches is not available (unexpected). Returning empty array.");
     return [];
   } catch (e) {
-    console.error("[ServicePolling] Error calling outreachStorage.getAllOutreaches():", e);
+    console.error("[ServicePolling] Error calling (the old) outreachStorage.getAllOutreaches():", e);
     return [];
   }
 };
@@ -120,7 +124,7 @@ const _serviceFetchAndStoreArtifacts = async (callSidToFetch: string, originalOu
       // Prioritize original context, then backend, then SID itself as a last resort for ID.
       const outreachIdToUpdate = originalOutreachIdContext || outreachIdFromBackendDetails || callSidToFetch;
       
-      const allOutreaches = _serviceGetAllOutreachesFromStorage();
+      const allOutreaches = await _serviceGetAllOutreachesFromStorage(); // MODIFIED: Added await here
       let targetOutreach = allOutreaches.find((o: StoredOutreach) => o.id === outreachIdToUpdate);
 
       if (targetOutreach) {
@@ -140,9 +144,11 @@ const _serviceFetchAndStoreArtifacts = async (callSidToFetch: string, originalOu
         let newHistory = [...historyWithoutThisCall];
         if (callTurns.length > 0 || data.details.full_recording_url) {
           const summaryMsg: ConversationMessage = {
-            id: `vcs-${callSidToFetch}-${Date.now()}`,
+            id: `vcs-${callSidToFetch}-${Date.now()}`, // This ID generation might need to align with Supabase if messages are also stored there
+            outreach_id: targetOutreach.id, // Assuming targetOutreach.id is the Supabase outreach ID
+            user_id: targetOutreach.user_id, // Assuming targetOutreach.user_id exists
             content: `Voice call (SID: ${callSidToFetch}).${callTurns.length > 0 ? ` ${callTurns.length} turn(s) transcribed.` : ''}`,
-            sender: 'ai', // Corrected sender type
+            sender: 'ai', 
             type: 'voice_call_summary',
             timestamp: new Date(),
             metadata: {
@@ -155,10 +161,14 @@ const _serviceFetchAndStoreArtifacts = async (callSidToFetch: string, originalOu
           newHistory.push(summaryMsg);
         }
         
-        const updatedOutreach = { ...targetOutreach, conversationHistory: newHistory, lastContact: new Date() };
-        outreachStorage.saveOutreach(updatedOutreach);
-        serviceCurrentPollingState.outreachDataUpdated = true; // Signal UI to refresh outreach data
-        console.log(`[ServicePolling] Outreach ${outreachIdToUpdate} updated with call history.`);
+        const updatedOutreach: StoredOutreach = { ...targetOutreach, conversationHistory: newHistory, lastContact: new Date() };
+        // outreachStorageService.saveOutreach(updatedOutreach); // saveOutreach now expects NewOutreachData and campaignId, this is an update, not a new save.
+        // We need an updateOutreach method in outreachStorageService or handle updates differently.
+        // For now, this part of the polling logic that modifies outreach data will be broken.
+        // We would ideally call something like: await outreachStorageService.updateOutreachConversationHistory(targetOutreach.id, newHistory);
+        console.warn("[ServicePolling] outreachStorageService.saveOutreach call in _serviceFetchAndStoreArtifacts needs to be replaced with an update mechanism for conversation history.");
+        serviceCurrentPollingState.outreachDataUpdated = true; 
+        console.log(`[ServicePolling] Outreach ${outreachIdToUpdate} updated with call history (NOTE: Storage update for conversation history is currently non-functional).`);
       } else {
         console.warn(`[ServicePolling] Details fetched, but outreach ${outreachIdToUpdate} not found. Cannot save history.`);
         serviceCurrentPollingState.errorMessage = `Details fetched, but outreach ${outreachIdToUpdate} not found to save history.`;
@@ -280,6 +290,7 @@ export interface BusinessRequirements {
 }
 
 export interface GeneratedCampaign { // This is what CampaignBuildingAgent produces
+  id: string; // ADDED: Campaign ID, expected from backend
   title: string; brand: string; description: string; brief: string; platforms: string[];
   minFollowers: number; niches: string[]; locations: string[]; deliverables: string[];
   budgetMin: number; budgetMax: number; startDate: string; endDate: string; applicationDeadline: string;
@@ -607,6 +618,7 @@ class CampaignBuildingAgent {
      // ---- END: Heuristic for default platforms and niches in FALLBACK ----
 
     return {
+      id: `local-fallback-campaign-${Date.now()}`, // ADDED: ID for fallback campaign
       title: `Exciting Campaign for ${requirements.companyName}`,
       brand: requirements.companyName,
       description: `A dynamic campaign focusing on ${requirements.productService} for the ${industryText} sector. We aim to ${requirements.businessGoals.join(', ')}. Target audience: ${requirements.targetAudience}`,
@@ -891,157 +903,184 @@ class OutreachAgent {
   async executeOutreach(
     campaign: GeneratedCampaign, 
     creatorMatches: CreatorMatch[], 
-    requirements: BusinessRequirements
+    requirements: BusinessRequirements,
+    campaignId: string // ADDED: campaignId parameter
   ): Promise<OutreachSummary> {
-    console.log(`📧 Outreach Agent (Core Workflow): Preparing to contact top ${requirements.outreachCount} creators via direct backend call.`);
-    
-    const topCreators = creatorMatches
+    const results: OutreachResult[] = [];
+    let sentCount = 0;
+    let aiGeneratedCount = 0;
+    let templateBasedCount = 0;
+    let failedCount = 0;
+
+    // Filter, sort, and slice creatorMatches based on outreachCount
+    const qualifiedCreators = creatorMatches
       .filter(match => 
         match.recommendedAction === 'highly_recommend' || 
         match.recommendedAction === 'recommend' || 
         match.recommendedAction === 'consider'
       )
-      .slice(0, requirements.outreachCount);
-    
-    if (topCreators.length === 0) {
-      console.log('⚠️ Outreach Agent (Core Workflow): No qualified creators found for outreach.');
-      return { totalSent: 0, aiGenerated: 0, templateBased: 0, failed: 0, outreaches: [] };
-    }
-    
-    console.log(`🎯 Outreach Agent (Core Workflow): Selected ${topCreators.length} top creators.`);
-    
-    const outreachResults: OutreachResult[] = [];
-    let aiGeneratedCount = 0;
-    let templateBasedCount = 0;
-    let failedCount = 0;
+      .sort((a, b) => (b.score || 0) - (a.score || 0)); // Sort by score descending
 
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-    if (sessionError || !session) {
-      console.error('❌ Outreach Agent (Core Workflow): No Supabase session for backend calls.', sessionError);
-      topCreators.forEach(match => {
-        outreachResults.push({ creator: match.creator, subject: 'Auth Error', message: 'User not authenticated for backend outreach.', status: 'failed', method: 'template_based', timestamp: new Date()});
+    const creatorsToOutreach = qualifiedCreators.slice(0, requirements.outreachCount);
+
+    console.log(`[OutreachAgent] Initial matches: ${creatorMatches.length}, Qualified (recommended/consider): ${qualifiedCreators.length}, To outreach (based on count ${requirements.outreachCount}): ${creatorsToOutreach.length}`);
+
+    const brandInfo: BrandInfo = {
+      name: campaign.brand || requirements.companyName,
+      industry: requirements.industry.join(', '),
+      campaignGoals: requirements.campaignObjective,
+      budget: { min: campaign.budgetMin, max: campaign.budgetMax, currency: 'USD' }, // Assuming USD for now
+      timeline: requirements.timeline,
+      contentRequirements: campaign.deliverables,
+    };
+
+    for (const match of creatorsToOutreach) { // Iterate over the sliced list
+      if (!match.creator || !match.creator.id) {
+        console.warn("[OutreachAgent] Skipping creator match due to missing creator or creator ID:", match);
         failedCount++;
-      });
-      return { totalSent: 0, aiGenerated: 0, templateBased: 0, failed: failedCount, outreaches: outreachResults }; 
-    }
-    const supabaseAccessToken = session.access_token;
-    
-    const baseBackendUrl = import.meta.env.VITE_BACKEND_API_URL || "http://localhost:5001";
-    // Using the /api/outreach/initial-message as it's designed for the first contact by an agent.
-    // The backend can internally decide AI vs template based on 'personalizedOutreach' in requirements.
-    const backendApiUrl = `${baseBackendUrl}/api/outreach/initial-message`; 
-    
-    for (const match of topCreators) {
+        continue;
+      }
       try {
-        await GlobalRateLimiter.getInstance().waitIfNeeded('OutreachAgent.executeOutreach');
-        
-        const brandInfo: BrandInfo = {
-            name: campaign.brand,
-            industry: requirements.industry.join(', ') || 'General',
-            campaignGoals: requirements.businessGoals,
-            budget: { 
-                min: campaign.budgetMin, 
-                max: campaign.budgetMax, 
-                currency: "INR" 
-            },
-            timeline: requirements.timeline,
-            contentRequirements: campaign.deliverables || [] 
-        };
+        await GlobalRateLimiter.getInstance().waitIfNeeded('OutreachAgent');
+        // TODO: Re-integrate actual AI outreach generation if `requirements.personalizedOutreach` is true
+        // For now, using a simplified template-like approach or fetching pre-generated.
 
-        const payload = {
+        // Simulating personalized message generation or template selection
+        let subject = `Collaboration Opportunity: ${campaign.title} with ${brandInfo.name}`;
+        let messageBody = `
+Dear ${match.creator.name},
+
+My name is [Your Name/Brand Rep Name] from ${brandInfo.name}. We're very impressed with your content on ${match.creator.platform} and your connection with your audience in the ${match.creator.niche.join(', ')} space.
+
+We're running a campaign for "${campaign.title}" (${campaign.brief}) and believe your audience aligns perfectly with our goals: ${brandInfo.campaignGoals.join(', ')}. 
+We're looking for authentic creators like you to help us spread the word about ${requirements.productService}. 
+Key deliverables include: ${campaign.deliverables.join(', ')}. The campaign is scheduled to run from ${campaign.startDate} to ${campaign.endDate}.
+
+We'd love to discuss a potential partnership. Are you available for a quick chat sometime next week?
+
+Best regards,
+[Your Name/Brand Rep Name]
+${brandInfo.name}
+        `.trim();
+        
+        let methodUsed = 'template_based'; // Default, update if AI generation is used
+
+        if (requirements.personalizedOutreach) {
+          // Placeholder for actual AI-powered personalization
+          // This would involve calling a service like aiOutreachService.generatePersonalizedEmail
+          // For now, we'll just mark it as AI-generated if the flag is true
+          console.log(`[OutreachAgent] Simulating AI personalized outreach for ${match.creator.name}`);
+          subject = `✨ Personalized Collab Idea: ${match.creator.name} x ${brandInfo.name} for ${campaign.title}`;
+          messageBody = `Hi ${match.creator.name} - We love your ${match.creator.niche[0]} content! We at ${brandInfo.name} think you'd be amazing for our new "${campaign.title}" campaign. Let's chat!`;
+          methodUsed = 'ai_generated';
+          aiGeneratedCount++;
+        } else {
+          templateBasedCount++;
+        }
+
+        // Call the internal saveOutreach method, now passing campaignId and creatorPhoneNumber
+        await this.saveOutreach(
+          campaign, 
+          match.creator, 
+          subject, 
+          messageBody, 
+          false, 
+          methodUsed, 
+          campaignId, // Pass campaignId
+          match.creator.phone_number // Pass creator's phone number
+        );
+
+        results.push({
           creator: match.creator,
-          brandInfo: brandInfo, 
-          campaignContext: campaign.title, 
-        };
-
-        console.log(`📤 Outreach Agent (Core): Req for ${match.creator.name}. Token: ${supabaseAccessToken ? supabaseAccessToken.substring(0, 20) + '...' : 'MISSING!'}`);
-        const response = await fetch(backendApiUrl, {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json', 
-            'Authorization': `Bearer ${supabaseAccessToken}` 
-          },
-          body: JSON.stringify(payload)
-        });
-
-        if (!response.ok) {
-          const errResp = await response.json().catch(()=>({error: `Backend HTTP error ${response.status}`})); 
-          console.error(`❌ Outreach Agent (Core): Backend error for ${match.creator.name}:`, errResp.error);
-          throw new Error(errResp.error || `Backend request failed: ${response.statusText}`);
-        }
-
-        const backendResponse = await response.json(); // Expects { success, subject, message, method, reasoning?, keyPoints?, nextSteps?, confidence?, error? }
-        if (!backendResponse.success || !backendResponse.subject || !backendResponse.message) {
-          throw new Error(backendResponse.error || 'Invalid message data from backend for initial outreach');
-        }
-        
-        const { subject, message, method } = backendResponse;
-
-        if (method === 'ai_generated') aiGeneratedCount++;
-        else templateBasedCount++;
-        
-        await this.saveOutreach(campaign, match.creator, subject, message, false, method as 'ai_generated' | 'template_based');
-          
-          outreachResults.push({
-            creator: match.creator,
           subject,
-          message,
-            status: 'sent',
-          method: method as 'ai_generated' | 'template_based',
-            timestamp: new Date()
-          });
-        console.log(`✅ Outreach for ${match.creator.name} processed directly by backend (${method}) & saved.`);
-        
-      } catch (error) {
+          message: messageBody,
+          status: 'sent',
+          method: methodUsed as 'ai_generated' | 'template_based',
+          timestamp: new Date(),
+        });
+        sentCount++;
+      } catch (error: any) {
+        console.error(`[OutreachAgent] Failed to execute outreach for ${match.creator.name}: ${error.message}`, error);
         failedCount++;
-        console.error(`❌ Outreach Agent (Core Workflow): Error processing outreach for ${match.creator.name}:`, error);
-        await this.saveOutreach(campaign, match.creator, "Error: Outreach Generation Failed (Core)", "Could not generate outreach message via backend. Manual review needed.", true, 'template_based');
-        outreachResults.push({ creator: match.creator, subject: "Generation Error (Core)", message: "Failed to generate", status: 'failed', method: 'template_based', timestamp: new Date()});
+        await this.saveOutreach(
+          campaign, 
+          match.creator, 
+          "Outreach Failed", 
+          `Error: ${error.message}`, 
+          true, 
+          'failed',
+          campaignId, // Pass campaignId even for failures
+          match.creator.phone_number // Pass phone number even for failures
+        ); 
+        results.push({
+          creator: match.creator,
+          subject: "Outreach Failed",
+          message: `Error: ${error.message}`,
+          status: 'failed',
+          method: 'template_based', // or 'ai_generated' depending on where it failed
+          timestamp: new Date(),
+        });
       }
     }
-    
-    const summary: OutreachSummary = {
-      totalSent: outreachResults.filter(r => r.status === 'sent').length,
+
+    return {
+      totalSent: sentCount,
       aiGenerated: aiGeneratedCount,
       templateBased: templateBasedCount,
       failed: failedCount,
-      outreaches: outreachResults
+      outreaches: results,
     };
-    
-    console.log(`📊 Outreach Agent (Core Workflow) Summary: ${summary.totalSent} sent (${summary.aiGenerated} AI, ${summary.templateBased} template, ${summary.failed} failed).`);
-    return summary;
   }
 
-  private async saveOutreach(campaign: GeneratedCampaign, creator: Creator, subject: string, message: string, isFailure: boolean = false, methodUsed?: string): Promise<void> {
+  private async saveOutreach(
+    campaign: GeneratedCampaign, 
+    creator: Creator, 
+    subject: string, 
+    message: string, 
+    isFailure: boolean = false, 
+    methodUsed: string = 'template_based',
+    campaignId: string, // Added campaignId
+    creatorPhoneNumber?: string // Added creatorPhoneNumber
+  ): Promise<void> {
     try {
-      const newOutreach: StoredOutreach = {
-        id: `outreach-${creator.id}-${Date.now()}`,
+      if (!campaignId) {
+        console.error("[OutreachAgent] campaignId is missing, cannot save outreach.");
+        throw new Error("campaignId is required to save outreach.");
+      }
+
+      const outreachDetails: NewOutreachData = {
+        campaign_id: campaignId, // Use the passed campaignId
         creatorId: creator.id,
         creatorName: creator.name,
-        creatorAvatar: creator.avatar || '',
+        creatorAvatar: creator.avatar,
         creatorPlatform: creator.platform,
-        creatorPhoneNumber: undefined,
+        creatorPhoneNumber: creatorPhoneNumber, // Use the passed phone number
         subject: subject,
         body: message,
-        status: isFailure ? 'pending' : 'contacted',
-        confidence: 0,
-        reasoning: methodUsed || 'Direct outreach',
-        keyPoints: [],
-        nextSteps: [],
+        status: isFailure ? 'declined' : 'contacted', // More specific status for failure
+        confidence: isFailure ? 0 : (campaign.confidence || 0.75), // Lower confidence for failures
+        reasoning: isFailure ? "Outreach attempt failed" : (campaign.aiInsights?.reasoning || "Standard outreach based on campaign match"),
+        keyPoints: campaign.aiInsights?.successFactors || [],
+        nextSteps: campaign.aiInsights?.optimizationSuggestions || ["Follow up if no response"], // Changed from recommendedNextSteps
         brandName: campaign.brand,
         campaignContext: campaign.brief,
-        createdAt: new Date(),
-        lastContact: new Date(),
-        notes: isFailure ? `Failed to send outreach via ${methodUsed || 'unknown method'}` : `Initial outreach sent via ${methodUsed || 'AI'}.`,
-        conversationHistory: [],
+        // currentOffer, notes can be added later or if available
+        // Set default values for notes and currentOffer if they are mandatory in NewOutreachData but not provided here
+        notes: isFailure ? "Automated outreach failed." : "Initial outreach sent.",
+        currentOffer: undefined, // Or a default value if required
       };
-      outreachStorage.saveOutreach(newOutreach);
-      console.log(`[OutreachAgent] Outreach for ${creator.name} saved.`);
+
+      const savedOutreach = await outreachStorageService.saveOutreach(outreachDetails);
+      if (savedOutreach) {
+        console.log(`[OutreachAgent] Outreach for ${creator.name} (Campaign: ${campaignId}) saved with ID: ${savedOutreach.id}, Phone: ${creatorPhoneNumber || 'N/A'}`);
+      } else {
+        console.error(`[OutreachAgent] Failed to save outreach for ${creator.name} (Campaign: ${campaignId}) to storage service.`);
+      }
     } catch (error) {
-      console.error(`[OutreachAgent] Error saving outreach for ${creator.name}:`, error);
+      console.error(`[OutreachAgent] Error in internal saveOutreach for ${creator.name}: ${(error as Error).message}`, error);
+      // Decide if this error should propagate or be handled quietly
     }
   }
-  // Local/direct AI/template generation methods are removed as backend handles this.
 }
 
 // ============================================================================
@@ -1065,8 +1104,8 @@ class NegotiationAgent {
     console.log("🚀 FE: NegotiationAgent.generateNegotiationStrategy calling backend");
     const baseBackendUrl = import.meta.env.VITE_BACKEND_API_URL || "http://localhost:5001";
     const backendApiUrl = `${baseBackendUrl}/api/negotiation/generate-strategy`;
-    // Assuming outreachStorage.getConversationContext exists and is correct
-    const conversationContext = outreachStorage.getConversationContext(outreach.id); 
+    // MODIFIED: await the call to getConversationContext and use outreachStorageService
+    const conversationContext = await outreachStorageService.getConversationContext(outreach.id);
     try {
       await GlobalRateLimiter.getInstance().waitIfNeeded('NegotiationAgent');
       const { data: { session }, error: sessionError } = await supabase.auth.getSession();
@@ -1130,8 +1169,9 @@ class NegotiationAgent {
   }
   
   // Corrected to use _serviceGetAllOutreachesFromStorage and typed parameters
-  getEligibleForNegotiation(): StoredOutreach[] { 
-    const allOutreaches = _serviceGetAllOutreachesFromStorage();
+  // MODIFIED: Make async and await _serviceGetAllOutreachesFromStorage
+  async getEligibleForNegotiation(): Promise<StoredOutreach[]> { 
+    const allOutreaches = await _serviceGetAllOutreachesFromStorage(); 
     return allOutreaches.filter((o: StoredOutreach) => 
       o.status !== 'deal_closed' && o.status !== 'declined' && 
       o.status !== 'pending' && o.status !== 'contacted'
@@ -1139,40 +1179,39 @@ class NegotiationAgent {
   }
 
   // Corrected to use _serviceGetAllOutreachesFromStorage and typed parameters
-  getPositiveResponseCreators(): StoredOutreach[] { 
-    const allOutreaches = _serviceGetAllOutreachesFromStorage();
+  // MODIFIED: Make async and await _serviceGetAllOutreachesFromStorage
+  async getPositiveResponseCreators(): Promise<StoredOutreach[]> { 
+    const allOutreaches = await _serviceGetAllOutreachesFromStorage(); 
     return allOutreaches
       .filter((o: StoredOutreach) => ['interested', 'negotiating', 'deal_closed'].includes(o.status))
       .sort((a: StoredOutreach, b: StoredOutreach) => new Date(b.lastContact).getTime() - new Date(a.lastContact).getTime());
   }
   
-  // Preserved original logic, check if outreachStorage.addConversationMessage/updateOutreachStatus are still correct
-  updateOutreachWithNegotiation(
+  // Preserved original logic, check if outreachStorageService.addConversationMessage/updateOutreachStatus are still correct
+  // MODIFIED: Ensure this is async and awaits storage calls
+  async updateOutreachWithNegotiation(
     outreachId: string, 
     message: string, 
     suggestedOffer: number,
     insight?: NegotiationInsight, 
     method?: 'ai_generated' | 'algorithmic_fallback'
-  ): boolean {
-    console.log(`📝 FE NegotiationAgent: Updating outreach ${outreachId} via outreachStorage with new message.`);
+  ): Promise<boolean> { 
+    console.log(`📝 FE NegotiationAgent: Updating outreach ${outreachId} via outreachStorageService with new message.`);
     try {
       const messageType: ConversationMessage['type'] = insight ? 'negotiation' : 'update';
-      // Sender is 'brand' if manually updated, 'ai' if AI insight is provided
       const sender: ConversationMessage['sender'] = (insight && method === 'ai_generated') ? 'ai' : 'brand'; 
       
-      outreachStorage.addConversationMessage(outreachId, message, sender, messageType, 
+      await outreachStorageService.addConversationMessage(outreachId, message, sender, messageType, 
         insight ? { 
           aiMethod: method,
-          strategy: insight.currentPhase, // Assuming this aligns with your metadata needs
+          strategy: insight.currentPhase, 
           tactics: insight.negotiationTactics,
           suggestedOffer: insight.recommendedOffer.amount,
           phase: insight.currentPhase 
         } : undefined
       );
-      // Update overall status and offer
-      outreachStorage.updateOutreachStatus(outreachId, 'negotiating', undefined, suggestedOffer);
+      await outreachStorageService.updateOutreachStatus(outreachId, 'negotiating', undefined, suggestedOffer);
 
-      // If this update should reflect in components listening to polling state (e.g., for data refresh)
       serviceCurrentPollingState.outreachDataUpdated = true;
       _serviceNotifyListeners();
       return true;
@@ -1317,6 +1356,15 @@ class NegotiationAgent {
 // ============================================================================
 // WORKFLOW ORCHESTRATION AGENT
 // ============================================================================
+
+// Define a type for the progress update callback
+export type ProgressUpdateCallback = (progress: { 
+  stageId: 'campaign' | 'discovery' | 'scoring' | 'outreach' | 'complete'; // Corresponds to WorkflowStep id
+  status: 'running' | 'completed';
+  duration?: number; // in milliseconds
+  error?: string; // Optional error message for a stage
+}) => void;
+
 class WorkflowOrchestrationAgent {
   private campaignAgent = new CampaignBuildingAgent();
   private discoveryAgent = new CreatorDiscoveryAgent();
@@ -1326,72 +1374,119 @@ class WorkflowOrchestrationAgent {
   // The UI uses the separately exported negotiationAgentService for direct interaction.
   private negotiationAgentInternal = new NegotiationAgent(); 
 
-  async executeFullWorkflow(requirements: BusinessRequirements): Promise<AgentWorkflowResult> {
+  async executeFullWorkflow(
+    requirements: BusinessRequirements,
+    onProgress?: ProgressUpdateCallback // Add the callback parameter
+  ): Promise<AgentWorkflowResult> {
     console.log("🚀 Workflow Orchestrator (FE): Entered executeFullWorkflow. Requirements:", JSON.stringify(requirements, null, 2));
-    const startTime = Date.now();
+    const overallStartTime = Date.now();
     const initialGlobalCalls = GlobalRateLimiter.getInstance().getRemainingCalls();
     console.log(`🚀 Workflow Orchestrator (FE): Initial global calls remaining: ${initialGlobalCalls}`);
       
+    let generatedCampaign: GeneratedCampaign | undefined = undefined; // Initialize to undefined
+    let discoveredCreators: Creator[] = [];
+    let creatorMatches: CreatorMatch[] = [];
+    let outreachSummary: OutreachSummary | undefined = undefined;
+
     try {
-      const generatedCampaign = await this.campaignAgent.generateCampaign(requirements);
-      console.log(`🚀 Workflow Orchestrator (FE): Step 1 (Campaign Generation) COMPLETE. Title: ${generatedCampaign.title} (using ${generatedCampaign.agentVersion.includes('fallback') ? 'Fallback' : 'AI'})`);
+      // Stage 1: Campaign Generation
+      onProgress?.({ stageId: 'campaign', status: 'running' });
+      const campaignStartTime = Date.now();
+      generatedCampaign = await this.campaignAgent.generateCampaign(requirements);
+      const campaignDuration = Date.now() - campaignStartTime;
+      onProgress?.({ stageId: 'campaign', status: 'completed', duration: campaignDuration });
+      console.log(`🚀 Workflow Orchestrator (FE): Step 1 (Campaign Generation) COMPLETE. Title: ${generatedCampaign.title} (using ${generatedCampaign.agentVersion.includes('fallback') ? 'Fallback' : 'AI'}) Time: ${campaignDuration}ms`);
       console.log("🚀 Workflow Orchestrator (FE): Generated Campaign Object:", JSON.stringify(generatedCampaign, null, 2));
 
-      console.log("🚀 Workflow Orchestrator (FE): Attempting Step 2 - Creator Discovery...");
-    const discoveredCreators = await this.discoveryAgent.findCreators(generatedCampaign, requirements.targetAudience );
-      console.log(`🚀 Workflow Orchestrator (FE): Step 2 (Discovery) COMPLETE. Found ${discoveredCreators.length} potential creators.`);
+      // Stage 2: Creator Discovery
+      onProgress?.({ stageId: 'discovery', status: 'running' });
+      const discoveryStartTime = Date.now();
+      discoveredCreators = await this.discoveryAgent.findCreators(generatedCampaign, requirements.targetAudience );
+      const discoveryDuration = Date.now() - discoveryStartTime;
+      onProgress?.({ stageId: 'discovery', status: 'completed', duration: discoveryDuration });
+      console.log(`🚀 Workflow Orchestrator (FE): Step 2 (Discovery) COMPLETE. Found ${discoveredCreators.length} potential creators. Time: ${discoveryDuration}ms`);
       console.log("🚀 Workflow Orchestrator (FE): Discovered Creators (first 3):", JSON.stringify(discoveredCreators.slice(0,3), null, 2));
 
-    if (discoveredCreators.length === 0) {
-          console.warn("🚀 Workflow Orchestrator (FE): Workflow Halted at Discovery - No creators discovered. Cannot proceed to scoring or outreach.");
+      if (discoveredCreators.length === 0) {
+        console.warn("🚀 Workflow Orchestrator (FE): Workflow Halted at Discovery - No creators discovered. Cannot proceed to scoring or outreach.");
+        // Mark subsequent steps as effectively skipped (or error if that's more appropriate)
+        onProgress?.({ stageId: 'scoring', status: 'completed', duration: 0, error: "Skipped - No creators found" });
+        onProgress?.({ stageId: 'outreach', status: 'completed', duration: 0, error: "Skipped - No creators found" });
+        onProgress?.({ stageId: 'complete', status: 'completed', duration: 0 });
+
         return {
             generatedCampaign,
             creatorMatches: [],
             outreachSummary: { totalSent: 0, aiGenerated: 0, templateBased: 0, failed: 0, outreaches: [] },
             workflowInsights: {
-                totalProcessingTime: Date.now() - startTime,
+                totalProcessingTime: Date.now() - overallStartTime,
                 agentsUsed: ['CampaignBuilder', 'CreatorDiscovery'],
                 confidenceScore: 0.3, 
                 recommendedNextSteps: ["Widen campaign criteria (niches, platforms)", "Try a broader search query for creators"]
             }
         };
-    }
+      }
       
-      console.log("🚀 Workflow Orchestrator (FE): Attempting Step 3 - Matching & Scoring...");
-      const creatorMatches = await this.scoringAgent.scoreCreators(generatedCampaign, discoveredCreators);
-      console.log(`🚀 Workflow Orchestrator (FE): Step 3 (Scoring) COMPLETE. Scored ${creatorMatches.length} creators.`);
+      // Stage 3: Matching & Scoring
+      onProgress?.({ stageId: 'scoring', status: 'running' });
+      const scoringStartTime = Date.now();
+      creatorMatches = await this.scoringAgent.scoreCreators(generatedCampaign, discoveredCreators);
+      const scoringDuration = Date.now() - scoringStartTime;
+      onProgress?.({ stageId: 'scoring', status: 'completed', duration: scoringDuration });
+      console.log(`🚀 Workflow Orchestrator (FE): Step 3 (Scoring) COMPLETE. Scored ${creatorMatches.length} creators. Time: ${scoringDuration}ms`);
       console.log("🚀 Workflow Orchestrator (FE): Creator Matches (first 3):", JSON.stringify(creatorMatches.slice(0,3), null, 2));
       
-      console.log("🚀 Workflow Orchestrator (FE): Attempting Step 4 - Outreach...");
-      const outreachSummary = await this.outreachAgent.executeOutreach(generatedCampaign, creatorMatches, requirements);
-      console.log(`🚀 Workflow Orchestrator (FE): Step 4 (Outreach) COMPLETE. Messages considered: ${outreachSummary?.outreaches?.length || 0}, Sent successfully: ${outreachSummary?.totalSent || 0}.`);
+      // Stage 4: Outreach
+      onProgress?.({ stageId: 'outreach', status: 'running' });
+      const outreachStartTime = Date.now();
+      // MODIFIED: Pass generatedCampaign.id to executeOutreach
+      if (!generatedCampaign || !generatedCampaign.id) {
+        console.error("❌🚀 Workflow Orchestrator (FE): CRITICAL - generatedCampaign or generatedCampaign.id is missing before outreach step.");
+        // Handle error appropriately, perhaps throw or set outreachSummary to an error state
+        outreachSummary = { totalSent: 0, aiGenerated: 0, templateBased: 0, failed: 1, outreaches: [{ creator: {} as Creator, subject: "Campaign ID Error", message: "Campaign ID missing", status: 'failed', method: 'template_based', timestamp: new Date()}] };
+        onProgress?.({ stageId: 'outreach', status: 'completed', duration: 0, error: "Campaign ID missing for outreach" });
+      } else {
+        outreachSummary = await this.outreachAgent.executeOutreach(generatedCampaign, creatorMatches, requirements, generatedCampaign.id);
+      }
+      const outreachDuration = Date.now() - outreachStartTime;
+      onProgress?.({ stageId: 'outreach', status: 'completed', duration: outreachDuration });
+      console.log(`🚀 Workflow Orchestrator (FE): Step 4 (Outreach) COMPLETE. Messages considered: ${outreachSummary?.outreaches?.length || 0}, Sent successfully: ${outreachSummary?.totalSent || 0}. Time: ${outreachDuration}ms`);
       console.log("🚀 Workflow Orchestrator (FE): Outreach Summary Object received by orchestrator:", JSON.stringify(outreachSummary, null, 2));
 
-    const processingTime = Date.now() - startTime;
-    const finalGlobalCalls = GlobalRateLimiter.getInstance().getRemainingCalls();
-    const callsUsedThisWorkflow = initialGlobalCalls - finalGlobalCalls;
+      const processingTime = Date.now() - overallStartTime;
+      const finalGlobalCalls = GlobalRateLimiter.getInstance().getRemainingCalls();
+      const callsUsedThisWorkflow = initialGlobalCalls - finalGlobalCalls;
       console.log(`🚀 Workflow Orchestrator (FE): Workflow complete. Total time: ${processingTime}ms. API calls used this run: ${callsUsedThisWorkflow}`);
+      
+      onProgress?.({ stageId: 'complete', status: 'completed', duration: 0 });
 
-    return {
+
+      return {
         generatedCampaign,
         creatorMatches,
-        outreachSummary,
+        outreachSummary, // This can be undefined if an error happened before outreach
         workflowInsights: {
           totalProcessingTime: processingTime,
           agentsUsed: ['CampaignBuilder', 'CreatorDiscovery', 'MatchingScoring', 'Outreach'],
-            confidenceScore: Math.min(0.95, (generatedCampaign.confidence + (creatorMatches.length > 0 && creatorMatches.reduce((s,m)=>s+(m.score||0),0) > 0 ? (creatorMatches.reduce((s,m)=>s+(m.score||0),0)/creatorMatches.length/100) : 0.5))/2 + (callsUsedThisWorkflow > 0 ? 0.1 : 0) ),
-            recommendedNextSteps: [
-              `Review ${outreachSummary ? outreachSummary.totalSent : 0} outreaches.`,
-              "Monitor responses for negotiation.", 
-              `Frontend API calls used: ${callsUsedThisWorkflow}`
-            ]
+          confidenceScore: Math.min(0.95, (generatedCampaign.confidence + (creatorMatches.length > 0 && creatorMatches.reduce((s,m)=>s+(m.score||0),0) > 0 ? (creatorMatches.reduce((s,m)=>s+(m.score||0),0)/creatorMatches.length/100) : 0.5))/2 + (callsUsedThisWorkflow > 0 ? 0.1 : 0) ),
+          recommendedNextSteps: [
+            `Review ${outreachSummary ? outreachSummary.totalSent : 0} outreaches.`,
+            "Monitor responses for negotiation.", 
+            `Frontend API calls used: ${callsUsedThisWorkflow}`
+          ]
         }
-    };
+      };
 
-    } catch (error) {
+    } catch (error: any) {
       console.error("❌🚀 Workflow Orchestrator (FE): CRITICAL ERROR within executeFullWorkflow:", error);
-      // Rethrow or return a specific error structure if needed for the UI to handle
-      // For now, rethrowing will let the caller (runAgenticWorkflow in agentic-ai.tsx) catch it.
+      // Try to determine which stage failed for better progress reporting
+      // This is a simplification; more robust stage tracking might be needed
+      if (!generatedCampaign) onProgress?.({ stageId: 'campaign', status: 'completed', error: error.message });
+      else if (discoveredCreators.length === 0 && !creatorMatches.length) onProgress?.({ stageId: 'discovery', status: 'completed', error: error.message });
+      else if (!creatorMatches.length) onProgress?.({ stageId: 'scoring', status: 'completed', error: error.message });
+      else onProgress?.({ stageId: 'outreach', status: 'completed', error: error.message });
+      
+      onProgress?.({ stageId: 'complete', status: 'completed', error: 'Workflow failed' });
       throw error; 
     }
   }

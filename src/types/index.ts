@@ -20,6 +20,7 @@ export interface Creator {
   location: string;
   bio: string;
   verified: boolean;
+  phone_number?: string;
   metrics: {
     followers: number;
     avgViews: number;
