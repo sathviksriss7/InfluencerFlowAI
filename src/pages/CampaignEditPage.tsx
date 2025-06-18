@@ -108,7 +108,17 @@ const CampaignEditPage: React.FC = () => {
     if (campaignId) {
       setIsLoading(true);
       setError(null);
-      fetch(`/api/campaigns/${campaignId}`, {
+
+      const backendBaseUrl = import.meta.env.VITE_BACKEND_API_URL;
+      if (!backendBaseUrl) {
+        setError("Backend API URL is not configured. Please contact support.");
+        setIsLoading(false);
+        return;
+      }
+      const apiUrl = `${backendBaseUrl}/api/campaigns/${campaignId}`;
+      console.log("Attempting to fetch campaign for edit from:", apiUrl); // DEBUG
+
+      fetch(apiUrl, {
         headers: {
           'Authorization': `Bearer ${session.access_token}`,
         },
@@ -348,7 +358,16 @@ const CampaignEditPage: React.FC = () => {
 
 
     try {
-      const response = await fetch(`/api/campaigns/${campaignId}`, {
+      const backendBaseUrl = import.meta.env.VITE_BACKEND_API_URL;
+      if (!backendBaseUrl) {
+        setError("Backend API URL is not configured. Please contact support.");
+        setIsSubmitting(false);
+        return;
+      }
+      const apiUrl = `${backendBaseUrl}/api/campaigns/${campaignId}`;
+      console.log("Attempting to update campaign (PUT request) to:", apiUrl); // DEBUG
+
+      const response = await fetch(apiUrl, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
