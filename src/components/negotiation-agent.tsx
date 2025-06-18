@@ -5,7 +5,7 @@ import {
   type PollingState,
   type NegotiationInsight
 } from '../services/ai-agents';
-import { type StoredOutreach, type ConversationMessage } from '../services/outreach-storage';
+import { type StoredOutreach, type ConversationMessage, type VoiceCallSummaryMetadata } from '../services/outreach-storage';
 // Supabase import removed as it was not used in the backup component's logic
 
 interface NegotiationState {
@@ -26,6 +26,65 @@ interface NegotiationState {
 //   creator_transcript?: string;
 //   outreach_id?: string;
 // }
+
+// Helper function to process conversation history for display
+interface CallGroup {
+  callSid: string;
+  summaryMessage: ConversationMessage & { metadata: VoiceCallSummaryMetadata }; // Ensure metadata is VoiceCallSummaryMetadata
+  turns: ConversationMessage[];
+  timestamp: Date;
+}
+
+interface ProcessedHistory {
+  generalMessages: ConversationMessage[];
+  callGroups: CallGroup[];
+}
+
+function processConversationHistoryForDisplay(history: ConversationMessage[] | undefined): ProcessedHistory {
+  const processed: ProcessedHistory = {
+    generalMessages: [],
+    callGroups: [],
+  };
+
+  if (!history || history.length === 0) {
+    return processed;
+  }
+
+  const callSummaryMessages = history.filter(
+    (msg): msg is ConversationMessage & { metadata: VoiceCallSummaryMetadata } => 
+      msg.type === 'voice_call_summary' && msg.metadata?.call_sid !== undefined
+  );
+  
+  const messagesByCallSid: Record<string, ConversationMessage[]> = {};
+  const otherMessages: ConversationMessage[] = [];
+
+  history.forEach(msg => {
+    if (msg.metadata?.call_sid && msg.type !== 'voice_call_summary') {
+      if (!messagesByCallSid[msg.metadata.call_sid]) {
+        messagesByCallSid[msg.metadata.call_sid] = [];
+      }
+      messagesByCallSid[msg.metadata.call_sid].push(msg);
+    } else if (msg.type !== 'voice_call_summary') {
+      otherMessages.push(msg);
+    }
+  });
+
+  processed.generalMessages = otherMessages.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+  callSummaryMessages.forEach(summaryMsg => {
+    const callSid = summaryMsg.metadata.call_sid;
+    processed.callGroups.push({
+      callSid: callSid,
+      summaryMessage: summaryMsg,
+      turns: (messagesByCallSid[callSid] || []).sort((a,b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()), // Sort turns chronologically
+      timestamp: new Date(summaryMsg.timestamp),
+    });
+  });
+
+  processed.callGroups.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime()); // Newest calls first
+
+  return processed;
+}
 
 export const NegotiationAgentComponent: React.FC = () => {
   const [allOutreaches, setAllOutreaches] = useState<StoredOutreach[]>([]);
@@ -512,7 +571,63 @@ export const NegotiationAgentComponent: React.FC = () => {
                         const callSidToFetch = getLatestCallSidForOutreach(outreach);
                         if (callSidToFetch) {
                           alert(`Requesting manual fetch for ${outreach.creatorName}'s call (SID: ${callSidToFetch}). See details in 'Voice Call Test Area' or history.`);
-                          await negotiationAgentService.manuallyFetchCallArtifacts(callSidToFetch);
+                          
+                          const MAX_FETCH_ATTEMPTS = 3;
+                          const FETCH_RETRY_DELAY_MS = 3000;
+                          let attempt = 0;
+                          let success = false;
+
+                          while (attempt < MAX_FETCH_ATTEMPTS && !success) {
+                            attempt++;
+                            await negotiationAgentService.manuallyFetchCallArtifacts(callSidToFetch);
+                            
+                            // Check the state from the service after the attempt
+                            const currentServiceState = negotiationAgentService.getPollingStateSnapshot();
+
+                            if (currentServiceState.fetchedArtifactsForLastCall && currentServiceState.activePollingCallSid === callSidToFetch && !currentServiceState.errorMessage) {
+                              // Check if we actually got the recording URL as a stronger success condition
+                              if (currentServiceState.fetchedArtifactsForLastCall.full_recording_url) {
+                                console.log(`[Call Details] Fetch attempt ${attempt} successful for SID ${callSidToFetch}. Recording URL found.`);
+                                success = true;
+                                alert(`Successfully fetched call details for ${outreach.creatorName} (SID: ${callSidToFetch}) on attempt ${attempt}.`);
+                              } else {
+                                console.log(`[Call Details] Fetch attempt ${attempt} for SID ${callSidToFetch} seemed successful, but recording URL is still missing. Will retry if attempts remain.`);
+                                // If no error, but critical data (like recording_url) is missing, we might still want to retry.
+                                // For now, we only explicitly retry on "not found" type errors.
+                                // If errorMessage is null but no recording_url, it implies the backend sent data but it was incomplete.
+                                if (attempt < MAX_FETCH_ATTEMPTS && !currentServiceState.errorMessage) {
+                                   alert(`Call details for ${outreach.creatorName} (SID: ${callSidToFetch}) fetched on attempt ${attempt}, but some data (e.g. recording) might still be processing. Will check again if attempts remain.`);
+                                   await new Promise(resolve => setTimeout(resolve, FETCH_RETRY_DELAY_MS));
+                                } else if (!currentServiceState.errorMessage) {
+                                   success = true; // No error, but no URL after max attempts, count as "fetched what's available"
+                                   alert(`Fetched available call details for ${outreach.creatorName} (SID: ${callSidToFetch}). Some data (e.g. recording) might still be processing or unavailable.`);
+                                }
+                              }
+                            } else if (currentServiceState.errorMessage && currentServiceState.errorMessage.includes("Call artifacts not found")) {
+                              console.warn(`[Call Details] Fetch attempt ${attempt} for SID ${callSidToFetch} failed: ${currentServiceState.errorMessage}. Retrying if attempts remain...`);
+                              if (attempt < MAX_FETCH_ATTEMPTS) {
+                                alert(`Could not find call details for ${outreach.creatorName} (SID: ${callSidToFetch}) on attempt ${attempt}. Retrying in ${FETCH_RETRY_DELAY_MS / 1000}s...`);
+                                await new Promise(resolve => setTimeout(resolve, FETCH_RETRY_DELAY_MS));
+                              } else {
+                                alert(`Failed to fetch call details for ${outreach.creatorName} (SID: ${callSidToFetch}) after ${MAX_FETCH_ATTEMPTS} attempts. Error: ${currentServiceState.errorMessage}`);
+                              }
+                            } else if (currentServiceState.errorMessage) {
+                              // A different error occurred, don't retry for this type of error
+                              console.error(`[Call Details] Fetch attempt ${attempt} for SID ${callSidToFetch} failed with a non-retryable error: ${currentServiceState.errorMessage}`);
+                              alert(`Error fetching call details for ${outreach.creatorName} (SID: ${callSidToFetch}): ${currentServiceState.errorMessage}`);
+                              success = true; // Break loop on other errors
+                            } else {
+                              // No error, and fetchedArtifacts might be there but not for activePollingCallSid, or some other state.
+                              // This case should ideally mean success if no error is present.
+                              console.log(`[Call Details] Fetch attempt ${attempt} for SID ${callSidToFetch} completed without specific error, assuming success or data already present.`);
+                              success = true; 
+                            }
+                          }
+                          if (!success && attempt === MAX_FETCH_ATTEMPTS) {
+                             // This message is now covered by the more specific alerts inside the loop.
+                             // alert(`Failed to fetch complete call details for ${outreach.creatorName} (SID: ${callSidToFetch}) after ${MAX_FETCH_ATTEMPTS} attempts. Please check backend logs or try again later.`);
+                          }
+
                         } else {
                           alert(`${outreach.creatorName} has no call SID recorded in their history yet. Initiate a call first or check if a general test call was made for their context.`);
                         }
@@ -534,53 +649,94 @@ export const NegotiationAgentComponent: React.FC = () => {
                 >
                   {showDetails[outreach.id] ? 'Hide Details' : 'Show Details'}
                 </button>
-                {showDetails[outreach.id] && (
-                  <div className="mt-3 space-y-2 text-sm text-gray-700 border-t pt-3">
-                    <p><strong>Creator ID:</strong> {outreach.creatorId}</p>
-                    <p><strong>Outreach ID:</strong> {outreach.id}</p>
-                    <p><strong>Brand:</strong> {outreach.brandName}</p>
-                    <p><strong>Campaign Context:</strong> {outreach.campaignContext}</p>
-                    <p><strong>Current Offer:</strong> {outreach.currentOffer ? `₹${outreach.currentOffer}` : 'Not set'}</p>
-                    <p><strong>Phone Number:</strong> {outreach.creatorPhoneNumber || 'N/A'}</p>
-                    <p><strong>Notes:</strong> {outreach.notes || 'None'}</p>
-                    <h5 className="font-semibold mt-2">Conversation History ({outreach.conversationHistory?.length || 0}):</h5>
-                    {outreach.conversationHistory && outreach.conversationHistory.length > 0 ? (
-                      <div className="max-h-60 overflow-y-auto bg-gray-50 p-2 rounded border">
-                        {outreach.conversationHistory.slice().reverse().map(msg => (
-                          <div key={msg.id} className="mb-2 p-2 border-b last:border-b-0">
-                            <p className={`font-semibold ${msg.sender === 'creator' ? 'text-green-600' : msg.sender === 'ai' ? 'text-blue-600' : 'text-purple-600'}`}>
-                              {msg.sender.toUpperCase()} ({new Date(msg.timestamp).toLocaleString()}):
-                            </p>
-                            <p className="whitespace-pre-wrap text-xs">{msg.content}</p>
-                            {msg.type === 'voice_call_summary' && msg.metadata && (
-                              <div className="text-xs mt-1 pl-2 border-l-2 border-gray-300 bg-gray-100 p-1 rounded">
-                                {msg.metadata.call_sid && <p>Call SID: {msg.metadata.call_sid}</p>}
-                                {msg.metadata.full_recording_url && (
-                                  <p>
-                                    Recording: <a href={msg.metadata.full_recording_url} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">Listen</a> 
-                                    ({msg.metadata.full_recording_duration ? `${msg.metadata.full_recording_duration}s` : 'N/A'})
-                                  </p>
-                                )}
-                                {msg.metadata.turns && Array.isArray(msg.metadata.turns) && msg.metadata.turns.length > 0 && (
-                                  <div className="mt-1">
-                                    <p className="font-medium">Transcript Snippets:</p>
-                                    <ul className="list-disc list-inside pl-2">
-                                      {msg.metadata.turns.map((turn: {speaker?:string; text?:string}, idx: number) => (
-                                        <li key={idx}><strong>{turn.speaker || 'N/A'}:</strong> {turn.text || '[empty]'}</li>
-                                      ))}
-                                    </ul>
+                {showDetails[outreach.id] && (() => {
+                  // Process history for this outreach
+                  const displayHistory = processConversationHistoryForDisplay(outreach.conversationHistory);
+                  
+                  return (
+                    <div className="mt-3 space-y-2 text-sm text-gray-700 border-t pt-3">
+                      <p><strong>Creator ID:</strong> {outreach.creatorId}</p>
+                      <p><strong>Outreach ID:</strong> {outreach.id}</p>
+                      <p><strong>Brand:</strong> {outreach.brandName}</p>
+                      <p><strong>Campaign Context:</strong> {outreach.campaignContext}</p>
+                      <p><strong>Current Offer:</strong> {outreach.currentOffer ? `₹${outreach.currentOffer}` : 'Not set'}</p>
+                      <p><strong>Phone Number:</strong> {outreach.creatorPhoneNumber || 'N/A'}</p>
+                      <p><strong>Notes:</strong> {outreach.notes || 'None'}</p>
+                      
+                      <h5 className="font-semibold mt-3 pt-2 border-t">Conversation Log:</h5>
+
+                      {displayHistory.callGroups.length === 0 && displayHistory.generalMessages.length === 0 && (
+                        <p className="text-xs">No conversation history recorded.</p>
+                      )}
+
+                      {/* Render Call Groups */}
+                      {displayHistory.callGroups.map(callGroup => (
+                        <div key={callGroup.callSid} className="my-4 p-3 border rounded-md bg-sky-50 border-sky-200">
+                          <h6 className="font-semibold text-sky-700">
+                            Call on {new Date(callGroup.timestamp).toLocaleString()} (SID: {callGroup.callSid})
+                          </h6>
+                          {callGroup.summaryMessage.metadata.full_recording_url && (
+                            <div className="mt-2">
+                              <p className="font-medium text-xs mb-1">Recording:</p>
+                              <audio controls src={callGroup.summaryMessage.metadata.full_recording_url} className="w-full max-w-sm">
+                                Your browser does not support the audio element.
+                                <a 
+                                  href={callGroup.summaryMessage.metadata.full_recording_url} 
+                                  target="_blank" 
+                                  rel="noopener noreferrer" 
+                                  className="text-blue-500 hover:text-blue-700 underline"
+                                >
+                                  Listen to recording
+                                </a>
+                              </audio>
+                              {callGroup.summaryMessage.metadata.full_recording_duration && 
+                                <p className="text-xs text-gray-600 mt-1">Duration: {callGroup.summaryMessage.metadata.full_recording_duration}s</p>}
+                            </div>
+                          )}
+                          {callGroup.summaryMessage.metadata.error_message && 
+                            <p className="text-xs text-red-500 mt-1">Call Error: {callGroup.summaryMessage.metadata.error_message}</p>}
+                          
+                          {callGroup.turns.length > 0 && (
+                            <div className="mt-2 pt-2 border-t border-sky-100">
+                              <p className="font-medium text-xs mb-1">Transcript:</p>
+                              <div className="max-h-48 overflow-y-auto space-y-1 bg-white p-2 rounded border border-sky-100">
+                                {callGroup.turns.map(turn => (
+                                  <div key={turn.id} className="text-xs">
+                                    <span className={`font-semibold ${turn.sender === 'creator' ? 'text-green-700' : 'text-blue-700'}`}>
+                                      {turn.sender.toUpperCase()}:
+                                    </span>
+                                    <span className="ml-1 whitespace-pre-wrap">{turn.content}</span>
+                                    <span className="text-gray-400 text-xxs ml-2">({new Date(turn.timestamp).toLocaleTimeString()})</span>
                                   </div>
-                                )}
+                                ))}
                               </div>
-                            )}
+                            </div>
+                          )}
+                           {callGroup.summaryMessage.metadata.human_readable_summary && 
+                            <p className="text-xs mt-2 italic text-gray-600">AI Summary: {callGroup.summaryMessage.metadata.human_readable_summary}</p>}
+                        </div>
+                      ))}
+
+                      {/* Render General Messages (if any, and if there are calls, perhaps with a separator) */}
+                      {displayHistory.generalMessages.length > 0 && (
+                        <div className="mt-4 pt-3 border-t">
+                          <h6 className="font-semibold text-gray-700 mb-2">Other Messages:</h6>
+                          <div className="max-h-60 overflow-y-auto bg-gray-50 p-2 rounded border space-y-2">
+                            {displayHistory.generalMessages.map(msg => (
+                              <div key={msg.id} className="p-2 border-b last:border-b-0 text-xs">
+                                <p className={`font-semibold ${msg.sender === 'creator' ? 'text-green-600' : msg.sender === 'ai' ? 'text-blue-600' : 'text-purple-600'}`}>
+                                  {msg.sender.toUpperCase()} ({new Date(msg.timestamp).toLocaleString()}):
+                                </p>
+                                <p className="whitespace-pre-wrap">{msg.content}</p>
+                                {/* You could render other metadata for general messages if needed */}
+                              </div>
+                            ))}
                           </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="text-xs">No conversation history recorded.</p>
-                    )}
-                  </div>
-                )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
                 {isCurrentlySelectedForNegoForm && ( // Show form only if this outreach is selected
                     <div className="mt-4 p-4 border-t border-indigo-200 bg-indigo-50 rounded-md">
                         <h4 className="text-md font-semibold text-indigo-700">Generated Suggestion for {outreach.creatorName}:</h4>

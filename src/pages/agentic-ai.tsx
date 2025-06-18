@@ -675,6 +675,7 @@ export default function AgenticAI() {
                             value={requirements.budgetRange?.min || ''}
                             onChange={(e) => updateBudget('min', e.target.value)}
                             placeholder="e.g., 50000"
+                            className={"w-full px-2 py-2 rounded-md text-sm font-medium border"}
                           />
                         </div>
                         <div>
@@ -685,6 +686,7 @@ export default function AgenticAI() {
                             value={requirements.budgetRange?.max || ''}
                             onChange={(e) => updateBudget('max', e.target.value)}
                             placeholder="e.g., 200000"
+                            className={"w-full px-2 py-2 rounded-md text-sm font-medium border"}
                           />
                         </div>
                         <div className="md:col-span-2">

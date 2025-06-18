@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, g, has_request_context
 from flask_cors import CORS # Import CORS
 from dotenv import load_dotenv
 import os
@@ -21,6 +21,7 @@ from elevenlabs.client import ElevenLabs # type: ignore # Use this for the main 
 import shutil # For saving audio file temporarily
 import uuid   # For generating unique filenames
 import urllib.request # For downloading the recording
+import time # Added import for time.sleep()
 
 # Load environment variables from .env file
 load_dotenv()
@@ -1923,145 +1924,218 @@ def generate_audio_with_elevenlabs(text_to_speak, call_sid_for_filename="unknown
 @app.route('/api/voice/make-call', methods=['POST'])
 @token_required
 def make_outbound_call():
-    if not twilio_client:
-        return jsonify({"success": False, "error": "Twilio client not initialized"}), 500
+    data = request.get_json()
+    to_phone_number = data.get('to_phone_number')
+    message_to_speak = data.get('message') # This is the initial message from the campaign
+    outreach_id = data.get('outreach_id') # This is the crucial Supabase outreach ID
+    # creator_name = data.get('creator_name', 'Valued Creator') 
+    # brand_name = data.get('brand_name', 'Our Client')
+    # campaign_objective = data.get('campaign_objective', 'discuss an exciting opportunity')
+
+    if not all([to_phone_number, message_to_speak, outreach_id]):
+        return jsonify({"success": False, "error": "Missing required fields: to_phone_number, message, outreach_id"}), 400
+
+    if not twilio_client or not twilio_phone_number:
+        return jsonify({"success": False, "error": "Twilio client not configured on backend."}), 500
+
+    BACKEND_PUBLIC_URL = os.getenv("BACKEND_PUBLIC_URL")
+    if not BACKEND_PUBLIC_URL:
+        return jsonify({"success": False, "error": "BACKEND_PUBLIC_URL not configured in .env. Cannot set Twilio webhooks."}), 500
+
+    initial_greeting_message = message_to_speak
+    elevenlabs_audio_public_url = None
+
+    if elevenlabs_client and elevenlabs_api_key and initial_greeting_message:
+        try:
+            print(f"🔊 ElevenLabs: Attempting TTS for: {initial_greeting_message[:50]}...")
+            # Use a unique filename incorporating the outreach_id and a UUID to avoid collisions
+            # and help with potential debugging/tracing.
+            unique_filename_stem = f"initial_{outreach_id.replace('-', '')}_{str(uuid.uuid4())}"
+            
+            # generate_audio_with_elevenlabs returns two values: public_audio_url, local_temp_file_path
+            returned_public_url, returned_local_path = generate_audio_with_elevenlabs(
+                initial_greeting_message, 
+                unique_filename_stem # Pass the stem, .mp3 will be added
+            )
+
+            if returned_public_url: # Check if a public URL was successfully generated
+                elevenlabs_audio_public_url = returned_public_url # Assign to the variable used later
+                print(f"🎧 ElevenLabs audio accessible at: {elevenlabs_audio_public_url}")
+            else:
+                print("⚠️ ElevenLabs: TTS generation or saving failed, will fall back to Twilio basic TTS.")
+                elevenlabs_audio_public_url = None # Ensure it remains None if generation failed
+        except Exception as e:
+            print(f"❌ ElevenLabs TTS Error: {e}. Falling back to Twilio basic TTS.")
+            elevenlabs_audio_public_url = None # Ensure fallback
 
     try:
-        data = request.get_json()
-        to_phone_number = data.get('to_phone_number')
-        initial_message_text = data.get('message') 
-        outreach_id = data.get('outreach_id') 
-        creator_name = data.get('creator_name', 'Valued Creator') 
-        brand_name = data.get('brand_name', 'Our Brand')       
-        campaign_objective = data.get('campaign_objective', 'Discuss potential collaboration') 
-        # ADDED: Get email conversation summary from the request
-        email_conversation_summary = data.get('conversationHistorySummary', "No prior email conversation summary provided.")
-
-        if not to_phone_number or not initial_message_text:
-            return jsonify({"success": False, "error": "Missing to_phone_number or message"}), 400
+        response = VoiceResponse()
         
-        twiml_to_use = None
-        temp_audio_public_url = None 
-        backend_public_url = os.getenv("BACKEND_PUBLIC_URL", f"http://localhost:{os.getenv('PORT', 5001)}").rstrip('/')
-        handle_user_speech_url = f"{backend_public_url}/api/voice/handle_user_speech"
-        print(f"DEBUG: handle_user_speech_url in make_outbound_call: {handle_user_speech_url}") # DEBUG LINE ADDED
+        # Ensure outreach_id is part of callback URLs
+        handle_user_speech_url_with_oid = f'{BACKEND_PUBLIC_URL}/api/voice/handle_user_speech?outreach_id={outreach_id}'
+        transcription_status_url_with_oid = f'{BACKEND_PUBLIC_URL}/api/voice/transcription-status?outreach_id={outreach_id}'
+        # Add 'source' to distinguish callbacks in handle_recording_status
+        record_verb_status_callback_url = f'{BACKEND_PUBLIC_URL}/api/voice/recording-status?outreach_id={outreach_id}&source=record_verb'
 
-        if not elevenlabs_client and not elevenlabs_api_key: 
-            print("📞 ElevenLabs client/key not available, using Twilio basic TTS for initial message.")
-            response = VoiceResponse()
-            response.say(initial_message_text, voice='alice')
-            gather = Gather(input='speech', action=handle_user_speech_url, method='POST', speechTimeout='auto')
-            response.append(gather)
-            response.say("We didn't catch that. Could you please repeat?", voice='alice') 
-            response.hangup() 
-            twiml_to_use = str(response)
+        if elevenlabs_audio_public_url:
+            response.play(elevenlabs_audio_public_url)
         else:
-            try:
-                generated_url, _ = generate_audio_with_elevenlabs(initial_message_text, call_sid_for_filename=f"initial_{outreach_id or 'ad_hoc'}")
-                temp_audio_public_url = generated_url 
-                
-                if not temp_audio_public_url:
-                    raise Exception("ElevenLabs audio generation failed to return a URL.")
+            response.say(initial_greeting_message, voice='Polly.Joanna-Neural')
 
-                response = VoiceResponse()
-                response.play(temp_audio_public_url) 
-                gather = Gather(input='speech', action=handle_user_speech_url, method='POST', speechTimeout='auto')
-                response.append(gather)
-                response.say("We didn't catch that. Could you please repeat?", voice='alice')
-                response.hangup()
-                twiml_to_use = str(response)
+        # Use <Gather> to capture user's speech after the initial message
+        gather = Gather(input='speech', 
+                        action=handle_user_speech_url_with_oid, 
+                        method='POST', 
+                        speechTimeout='5', # Or a specific number of seconds e.g. '3' or '5'
+                        speechModel='phone_call', # Use 'phone_call' for better accuracy on phone audio
+                        transcribe=True,
+                        transcribeCallback=transcription_status_url_with_oid
+                       )
+        # Optionally, add a prompt within Gather if needed, e.g., gather.say("Please tell me your thoughts.")
+        # If no prompt, it waits silently for speech after the initial AI message.
+        response.append(gather)
 
-            except Exception as e_elevenlabs:
-                print(f"❌ ElevenLabs TTS usage or subsequent TwiML construction failed: {e_elevenlabs}. Falling back to Twilio basic TTS for initial message.")
-                response = VoiceResponse()
-                response.say(initial_message_text, voice='alice')
-                gather = Gather(input='speech', action=handle_user_speech_url, method='POST', speechTimeout='auto')
-                response.append(gather)
-                response.say("We didn't catch that. Could you please repeat?", voice='alice')
-                response.hangup()
-                twiml_to_use = str(response)
-                temp_audio_public_url = None 
+        # Fallback if Gather completes without input (e.g., user hangs up or long silence)
+        response.say("We didn't receive a response. If you'd like to talk, please call us back later. Goodbye.", voice='Polly.Joanna-Neural')
+        response.hangup()
+
+        twiml_to_use = str(response)
+
+        # Overall call status callback, also needs outreach_id and source
+        overall_call_status_url = f'{BACKEND_PUBLIC_URL}/api/voice/recording-status?outreach_id={outreach_id}&source=call_create'
 
         call = twilio_client.calls.create(
-            twiml=twiml_to_use,
             to=to_phone_number,
             from_=twilio_phone_number,
-            status_callback=f'{backend_public_url}/api/voice/recording-status',
-            status_callback_event=['completed'],
-            record=True,
+            twiml=twiml_to_use,
+            status_callback=overall_call_status_url, 
+            status_callback_method='POST',
+            status_callback_event=['initiated', 'ringing', 'answered', 'completed'], # Corrected events
+            record=True, # Record the entire call from the beginning
+            recording_status_callback=f"{BACKEND_PUBLIC_URL}/api/voice/recording-status?outreach_id={outreach_id}&source=call_create", # Added source
+            recording_status_callback_method='POST',
         )
-
-        call_sid = call.sid
-        print(f"📞 Call initiated with SID: {call_sid} to {to_phone_number}. Outreach ID: {outreach_id}")
-
-        call_artifacts_store[call_sid] = {
-            "status": "initiated", 
-            "outreach_id": outreach_id,
-            "initial_message_text": initial_message_text,
-            "creator_name": creator_name, 
-            "brand_name": brand_name,     
-            "campaign_objective": campaign_objective, 
-            "email_conversation_summary": email_conversation_summary, # ADDED: Store the summary
-            "conversation_history": [
-                {"speaker": "ai", "text": initial_message_text, "timestamp": datetime.now(timezone.utc).isoformat()}
-            ], 
-            "temp_initial_audio_url": temp_audio_public_url 
-        }
         
-        return jsonify({"success": True, "call_sid": call_sid, "status": "initiated", "message": "Call initiated successfully."})
+        # Immediately store Supabase outreach_id with CallSid
+        if call.sid and outreach_id:
+             call_artifacts_store[call.sid] = {
+                 "outreach_id": outreach_id, # Store the critical Supabase outreach ID
+                 "status": "initiated",
+                 "initial_message_spoken": initial_greeting_message[:100] + "...",
+                 "conversation_history": [
+                    {"speaker": "ai", "text": initial_greeting_message, "timestamp": datetime.now(timezone.utc).isoformat()}
+                 ]
+             }
+             
+             # Also, log this initial AI message to the Supabase conversation_messages table
+             add_supabase_conversation_message(
+                 outreach_id=outreach_id,
+                 content=initial_greeting_message,
+                 sender='ai',
+                 message_type='call_exchange', # To represent a turn in the voice call
+                 metadata={'call_sid': call.sid, 'speaker': 'ai', 'initial_message': True},
+                 user_id=request.current_user.id if hasattr(request, 'current_user') and request.current_user else None
+             )
+        else:
+            print(f"⚠️ WARNING: Could not pre-store outreach_id for call. CallSid: {call.sid}, OutreachID: {outreach_id}")
+
+
+        print(f"📞 Call initiated with SID: {call.sid} to {to_phone_number}. Associated Supabase Outreach ID: {outreach_id}")
+        return jsonify({"success": True, "call_sid": call.sid, "outreach_id": outreach_id, "status": "initiated", "message": "Call initiated successfully."})
 
     except Exception as e:
-        print(f"Error in make_outbound_call: {e}")
+        error_message = f"Error making outbound call: {str(e)}"
+        print(f"❌ {error_message}")
         import traceback
         traceback.print_exc()
-        return jsonify({"success": False, "error": str(e)}), 500
+        return jsonify({"success": False, "error": error_message}), 500
 
-# --- Endpoint to receive call recording status updates from Twilio ---
 @app.route("/api/voice/recording-status", methods=['POST'])
 def handle_recording_status():
+    # --- ADD SPECIFIC LOGGING FOR record_verb source ---
+    if request.args.get('source') == 'record_verb':
+        call_sid_for_log = request.form.get('CallSid', 'N/A_CallSid')
+        recording_sid_for_log = request.form.get('RecordingSid', 'N/A_RecSid')
+        recording_url_twilio_for_log = request.form.get('RecordingUrl')
+        recording_status_for_log = request.form.get('RecordingStatus', 'N/A_RecStatus') # Twilio might send RecordingStatus
+        print(f"🎉 SPECIFIC LOG: handle_recording_status called with source=record_verb. CallSid: {call_sid_for_log}, RecordingSid: {recording_sid_for_log}, URL Present: {recording_url_twilio_for_log is not None}, RecordingStatus: {recording_status_for_log}")
+    # --- END SPECIFIC LOGGING ---
+
+    # Log all incoming data for debugging
+    try:
+        # Detailed logging as before
+        form_data_str = ", ".join([f"{key}: '{value}'" for key, value in request.form.items()])
+        query_params_str = ", ".join([f"{key}: '{value}'" for key, value in request.args.items()])
+        log_message = (
+            f"--- TWILIO RECORDING STATUS WEBHOOK RECEIVED ---\n"
+            f"Timestamp: {datetime.now().isoformat()}\n"
+            f"Request Method: {request.method}\n"
+            f"Request URL: {request.url}\n"
+            f"Request Headers: {dict(request.headers)}\n"
+            f"Request Query Parameters (Args): {{{query_params_str}}}\n"
+            f"Request Form Data: {{{form_data_str}}}\n"
+            f"----------------------------------------------"
+        )
+        print(log_message)
+    except Exception as e:
+        print(f"Error logging request details in handle_recording_status: {e}")
+
+    # --- Crucial: Retrieve Supabase outreach_id from query parameters ---
     outreach_id_from_query = request.args.get('outreach_id')
+    callback_source = request.args.get('source', 'unknown') # e.g., 'record_verb' or 'call_create'
+
     call_sid = request.form.get('CallSid')
     recording_sid = request.form.get('RecordingSid')
-    recording_url_from_twilio = request.form.get('RecordingUrl')
-    recording_status = request.form.get('RecordingStatus')
+    recording_url_twilio = request.form.get('RecordingUrl')
     recording_duration = request.form.get('RecordingDuration')
-    final_outreach_id = outreach_id_from_query if outreach_id_from_query else call_sid 
+    actual_call_status = request.form.get('CallStatus')
 
-    print(f"🔴 REC STATUS: OutreachID: {final_outreach_id}, CallSid: {call_sid}, Status: {recording_status}")
-    
-    if recording_status == 'completed' and recording_url_from_twilio and supabase_admin_client and twilio_client:
-        try:
-            # ... (your existing logic to download recording from Twilio and upload to Supabase) ...
-            recording_instance = twilio_client.recordings(request.form.get('RecordingSid')).fetch()
-            mp3_uri = recording_instance.uri.replace(".json", ".mp3")
-            full_media_url = f"https://api.twilio.com{mp3_uri}"
-            auth = (twilio_account_sid, twilio_auth_token)
-            media_response = requests.get(full_media_url, auth=auth)
-            media_response.raise_for_status()
-            audio_data = media_response.content
-            bucket_name = "call-recordings"
-            storage_file_path = f"{final_outreach_id}/{call_sid}_{request.form.get('RecordingSid')}.mp3"
-            supabase_admin_client.storage.from_(bucket_name).upload(path=storage_file_path, file=audio_data, file_options={"content-type": "audio/mpeg"})
-            actual_public_url_obj = supabase_client.storage.from_(bucket_name).get_public_url(storage_file_path)
-            actual_public_url = actual_public_url_obj # Assume it's a string now, or handle list if needed
-            
-            print(f"✅ Full Call Recording for {final_outreach_id} uploaded. URL: {actual_public_url}")
+    if not outreach_id_from_query:
+        print(f"🔴 CRITICAL ERROR: 'outreach_id' MISSING from query parameters in /api/voice/recording-status. Callback source: {callback_source}, CallSid: {call_sid}. Cannot reliably process this recording status update.")
+        # Store minimal info with error if CallSid is present
+        if call_sid:
+            call_artifacts_store[call_sid] = {
+                **call_artifacts_store.get(call_sid, {}),
+                "error_message": "CRITICAL: outreach_id missing from callback query parameters.",
+                "latest_call_status": actual_call_status,
+                "callback_source_error": callback_source
+            }
+        return jsonify({"success": False, "error": "Critical: outreach_id missing from request query parameters."}), 400
 
-            # Store/Update in our in-memory store, preserving conversation history
-            if call_sid not in call_artifacts_store:
-                call_artifacts_store[call_sid] = {'conversation_history': [], 'outreach_id': final_outreach_id} # Initialize if somehow missed
-            
-            call_artifacts_store[call_sid]['full_recording_url'] = actual_public_url
-            call_artifacts_store[call_sid]['full_recording_duration'] = recording_duration
-            # outreach_id should already be there from make_call, but good to ensure
-            call_artifacts_store[call_sid]['outreach_id'] = final_outreach_id 
-            print(f"💾 Artifact store updated for CallSid {call_sid} with full recording info. Conversation history preserved.")
+    # Log with the confirmed Supabase outreach_id
+    print(f"🎙️ REC STATUS PARSED: Supabase Outreach ID: {outreach_id_from_query}, CallSid: {call_sid}, RecSid: {recording_sid}, ActualCallStatus: '{actual_call_status}', RecURL Present: {recording_url_twilio is not None}, Source: {callback_source}")
 
-        except Exception as e:
-            print(f"❌ Error processing full call recording for {final_outreach_id}: {e}")
-    return "", 200
+    existing_artifact = call_artifacts_store.get(call_sid, {})
+    if existing_artifact.get("recording_processed_successfully"):
+        print(f"☑️ Recording for CallSid {call_sid} (Outreach: {outreach_id_from_query}) already processed. Skipping in handle_recording_status (Source: {callback_source}).")
+    elif actual_call_status == 'completed' and recording_sid and recording_url_twilio:
+        print(f"✅ Call {call_sid} (Supabase Outreach: {outreach_id_from_query}) reported completed with recording details by Twilio webhook (Source: {callback_source}). Handing off to _process_and_store_twilio_recording.")
+        _process_and_store_twilio_recording(
+            call_sid=call_sid,
+            recording_sid=recording_sid,
+            recording_url_twilio=recording_url_twilio,
+            outreach_id=outreach_id_from_query,
+            recording_duration_str=recording_duration
+        )
+    elif actual_call_status != 'completed':
+        print(f"ℹ️ CallSid {call_sid} (Supabase Outreach: {outreach_id_from_query}): Call status '{actual_call_status}', not 'completed'. Recording not processed for Supabase upload yet.")
+    elif not (recording_sid and recording_url_twilio):
+        print(f"ℹ️ CallSid {call_sid} (Supabase Outreach: {outreach_id_from_query}): Call completed, but no RecordingSid/RecordingUrl. No recording to process for Supabase.")
+    else:
+        print(f"🤷 CallSid {call_sid} (Supabase Outreach: {outreach_id_from_query}): Conditions for Supabase upload not fully met. Status: '{actual_call_status}', RecSid: {recording_sid is not None}, RecUrl: {recording_url_twilio is not None}, Clients OK: {supabase_admin_client is not None and twilio_client is not None}")
 
-# --- Endpoint to receive transcription status updates from Twilio ---
+    # Always update/ensure basic info in call_artifacts_store using the CallSid as key
+    # and ensure the Supabase outreach_id is correctly associated.
+    if call_sid:
+        current_info = call_artifacts_store.get(call_sid, {})
+        current_info['outreach_id'] = outreach_id_from_query # Ensure Supabase ID is set/updated
+        current_info['latest_call_status'] = actual_call_status
+        current_info['last_callback_source'] = callback_source
+        call_artifacts_store[call_sid] = current_info
+        print(f"   Updated/checked artifact store for CallSid {call_sid}. Supabase Outreach ID: {outreach_id_from_query}, Status: '{actual_call_status}', Source: {callback_source}.")
+
+    return jsonify({"success": True, "message": "Recording status received."}), 200
+
 @app.route("/api/voice/transcription-status", methods=['POST'])
 def handle_transcription_status():
     outreach_id_from_query = request.args.get('outreach_id')
@@ -2071,27 +2145,42 @@ def handle_transcription_status():
     transcription_text = request.form.get('TranscriptionText')
     transcription_url = request.form.get('TranscriptionUrl') # URL to the transcription resource (JSON)
     
-    final_outreach_id = outreach_id_from_query if outreach_id_from_query else call_sid
+    # Ensure outreach_id from query is prioritized, fallback to call_sid for print, then use for store key
+    log_display_id = outreach_id_from_query if outreach_id_from_query else call_sid # For logging clarity
 
-    print(f"📝 TRANSCRIPT STATUS: OutreachID: {final_outreach_id}, CallSid: {call_sid}, TranSid: {transcription_sid}, Status: {transcription_status}")
+    print(f"📝 TRANSCRIPT STATUS: LogDisplayID: {log_display_id}, CallSid: {call_sid}, TranSid: {transcription_sid}, Status: {transcription_status}")
+
+    # Try to get the definitive Supabase outreach_id associated with this call_sid from our store
+    current_call_artifact = call_artifacts_store.get(call_sid, {})
+    # Use outreach_id from query as primary, then from artifact, then call_sid as last resort for ID association
+    final_outreach_id_for_processing = outreach_id_from_query or current_call_artifact.get('outreach_id')
+
+    if not final_outreach_id_for_processing:
+        print(f"🔴 CRITICAL: No usable outreach_id found for CallSid {call_sid} in handle_transcription_status (query: {outreach_id_from_query}, artifact: {current_call_artifact.get('outreach_id')}). Cannot process transcript or recording.")
+        return "", 200 # Acknowledge webhook
 
     if transcription_status == 'completed' and transcription_text:
-        print(f"🗣️ Transcript for {final_outreach_id} (CallSid: {call_sid}):\n{transcription_text}")
+        print(f"🗣️ Transcript for OutreachID {final_outreach_id_for_processing} (CallSid: {call_sid}):\n{transcription_text}")
         
-        # TODO: Store this transcription in Conversation History for the final_outreach_id
-        # This is where you would integrate with your outreachStorage logic (via API or direct DB if backend owns data)
-        # Example (conceptual, actual implementation depends on your data layer):
-        # db_service.add_conversation_message(
-        #     outreach_id=final_outreach_id, 
-        #     content=transcription_text, 
-        #     sender='creator', # Assuming transcript is of the creator's speech primarily after agent speaks
-        #     type='voice_transcript', 
-        #     metadata={"call_sid": call_sid, "transcription_sid": transcription_sid, "twilio_transcription_url": transcription_url}
-        # )
-        print(f"💾 LOGGING FOR OUTREACH [{final_outreach_id}]: Transcript received. Ready to be added to conversation history.")
+        # Update call_artifacts_store with transcript text
+        current_call_artifact['transcript'] = transcription_text
+        current_call_artifact['outreach_id'] = final_outreach_id_for_processing # Ensure it's set or updated
+        current_call_artifact.setdefault('conversation_history', []).append({
+            "speaker": "user", 
+            "text": transcription_text,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "source": "twilio_transcript",
+            "transcription_sid": transcription_sid
+        })
+        call_artifacts_store[call_sid] = current_call_artifact
+        print(f"💾 Transcript for CallSid {call_sid} (OutreachID: {final_outreach_id_for_processing}) stored in call_artifacts_store.")
+
+        # --- WORKAROUND REMOVED: No longer fetching recording here. --- 
+        # The main call recording (record=True) is handled by handle_recording_status.
+        # We just ensure the transcript is stored.
 
     elif transcription_status == 'failed':
-        print(f"❌ Transcription failed for {final_outreach_id} (CallSid: {call_sid}). Error: {request.form.get('ErrorCode')} - {request.form.get('ErrorMessage')}")
+        print(f"❌ Transcription failed for {final_outreach_id_for_processing} (CallSid: {call_sid}). Error: {request.form.get('ErrorCode')} - {request.form.get('ErrorMessage')}")
 
     return "", 200 # Twilio expects a 200 OK
 
@@ -2133,148 +2222,170 @@ def agent_turn_twiml():
 # --- NEW Endpoint to Handle User's Speech (from Gather) ---
 @app.route("/api/voice/handle_user_speech", methods=['POST'])
 def handle_user_speech():
-    print("\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-    print("!!! HANDLE_USER_SPEECH ENDPOINT ENTERED !!!")
-    request_received_time = datetime.now() # Start timing for the whole function
-    print(f"!!! Request Form Data: {request.form}")
-    print(f"!!! Request Args: {request.args}")
-    print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n")
-    
+    # Record the time the request was received for performance monitoring
+    request_received_time = datetime.now()
+
     call_sid = request.form.get('CallSid')
     user_speech_text = request.form.get('SpeechResult', '').strip()
-    speech_confidence = float(request.form.get('Confidence', 0.0)) # Get confidence
-    backend_public_url = os.getenv("BACKEND_PUBLIC_URL", f"http://localhost:{os.getenv('PORT', 5001)}").rstrip('/') 
-    handle_user_speech_url = f"{backend_public_url}/api/voice/handle_user_speech" 
+    speech_confidence_str = request.form.get('Confidence', '0.0')
+    try:
+        speech_confidence = float(speech_confidence_str)
+    except ValueError:
+        speech_confidence = 0.0
+        print(f"⚠️ Could not parse speech_confidence: '{speech_confidence_str}'. Defaulting to 0.0 for SID {call_sid}")
 
     print(f"🎤 User Speech on SID {call_sid}: '{user_speech_text}', Confidence: {speech_confidence}")
 
+    backend_public_url = os.getenv("BACKEND_PUBLIC_URL", f"http://localhost:{os.getenv('PORT', 5001)}").rstrip('/')
+    # Construct the action URL for the Gather verb, pointing back to this function.
+    # This ensures that after the AI speaks and gathers user input, Twilio sends the input back here.
+    action_url_for_gather = f"{backend_public_url}/api/voice/handle_user_speech"
+    
     call_data = call_artifacts_store.get(call_sid)
     if not call_data:
         print(f"❌ handle_user_speech: No call_data found for SID {call_sid}. Cannot continue conversation.")
         response = VoiceResponse()
         response.say("I'm sorry, there was an issue retrieving our conversation context. Please try calling back later.", voice='alice')
         response.hangup()
+        function_end_time = datetime.now()
+        total_function_time = (function_end_time - request_received_time).total_seconds()
+        print(f"⏱️ Total time for handle_user_speech (no call_data path): {total_function_time:.2f}s")
         return str(response), 200, {'Content-Type': 'application/xml'}
 
-    # MODIFICATION START: Handle low confidence
+    outreach_id_for_callbacks = call_data.get('outreach_id', 'unknown_outreach_id')
+    # The transcribeCallback URL needs the outreach_id to correctly associate the transcript later.
+    transcription_callback_url_with_oid = f"{backend_public_url}/api/voice/transcription-status?outreach_id={outreach_id_for_callbacks}"
+
+    # Handle low speech confidence
     if speech_confidence < 0.4:
-        print(f"👂 handle_user_speech: Low confidence ({speech_confidence}) for SID {call_sid}. User speech '{user_speech_text}' ignored. Asking user to repeat.")
+        print(f"👂 handle_user_speech: Low confidence ({speech_confidence}) for SID {call_sid}. Asking user to repeat.")
         ai_response_text = "I'm sorry, I didn't catch that clearly. Could you please say that again?"
+        call_data.setdefault('conversation_history', []).append({"speaker": "ai", "text": ai_response_text, "timestamp": datetime.now(timezone.utc).isoformat()})
         
-        # Add AI's request to repeat to conversation history for context
-        call_data.setdefault('conversation_history', []).append({
-            "speaker": "ai", 
-            "text": ai_response_text, 
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-        
-        temp_ai_audio_url = None
-        if elevenlabs_client:
+        elevenlabs_audio_url = None
+        if elevenlabs_client and elevenlabs_api_key:
             try:
-                generated_url, _ = generate_audio_with_elevenlabs(ai_response_text, call_sid_for_filename=f"ai_repeat_request_{call_sid}")
-                temp_ai_audio_url = generated_url
+                # Use a unique filename for this specific audio generation
+                audio_filename_stem = f"ai_lowconf_{call_sid}_{str(uuid.uuid4())[:8]}"
+                generated_url, _ = generate_audio_with_elevenlabs(ai_response_text, call_sid_for_filename=audio_filename_stem)
+                elevenlabs_audio_url = generated_url
             except Exception as e_elevenlabs:
-                print(f"❌ ElevenLabs TTS for repeat request failed for SID {call_sid}: {e_elevenlabs}")
+                print(f"❌ ElevenLabs TTS for low confidence repeat request failed: {e_elevenlabs}")
         
         response = VoiceResponse()
-        if temp_ai_audio_url:
-            response.play(temp_ai_audio_url)
+        if elevenlabs_audio_url:
+            response.play(elevenlabs_audio_url)
         else:
             response.say(ai_response_text, voice='alice')
         
-        gather = Gather(input='speech', action=handle_user_speech_url, method='POST', speechTimeout='auto')
+        gather = Gather(input='speech', action=action_url_for_gather, method='POST', speechTimeout='5', speechModel='phone_call', transcribe=True, transcribeCallback=transcription_callback_url_with_oid)
         response.append(gather)
-        # Fallback if gather fails
+        # Fallback if the user doesn't respond to the re-gather
         response.say("Sorry, I still didn't catch that. Goodbye.", voice='alice')
         response.hangup()
-
+        
+        print(f"!!! RETURNING TwiML for LOW CONFIDENCE path (SID: {call_sid}): {str(response)} !!!")
         function_end_time = datetime.now()
         total_function_time = (function_end_time - request_received_time).total_seconds()
-        print(f"⏱️ Total time for handle_user_speech function (low confidence path): {total_function_time:.2f}s")
+        print(f"⏱️ Total time for handle_user_speech (low confidence path): {total_function_time:.2f}s")
         return str(response), 200, {'Content-Type': 'application/xml'}
-    # MODIFICATION END
 
-    if user_speech_text:
-        call_data.setdefault('conversation_history', []).append({
-            "speaker": "user", 
-            "text": user_speech_text, 
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-    else: # This handles cases where SpeechResult is empty, but not necessarily low confidence for actual speech
-        print(f"👂 handle_user_speech: User speech was empty for SID {call_sid} (Confidence was {speech_confidence}). Prompting to repeat.")
-        ai_response_text = "Sorry, I didn't catch that. Could you please say it again?"
-        
-        # Add AI's request to repeat to conversation history
-        call_data.setdefault('conversation_history', []).append({
-            "speaker": "ai",
-            "text": ai_response_text,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
+    # Handle empty speech
+    if not user_speech_text:
+        print(f"👂 handle_user_speech: User speech was empty for SID {call_sid}. Prompting to repeat.")
+        ai_response_text = "Sorry, I didn't hear anything. Could you please say that again?"
+        call_data.setdefault('conversation_history', []).append({"speaker": "ai", "text": ai_response_text, "timestamp": datetime.now(timezone.utc).isoformat()})
 
-        temp_ai_audio_url = None
-        if elevenlabs_client:
+        elevenlabs_audio_url = None
+        if elevenlabs_client and elevenlabs_api_key:
             try:
-                generated_url, _ = generate_audio_with_elevenlabs(ai_response_text, call_sid_for_filename=f"ai_empty_speech_repeat_{call_sid}")
-                temp_ai_audio_url = generated_url
+                 # Use a unique filename for this specific audio generation
+                audio_filename_stem = f"ai_emptyspeech_{call_sid}_{str(uuid.uuid4())[:8]}"
+                generated_url, _ = generate_audio_with_elevenlabs(ai_response_text, call_sid_for_filename=audio_filename_stem)
+                elevenlabs_audio_url = generated_url
             except Exception as e_elevenlabs:
-                print(f"❌ ElevenLabs TTS for empty speech repeat request failed for SID {call_sid}: {e_elevenlabs}")
-        
+                print(f"❌ ElevenLabs TTS for empty speech repeat request failed: {e_elevenlabs}")
+
         response = VoiceResponse()
-        if temp_ai_audio_url:
-            response.play(temp_ai_audio_url)
+        if elevenlabs_audio_url:
+            response.play(elevenlabs_audio_url)
         else:
             response.say(ai_response_text, voice='alice')
             
-        gather = Gather(input='speech', action=handle_user_speech_url, method='POST', speechTimeout='auto')
+        gather = Gather(input='speech', action=action_url_for_gather, method='POST', speechTimeout='5', speechModel='phone_call', transcribe=True, transcribeCallback=transcription_callback_url_with_oid)
         response.append(gather)
-        response.say("We didn't catch that. Could you please repeat?", voice='alice') 
+        # Fallback if the user doesn't respond to the re-gather
+        response.say("We still didn't catch that. Please try calling back. Goodbye.", voice='alice')
         response.hangup()
         
+        print(f"!!! RETURNING TwiML for EMPTY SPEECH path (SID: {call_sid}): {str(response)} !!!")
         function_end_time = datetime.now()
         total_function_time = (function_end_time - request_received_time).total_seconds()
-        print(f"⏱️ Total time for handle_user_speech function (empty speech path): {total_function_time:.2f}s")
+        print(f"⏱️ Total time for handle_user_speech (empty speech path): {total_function_time:.2f}s")
         return str(response), 200, {'Content-Type': 'application/xml'}
 
-    llm_prompt = build_live_voice_negotiation_prompt(call_sid)
-    ai_response_text = "I'm having a little trouble formulating a response right now. Could you please repeat what you said?"
-    temp_ai_audio_url = None
+    # If speech is valid, append to history
+    call_data.setdefault('conversation_history', []).append({
+        "speaker": "user", 
+        "text": user_speech_text, 
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    print(f"💬 Appended user speech to history for SID {call_sid}: '{user_speech_text}'")
 
+    # Also, log this user speech to the Supabase conversation_messages table
+    if outreach_id_for_callbacks and outreach_id_for_callbacks != 'unknown_outreach_id':
+        add_supabase_conversation_message(
+            outreach_id=outreach_id_for_callbacks,
+            content=user_speech_text,
+            sender='creator', # Assuming the person on the call is the creator
+            message_type='call_exchange',
+            metadata={
+                'call_sid': call_sid, 
+                'speaker': 'creator', 
+                'confidence': speech_confidence
+            },
+            user_id=request.current_user.id if hasattr(request, 'current_user') and request.current_user else None
+        )
+    else:
+        print(f"⚠️ Cannot log user speech to Supabase: outreach_id is '{outreach_id_for_callbacks}'")
+
+    # --- Main Conversational Logic ---
+    print(f"🧠 Attempting LLM call for SID {call_sid}. User speech: '{user_speech_text}'.")
+    
+    llm_prompt = build_live_voice_negotiation_prompt(call_sid)
+    ai_response_text_from_llm = "I'm having a little trouble formulating a response right now. Could you try again in a moment?" # Default/fallback
+    
     if llm_prompt and groq_api_key:
         try:
-            print(f"🤖 handle_user_speech: Sending prompt to Groq for SID {call_sid}")
+            print(f"🤖 Sending prompt to Groq for SID {call_sid}")
             request_headers = {
                 "Authorization": f"Bearer {groq_api_key}",
                 "Content-Type": "application/json"
             }
             request_payload = {
-                "model": "llama3-8b-8192", # CHANGED MODEL FOR TESTING
+                "model": "llama3-8b-8192",
                 "messages": [{"role": "user", "content": llm_prompt}],
                 "temperature": 0.7,
-                "max_tokens": 100, # SLIGHTLY REDUCED FOR TESTING
+                "max_tokens": 150, # Increased max_tokens slightly for potentially longer responses
                 "top_p": 1,
                 "stream": False
             }
-            print(f"DEBUG GROQ REQUEST HEADERS: {request_headers}") 
-            print(f"DEBUG GROQ REQUEST PAYLOAD: {json.dumps(request_payload, indent=2)}") 
-
-            start_time_groq = datetime.now() # Timing start for Groq call
+            start_time_groq = datetime.now()
             groq_response = requests.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers=request_headers, 
                 json=request_payload    
             )
-            end_time_groq = datetime.now() # Timing end for Groq call
+            end_time_groq = datetime.now()
             time_taken_groq = (end_time_groq - start_time_groq).total_seconds()
             print(f"⏱️ Groq API call took: {time_taken_groq:.2f}s")
-
-            groq_response.raise_for_status() 
+            groq_response.raise_for_status()
             groq_data = groq_response.json()
-            
             if groq_data.get('choices') and len(groq_data['choices']) > 0:
                 extracted_text = groq_data['choices'][0].get('message', {}).get('content', '').strip()
                 if extracted_text:
-                    ai_response_text = extracted_text
-                    print(f"🤖 LLM Response for SID {call_sid}: '{ai_response_text}'")
+                    ai_response_text_from_llm = extracted_text
+                    print(f"🤖 LLM Response for SID {call_sid}: '{ai_response_text_from_llm}'")
                 else:
                     print(f"⚠️ LLM response was empty for SID {call_sid}.")
             else:
@@ -2288,41 +2399,81 @@ def handle_user_speech():
     else: 
         print(f"🔴 Failed to build LLM prompt for SID {call_sid}. Using fallback response.")
 
+    # Append the AI's (potentially fallback) response to history
     call_data.setdefault('conversation_history', []).append({
         "speaker": "ai", 
-        "text": ai_response_text, 
+        "text": ai_response_text_from_llm, 
         "timestamp": datetime.now(timezone.utc).isoformat()
     })
+    print(f"💬 Appended AI response to in-memory history for SID {call_sid}: '{ai_response_text_from_llm[:100]}...'")
 
-    if elevenlabs_client: 
+    # Also, log this AI response to the Supabase conversation_messages table
+    if outreach_id_for_callbacks and outreach_id_for_callbacks != 'unknown_outreach_id':
+        add_supabase_conversation_message(
+            outreach_id=outreach_id_for_callbacks,
+            content=ai_response_text_from_llm,
+            sender='ai',
+            message_type='call_exchange',
+            metadata={'call_sid': call_sid, 'speaker': 'ai'},
+            user_id=request.current_user.id if hasattr(request, 'current_user') and request.current_user else None
+        )
+    else:
+        print(f"⚠️ Cannot log AI response to Supabase: outreach_id is '{outreach_id_for_callbacks}'")
+
+    # --- ElevenLabs Audio Generation ---
+    print(f"🔊 Attempting ElevenLabs TTS for SID {call_sid}. AI Text: '{ai_response_text_from_llm[:100]}...'.") # Log first 100 chars
+    
+    elevenlabs_audio_url = None
+    if elevenlabs_client and elevenlabs_api_key:
         try:
-            generated_url, _ = generate_audio_with_elevenlabs(ai_response_text, call_sid_for_filename=f"ai_turn_{call_sid}")
-            temp_ai_audio_url = generated_url 
-            if not temp_ai_audio_url:
-                print(f"⚠️ ElevenLabs audio generation did not return a URL for SID {call_sid}. Will use Twilio TTS.")
+            # Use a unique filename stem for this turn's audio
+            turn_audio_filename_stem = f"ai_turn_{call_sid}_{str(uuid.uuid4())[:8]}"
+            generated_url, _ = generate_audio_with_elevenlabs(
+                ai_response_text_from_llm, 
+                call_sid_for_filename=turn_audio_filename_stem
+            )
+            if generated_url:
+                elevenlabs_audio_url = generated_url
+                print(f"🔊 ElevenLabs audio generated for SID {call_sid}: {elevenlabs_audio_url}")
+            else:
+                print(f"⚠️ ElevenLabs TTS did not return a URL for SID {call_sid}. Will use Twilio TTS fallback.")
         except Exception as e_elevenlabs:
-            print(f"❌ ElevenLabs TTS generation failed for SID {call_sid}: {e_elevenlabs}. Will use Twilio TTS.")
+            print(f"❌ ElevenLabs TTS generation failed for SID {call_sid}: {e_elevenlabs}. Will use Twilio TTS fallback.")
     else:
-        print(f"🔊 ElevenLabs client not available. Using Twilio basic TTS for SID {call_sid}.")
+        print(f"🔊 ElevenLabs client/key not available. Using Twilio basic TTS for SID {call_sid}.")
 
-    response = VoiceResponse()
-    if temp_ai_audio_url:
-        response.play(temp_ai_audio_url) 
+    # --- Construct Final TwiML Response ---
+    final_response_twiml = VoiceResponse()
+    if elevenlabs_audio_url:
+        final_response_twiml.play(elevenlabs_audio_url)
     else:
-        response.say(ai_response_text, voice='alice') 
-
-    gather = Gather(input='speech', action=handle_user_speech_url, method='POST', speechTimeout='auto')
-    response.append(gather)
-    response.say("I didn't catch that. Could you please say it again?", voice='alice')
-    response.hangup()
-
+        # Fallback to Twilio's basic TTS if ElevenLabs failed or is not configured
+        final_response_twiml.say(ai_response_text_from_llm, voice='alice') 
+    
+    # Gather the user's next response
+    # The action URL points back to this same function to continue the conversation.
+    # transcribeCallback sends the transcript to handle_transcription_status.
+    next_gather = Gather(
+        input='speech', 
+        action=action_url_for_gather, # Points back to this function
+        method='POST', 
+        speechTimeout='5', # How long to wait for speech
+        speechModel='phone_call', # Optimized for phone call audio
+        transcribe=True, 
+        transcribeCallback=transcription_callback_url_with_oid
+    )
+    # Add a nested Say and Hangup within the Gather for timeout/no-input scenarios
+    next_gather
+    
+    final_response_twiml.append(next_gather)
+    final_response_twiml.hangup() # Hangup if gather times out and falls through
+    
+    print(f"🎬 Final TwiML (Play & Gather) for SID {call_sid} : {str(final_response_twiml)}")
     function_end_time = datetime.now()
     total_function_time = (function_end_time - request_received_time).total_seconds()
-    print(f"⏱️ Total time for handle_user_speech function execution: {total_function_time:.2f}s")
+    print(f"⏱️ Total time for handle_user_speech (main conversation turn): {total_function_time:.2f}s")
+    return str(final_response_twiml), 200, {'Content-Type': 'application/xml'}
 
-    return str(response), 200, {'Content-Type': 'application/xml'}
-
-# --- Route to serve temporary audio files ---
 @app.route('/temp_audio/<filename>', methods=['GET'])
 def serve_temp_audio(filename):
     try:
@@ -3311,6 +3462,216 @@ def discover_creators():
     final_creators = filtered_by_python[:100] # Cap final results
     print(f"ℹ️ Found {len(final_creators)} creators after ALL filters.")
     return jsonify({"success": True, "creators": final_creators})
+
+# --- NEW HELPER FUNCTION for Processing and Storing Twilio Recording ---
+def _process_and_store_twilio_recording(call_sid, recording_sid, recording_url_twilio, outreach_id, recording_duration_str=None):
+    """
+    Downloads a recording from Twilio, uploads it to Supabase, 
+    and updates the call_artifacts_store.
+    """
+    global call_artifacts_store # To modify it
+    global supabase_admin_client # To use it
+    global twilio_client # To use it
+
+    if not supabase_admin_client or not twilio_client:
+        print(f"❌ _process_and_store_twilio_recording: Supabase or Twilio client not available. Cannot process CallSid {call_sid}.")
+        if call_sid and outreach_id: # Ensure outreach_id is present
+            call_artifacts_store[call_sid] = {
+                **call_artifacts_store.get(call_sid, {}),
+                "outreach_id": outreach_id, # Store outreach_id
+                "recording_error": "Client configuration error."
+            }
+        return
+
+    print(f"⚙️ [_process_and_store_twilio_recording] Initiated for CallSid: {call_sid}, RecSid: {recording_sid}, OutreachID: {outreach_id}")
+
+    # The 5-second delay for media processing
+    print(f"⏳ Waiting for 5 seconds for Twilio media processing before download for CallSid {call_sid}, RecSid {recording_sid}...")
+    time.sleep(5)
+
+    try:
+        print(f"⬇️ Downloading recording for CallSid {call_sid} (RecSid: {recording_sid}) from Twilio URL: {recording_url_twilio}...")
+        
+        recording_url_twilio_mp3 = recording_url_twilio
+        # Ensure the URL ends with .mp3 if we're constructing it (e.g., from API)
+        # Twilio webhooks usually provide the full .mp3 URL for RecordingUrl
+        if not recording_url_twilio.lower().endswith('.mp3'):
+            # This logic is more for when we fetch from Twilio API's recordings list,
+            # where the media URL might not have .mp3
+            if ".mp3" not in recording_url_twilio.lower(): # Check if .mp3 is anywhere
+                 recording_url_twilio_mp3 = f"{recording_url_twilio}.mp3"
+                 print(f"    Adjusted Twilio Recording URL to: {recording_url_twilio_mp3} (appended .mp3)")
+            # If .mp3 is in the middle, or it already ends with it, this won't alter it badly.
+
+        recording_content_response = requests.get(
+            recording_url_twilio_mp3,
+            auth=(twilio_client.auth[0], twilio_client.auth[1])
+        )
+        recording_content_response.raise_for_status()
+        recording_data = recording_content_response.content
+        print(f"✅ Downloaded {len(recording_data)} bytes for CallSid {call_sid}, RecSid {recording_sid}.")
+
+        if not recording_data: # Check if data is empty
+            print(f"⚠️ Recording data for CallSid {call_sid}, RecSid {recording_sid} is empty. Aborting Supabase upload.")
+            call_artifacts_store[call_sid] = {
+                 **call_artifacts_store.get(call_sid, {}),
+                "outreach_id": outreach_id,
+                "recording_error": "Downloaded recording was empty."
+            }
+            return
+
+        storage_path = f"{outreach_id}/{call_sid}_{recording_sid}.mp3"
+        print(f"⬆️ Uploading to Supabase bucket \'call-recordings\' at path \'{storage_path}\' for CallSid {call_sid}...")
+        
+        try:
+            # supabase-py v2.x style:
+            upload_response = supabase_admin_client.storage.from_("call-recordings").upload(
+                path=storage_path,
+                file=recording_data, # Pass bytes directly
+                file_options={"cache-control": "3600", "upsert": "true", "content-type": "audio/mpeg"}
+            )
+            print(f"☁️ Supabase upload initiated/completed for CallSid {call_sid}.")
+
+        except APIError as e_supabase_api:
+            print(f"❌ Supabase APIError during upload for CallSid {call_sid}: {e_supabase_api}")
+            error_message_detail = str(e_supabase_api)
+            if hasattr(e_supabase_api, 'message') and e_supabase_api.message:
+                error_message_detail = e_supabase_api.message
+            elif hasattr(e_supabase_api, 'args') and e_supabase_api.args:
+                error_message_detail = str(e_supabase_api.args)
+            print(f"   Supabase APIError details: {error_message_detail}")
+            call_artifacts_store[call_sid] = {
+                **call_artifacts_store.get(call_sid, {}),
+                "outreach_id": outreach_id,
+                "recording_error": f"Supabase API upload error: {error_message_detail}"
+            }
+            return
+
+        public_url_response = supabase_admin_client.storage.from_("call-recordings").get_public_url(storage_path)
+        public_url = public_url_response # In v2, this is the URL string
+        print(f"🔗 Public URL for CallSid {call_sid}: {public_url}")
+
+        current_artifacts = call_artifacts_store.get(call_sid, {})
+        current_artifacts.update({
+            "full_recording_url": public_url,
+            "full_recording_duration": recording_duration_str if recording_duration_str else current_artifacts.get("full_recording_duration"),
+            "outreach_id": outreach_id, 
+            "status": current_artifacts.get("status", "completed"),
+            "recording_processed_successfully": True,
+            "recording_sid": recording_sid # Store the recording SID as well
+        })
+        call_artifacts_store[call_sid] = current_artifacts
+        print(f"💾 Artifact store for CallSid {call_sid} updated with Supabase recording URL. Supabase Outreach ID: {outreach_id}")
+
+        # Log the voice call summary to Supabase conversation_messages table
+        if outreach_id and public_url:
+            add_supabase_conversation_message(
+                outreach_id=outreach_id,
+                content=f"Call recording available. Duration: {recording_duration_str if recording_duration_str else 'N/A'}.",
+                sender='system',
+                message_type='voice_call_summary',
+                metadata={
+                    'call_sid': call_sid,
+                    'full_recording_url': public_url,
+                    'full_recording_duration': recording_duration_str if recording_duration_str else "N/A",
+                    'recording_sid': recording_sid
+                },
+                user_id=None # System-generated message, no specific user
+            )
+        else:
+            print(f"⚠️ Cannot log voice_call_summary to Supabase: outreach_id ('{outreach_id}') or public_url ('{public_url}') is missing.")
+    
+    except requests.exceptions.HTTPError as e_http:
+        print(f"❌ HTTPError during Twilio recording download for CallSid {call_sid} (Supabase Outreach: {outreach_id}): {e_http}. Response: {e_http.response.text if e_http.response else 'No response body'}")
+        call_artifacts_store[call_sid] = {
+            **call_artifacts_store.get(call_sid, {}),
+            "outreach_id": outreach_id,
+            "recording_error": f"Twilio download failed: {str(e_http)}"
+        }
+    except Exception as e_generic:
+        print(f"❌ Generic error in _process_and_store_twilio_recording for CallSid {call_sid} (Supabase Outreach: {outreach_id}): {type(e_generic).__name__} - {e_generic}")
+        import traceback
+        traceback.print_exc()
+        if call_sid and outreach_id:
+             call_artifacts_store[call_sid] = {
+                **call_artifacts_store.get(call_sid, {}),
+                "outreach_id": outreach_id,
+                "recording_error": f"Generic recording processing error: {type(e_generic).__name__} - {str(e_generic)}"
+            }
+# --- END NEW HELPER FUNCTION ---
+
+# Helper function to add messages to Supabase conversation_messages table
+def add_supabase_conversation_message(outreach_id: str, content: str, sender: str, message_type: str, metadata: dict = None, user_id: str = None): # MODIFIED: Added user_id parameter
+    """
+    Adds a message to the Supabase conversation_messages table.
+
+    Args:
+        outreach_id: The ID of the outreach this message belongs to.
+        content: The main text content of the message.
+        sender: Who sent the message (e.g., 'user', 'ai', 'system', 'brand', 'creator').
+        message_type: The type of message (e.g., 'call_exchange', 'voice_call_summary', 'text').
+        metadata: A dictionary for any additional structured data.
+        user_id: Optional ID of the user associated with this message.
+    """
+    if not supabase_client:
+        print("❌ Supabase client not initialized. Cannot add conversation message.")
+        return None
+
+    if metadata is None:
+        metadata = {}
+
+    try:
+        message_payload = {
+            'outreach_id': outreach_id,
+            'content': content,
+            'sender': sender,
+            'type': message_type,
+            'metadata': metadata,
+            'timestamp': datetime.now(timezone.utc).isoformat() # Supabase expects ISO format timestamp
+        }
+        
+        # Retrieve the authenticated user's ID to set as user_id for the message
+        # This assumes the function is called within a context where user info might be available
+        # or that messages can also be system-generated without a specific user_id if appropriate.
+        # For backend-generated messages (like AI turns or call summaries), user_id might be the system's user or null.
+        # For now, let's try to get it if a Flask request context is available and has it.
+        # This part might need refinement based on where this function is called from.
+        # user_id = None # MODIFIED: user_id is now a parameter
+        # if has_request_context(): # REMOVED this block
+            # Try to get user_id from request.current_user if set by @token_required decorator
+            # if hasattr(request, 'current_user') and request.current_user and hasattr(request.current_user, 'id'):
+            #     user_id = request.current_user.id
+            # The following lines attempting to use a global current_user or g.user without specific setup 
+            # were causing 'not defined' errors. We'll rely on request.current_user set by the decorator.
+            # elif hasattr(g, 'user'): # Check if 'g' has 'user' attribute
+            #     g_user = getattr(g, 'user', None)
+            #     if g_user and isinstance(g_user, dict) and 'id' in g_user:
+            #         user_id = g_user['id']
+            # elif 'current_user' in globals() and current_user and current_user.is_authenticated: # This was the problematic global current_user
+            #     user_id = getattr(current_user, 'id', None)
+        
+        if user_id:
+            message_payload['user_id'] = user_id
+        else:
+            # If no specific user, we might log it or decide if user_id is nullable in DB
+            print(f"⚠️ No specific user_id found for conversation message for outreach {outreach_id}. User ID will be null.")
+
+        print(f"✍️ Attempting to save conversation message to Supabase for outreach {outreach_id}: Type '{message_type}', Sender '{sender}'")
+        response = supabase_client.table('conversation_messages').insert(message_payload).execute()
+
+        if response.data:
+            print(f"✅ Conversation message saved to Supabase for outreach {outreach_id}. Message ID: {response.data[0]['id']}")
+            return response.data[0]
+        elif response.error:
+            print(f"❌ Error saving conversation message to Supabase for outreach {outreach_id}: {response.error}")
+            return None
+        else:
+            print(f"⚠️ Unknown response when saving conversation message for outreach {outreach_id}: {response}")
+            return None
+
+    except Exception as e:
+        print(f"❌ Exception in add_supabase_conversation_message for outreach {outreach_id}: {e}")
+        return None
 
 if __name__ == '__main__':
     app.run(debug=True, port=int(os.getenv('PORT', 5001))) # Use PORT from env if available

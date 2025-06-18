@@ -53,6 +53,7 @@
 
 #### **Key Features**
 - **📞 Live Voice Negotiation Calls**: Initiate and conduct real-time voice negotiations with creators, utilizing stored creator phone numbers.
+- **Clear UI for Call History**: Multiple call sessions for an outreach are displayed distinctly, each with its own recording and full transcript, sorted newest first.
 - **Conversation History Tracking**: Complete message history (email and call transcripts) with metadata storage, including current offer details.
 - **Stage-Aware Negotiations**: AI understands negotiation phases (interested → negotiating → deal closed).
 - **Context-Aware Responses**: AI remembers previous email and call conversations for natural flow.
@@ -74,6 +75,15 @@
 - **Strategic Pricing**: AI-recommended offers with detailed reasoning, with offer values persisted reliably.
 - **Professional Communication**: Business-appropriate messages without AI metadata.
 - **Success Tracking**: Comprehensive analytics on negotiation outcomes.
+
+#### **New Voice Endpoints** (Example names, verify with `backend/app.py`):
+- `/api/voice/make-outbound-call`: Initiates outbound Twilio calls. (Payload: `to_phone_number`, `message_to_speak`, `creator_name`, `brand_name`, `campaign_objective`, `outreach_id`, `conversation_history_summary`)
+- `/api/voice/handle_user_speech`: Processes speech input from Twilio's `<Gather>` during a call. (Twilio webhook)
+- `/api/voice/handle_recording_status`: Processes the status of call recordings. (Twilio webhook)
+- `/api/voice/call-progress-status`: Allows frontend to poll for the live status of an ongoing call. (Payload: `call_sid`)
+- `/api/voice/call-details`: Retrieves processed call artifacts (recording URL, duration, full transcript) for a completed call. (Payload: `call_sid`)
+- Manages call state, conversation history for live calls, and interaction with AI services.
+- **TwiML Generation**: Dynamically generates TwiML for call control (e.g., `<Say>`, `<Play>`, `<Gather>`, `<Hangup>`). *Note: Ensuring valid TwiML structure and verb usage is critical to avoid runtime errors (e.g., Twilio Error 12100).*
 
 ### 🤖 **Real AI-Powered Features** (Enhanced!)
 
@@ -223,7 +233,10 @@
 - **Groq API Key** (Required for AI features) - [Get free key](https://console.groq.com/)
 - **Google Cloud Account & OAuth Credentials** (Required for Google OAuth with Supabase Auth) - [Get started](https://console.cloud.google.com/)
 - **Twilio Account & Phone Number** (Required for Voice Call features) - [Create free account](https://www.twilio.com/)
+  - You will need your Twilio Account SID, Auth Token, and a Twilio phone number.
 - **ElevenLabs Account** (Optional, for premium AI Text-to-Speech in Voice Calls) - [Create free account](https://elevenlabs.io/)
+  - You will need your ElevenLabs API Key.
+- **ngrok** (Required for local development of Twilio webhook callbacks) - [Download ngrok](https://ngrok.com/download)
 
 ### Backend Setup
 
@@ -248,42 +261,53 @@
     ```
 5.  **🚨 CRITICAL: Create Backend Environment File (`backend/.env`)**
     Ensure you are in the `backend` directory.
-   ```bash
-    cp .env.example .env
-   ```
-    Then, open the newly created `backend/.env` file and fill in your actual credentials:
-   ```env
-    # Supabase Configuration (Backend)
-    DATABASE_URL="your_supabase_database_connection_string" # Found in Supabase > Project Settings > Database > Connection string (URI)
-    SUPABASE_URL="https://your-project-ref.supabase.co"    # Found in Supabase > Project Settings > API > Project URL
-    SUPABASE_KEY="your_supabase_service_role_key"         # Found in Supabase > Project Settings > API > Project API keys (service_role secret)
-                                                          # Alternatively, use anon key if backend RLS is fully set up for its needs.
+    Copy the contents of `env.example` (if it exists and is relevant to backend) or create a new `.env` file with the following variables:
 
-    # AI Service Configuration
-    GROQ_API_KEY="your_groq_api_key"
+    ```env
+    FLASK_APP=app.py
+    FLASK_DEBUG=True # Set to False in production
 
-    # Application Configuration
-    JWT_SECRET_KEY="your_strong_random_jwt_secret_key" # Generate a strong random string
+    # Supabase (replace with your actual credentials)
+    SUPABASE_URL="YOUR_SUPABASE_URL"
+    # For backend operations that need admin-like privileges (e.g., initial setup, migrations):
+    SUPABASE_SERVICE_ROLE_KEY="YOUR_SUPABASE_SERVICE_ROLE_KEY" 
+    # OR if using user context for all backend ops via JWT:
+    # SUPABASE_ANON_KEY="YOUR_SUPABASE_ANON_KEY" # Used if RLS is primary mechanism
 
-    # Twilio Configuration (for Voice Calls)
-    TWILIO_ACCOUNT_SID="your_twilio_account_sid"
-    TWILIO_AUTH_TOKEN="your_twilio_auth_token"
-    TWILIO_PHONE_NUMBER="your_twilio_phone_number" # Include country code, e.g., +1XXXXXXXXXX
+    # Groq AI (replace with your actual key)
+    GROQ_API_KEY="YOUR_GROQ_API_KEY"
 
-    # ElevenLabs Configuration (Optional, for Voice Calls)
-    # ELEVENLABS_API_KEY="your_elevenlabs_api_key"
-    # ELEVENLABS_VOICE_ID="your_elevenlabs_voice_id" # Optional: defaults to a standard voice if not set
-   ```
+    # Twilio (replace with your actual credentials)
+    TWILIO_ACCOUNT_SID="YOUR_TWILIO_ACCOUNT_SID"
+    TWILIO_AUTH_TOKEN="YOUR_TWILIO_AUTH_TOKEN"
+    TWILIO_PHONE_NUMBER="YOUR_TWILIO_PHONE_NUMBER" # Must be E.164 format (e.g., +1234567890)
 
-6.  **Run database migrations (if applicable, e.g., if you have Alembic or similar):**
-    Currently, database schema is managed via Supabase Studio or direct SQL. Ensure your tables match the application's needs.
+    # ElevenLabs (optional, for AI voice)
+    ELEVENLABS_API_KEY="YOUR_ELEVENLABS_API_KEY"
+    ELEVENLABS_VOICE_ID="YOUR_PREFERRED_ELEVENLABS_VOICE_ID" # e.g., "21m00Tcm4TlvDq8ikWAM"
 
-7.  **Start the Flask backend server:**
-    Ensure your virtual environment is activated.
-    ```bash
-    python app.py
+    # IMPORTANT FOR LOCAL DEVELOPMENT WITH TWILIO:
+    # This must be your ngrok HTTPS forwarding URL when running locally.
+    # Example: https://xxxxxxxxxxxx.ngrok-free.app
+    BACKEND_PUBLIC_URL="" 
+
+    # Other backend specific configurations (e.g., database URLs if not using Supabase for everything)
+    # SECRET_KEY="your_flask_secret_key_here" # For Flask session management if needed
     ```
-    The backend should now be running (typically on `http://localhost:5001`).
+
+6.  **Setup ngrok for Local Development (if using Voice Calls):**
+    If you are developing the voice call features locally, Twilio needs a way to send webhook requests (like call status updates or speech input) back to your local Flask server. `ngrok` exposes your local server to the internet.
+    - Start your Flask backend (next step). Let's assume it runs on port 5001.
+    - Open a new terminal and run: `ngrok http 5001`
+    - `ngrok` will give you a "Forwarding" HTTPS URL (e.g., `https://abcdef123456.ngrok-free.app`).
+    - **Crucially, update the `BACKEND_PUBLIC_URL` in your `backend/.env` file with this HTTPS URL.**
+    - Your Twilio webhook configurations (e.g., for `/api/voice/handle_user_speech`) will be `[YOUR_NGROK_URL]/api/voice/handle_user_speech`.
+
+7.  **Run the Flask Backend:**
+    ```bash
+    flask run --port 5001 # Or your preferred port
+    ```
+    Ensure your `BACKEND_PUBLIC_URL` in `.env` is correctly set if using ngrok.
 
 ### Frontend Setup
 
@@ -300,26 +324,23 @@
     # yarn install
     ```
 
-3.  **🚨 CRITICAL: Create Frontend Environment File (`./.env.local`)**
-    In the **root** project directory (not `backend`), create a file named `.env.local`.
-    ```bash
-    cp .env.example .env.local  # If you have a frontend .env.example
-    # Otherwise, create .env.local manually
-    ```
-    Add the following environment variables to `./.env.local`:
-    ```env
-    # Supabase Configuration (Frontend)
-    VITE_SUPABASE_URL="https://your-project-ref.supabase.co" # Same as SUPABASE_URL in backend .env
-    VITE_SUPABASE_ANON_KEY="your_supabase_anon_key"       # Found in Supabase > Project Settings > API > Project API keys (anon public)
+3.  **🚨 CRITICAL: Create Frontend Environment File (`.env` at the project root)**
+    Create a `.env` file in the main project root (alongside `package.json`) with the following:
 
-    # AI Service Configuration (Frontend - e.g., for displaying API limits or enabling/disabling UI features)
-    VITE_GROQ_API_KEY="your_groq_api_key" # Can be the same as backend, used for frontend checks
+    ```env
+    # Supabase (Frontend needs Anon Key)
+    VITE_SUPABASE_URL="YOUR_SUPABASE_URL"
+    VITE_SUPABASE_ANON_KEY="YOUR_SUPABASE_ANON_KEY"
 
     # Backend API URL
-    VITE_BACKEND_API_URL="http://localhost:5001" # Or your deployed backend URL
+    # For local development, if backend is on port 5001:
+    VITE_BACKEND_API_URL="http://localhost:5001"
+    # If using ngrok for backend AND you want frontend to talk to ngrok URL directly (less common for local dev):
+    # VITE_BACKEND_API_URL="YOUR_NGROK_HTTPS_URL" 
     ```
+    **Note:** `VITE_BACKEND_API_URL` is used by the frontend to make API calls to your Flask backend. For local development, this is typically `http://localhost:5001`. The `BACKEND_PUBLIC_URL` in the *backend's* `.env` is for Twilio to reach your backend.
 
-4.  **Start the React frontend development server:**
+4.  **Run the React Frontend:**
     ```bash
     npm run dev
     # or

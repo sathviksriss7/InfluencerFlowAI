@@ -121,57 +121,74 @@ const _serviceFetchAndStoreArtifacts = async (callSidToFetch: string, originalOu
       serviceCurrentPollingState.statusMessage = "Call details fetched.";
 
       const outreachIdFromBackendDetails = data.details.outreach_id;
-      // Prioritize original context, then backend, then SID itself as a last resort for ID.
       const outreachIdToUpdate = originalOutreachIdContext || outreachIdFromBackendDetails || callSidToFetch;
       
-      const allOutreaches = await _serviceGetAllOutreachesFromStorage(); // MODIFIED: Added await here
+      // --- BEGIN DEBUG LOGGING ---
+      console.log(`[ServicePolling Debug] Attempting to associate artifacts:
+        Original Outreach Context ID (from polling start): ${originalOutreachIdContext}
+        Outreach ID from Backend Details: ${outreachIdFromBackendDetails}
+        Call SID (used as fallback for ID): ${callSidToFetch}
+        ==> Effective outreachIdToUpdate: ${outreachIdToUpdate}`);
+      // --- END DEBUG LOGGING ---
+
+      const allOutreaches = await _serviceGetAllOutreachesFromStorage(); 
+      
+      // --- BEGIN DEBUG LOGGING ---
+      if (allOutreaches && allOutreaches.length > 0) {
+        console.log('[ServicePolling Debug] List of all_outreach_ids currently in service/storage:', allOutreaches.map(o => o.id));
+      } else {
+        console.warn('[ServicePolling Debug] No outreaches found in service/storage to match against.');
+      }
+      // --- END DEBUG LOGGING ---
+
       let targetOutreach = allOutreaches.find((o: StoredOutreach) => o.id === outreachIdToUpdate);
 
       if (targetOutreach) {
-        const existingHistory = targetOutreach.conversationHistory || [];
-        const historyWithoutThisCall = existingHistory.filter((msg: ConversationMessage) => msg.metadata?.call_sid !== callSidToFetch);
-        
-        const callTurns: Array<{ speaker: string, text: string }> = [];
-        if (data.details.conversation_history && Array.isArray(data.details.conversation_history)) {
-          data.details.conversation_history.forEach((turn: any) => {
-            callTurns.push({
-              speaker: turn.speaker || (turn.sender === 'creator' ? 'user' : 'ai'),
-              text: turn.text || "[empty message]",
-            });
-          });
+        // The backend has already saved individual messages and the voice_call_summary to the conversation_messages table.
+        // The primary goal here is to update the main outreach record with direct call artifacts if needed
+        // and to signal the UI that data has changed, so it can re-fetch the full history.
+
+        const artifactsToUpdate: Partial<StoredOutreach> & { full_recording_url?: string, full_recording_duration?: string } = {
+          lastContact: new Date(),
+        };
+        if (data.details.full_recording_url) {
+          artifactsToUpdate.full_recording_url = data.details.full_recording_url;
+        }
+        if (data.details.full_recording_duration) {
+          artifactsToUpdate.full_recording_duration = data.details.full_recording_duration;
         }
 
-        let newHistory = [...historyWithoutThisCall];
-        if (callTurns.length > 0 || data.details.full_recording_url) {
-          const summaryMsg: ConversationMessage = {
-            id: `vcs-${callSidToFetch}-${Date.now()}`, // This ID generation might need to align with Supabase if messages are also stored there
-            outreach_id: targetOutreach.id, // Assuming targetOutreach.id is the Supabase outreach ID
-            user_id: targetOutreach.user_id, // Assuming targetOutreach.user_id exists
-            content: `Voice call (SID: ${callSidToFetch}).${callTurns.length > 0 ? ` ${callTurns.length} turn(s) transcribed.` : ''}`,
-            sender: 'ai', 
-            type: 'voice_call_summary',
-            timestamp: new Date(),
-            metadata: {
-              call_sid: callSidToFetch,
-              full_recording_url: data.details.full_recording_url,
-              full_recording_duration: data.details.full_recording_duration,
-              turns: callTurns,
+        // We will call a new function in outreachStorageService to update these specific fields.
+        // For example: await outreachStorageService.updateOutreachArtifacts(outreachIdToUpdate, artifactsToUpdate);
+        // This function needs to be created in outreach-storage.ts
+        console.log(`[ServicePolling] Call details fetched for ${outreachIdToUpdate}. Artifacts to potentially update on outreach record:`, artifactsToUpdate);
+        // console.warn(`[ServicePolling] Placeholder for calling outreachStorageService.updateOutreachArtifacts with above data.`);
+        
+        if (outreachIdToUpdate && artifactsToUpdate.lastContact) {
+          try {
+            const updateSuccess = await outreachStorageService.updateOutreachPrimaryArtifacts(outreachIdToUpdate, { lastContact: artifactsToUpdate.lastContact });
+            if (updateSuccess) {
+              console.log(`[ServicePolling] Successfully updated lastContact for outreach ${outreachIdToUpdate} via outreachStorageService.`);
+            } else {
+              console.warn(`[ServicePolling] Failed to update lastContact for outreach ${outreachIdToUpdate} via outreachStorageService.`);
             }
-          };
-          newHistory.push(summaryMsg);
+          } catch (e) {
+            console.error(`[ServicePolling] Error calling updateOutreachPrimaryArtifacts for ${outreachIdToUpdate}:`, e);
+          }
         }
         
-        const updatedOutreach: StoredOutreach = { ...targetOutreach, conversationHistory: newHistory, lastContact: new Date() };
-        // outreachStorageService.saveOutreach(updatedOutreach); // saveOutreach now expects NewOutreachData and campaignId, this is an update, not a new save.
-        // We need an updateOutreach method in outreachStorageService or handle updates differently.
-        // For now, this part of the polling logic that modifies outreach data will be broken.
-        // We would ideally call something like: await outreachStorageService.updateOutreachConversationHistory(targetOutreach.id, newHistory);
-        console.warn("[ServicePolling] outreachStorageService.saveOutreach call in _serviceFetchAndStoreArtifacts needs to be replaced with an update mechanism for conversation history.");
+        // Instead of merging history here, we mark data as updated.
+        // The UI, upon seeing outreachDataUpdated = true, should re-fetch the outreach, 
+        // which in turn should get its history from getConversationHistory, reflecting all backend-saved messages.
         serviceCurrentPollingState.outreachDataUpdated = true; 
-        console.log(`[ServicePolling] Outreach ${outreachIdToUpdate} updated with call history (NOTE: Storage update for conversation history is currently non-functional).`);
+        serviceCurrentPollingState.statusMessage = `Call details processed for ${outreachIdToUpdate}. UI should refresh history.`;
+        
+        console.log(`[ServicePolling Debug] SUCCESS: Processed artifacts for outreach ID: ${outreachIdToUpdate}. Signaled UI to update.`);
       } else {
-        console.warn(`[ServicePolling] Details fetched, but outreach ${outreachIdToUpdate} not found. Cannot save history.`);
-        serviceCurrentPollingState.errorMessage = `Details fetched, but outreach ${outreachIdToUpdate} not found to save history.`;
+        // --- MODIFIED ERROR LOGGING FOR CLARITY ---
+        console.warn(`[ServicePolling Debug] FAILURE: Outreach with ID '${outreachIdToUpdate}' NOT FOUND in the list of currently known outreach IDs (see list above). Cannot save history for this call (SID: ${callSidToFetch}).`);
+        serviceCurrentPollingState.errorMessage = `Details for call SID ${callSidToFetch} fetched, but its effective outreach ID '${outreachIdToUpdate}' was not found in local storage. History not saved.`;
+        // --- END MODIFIED ERROR LOGGING ---
       }
     } else {
       throw new Error(data.error || `Failed to fetch details for ${callSidToFetch}`);

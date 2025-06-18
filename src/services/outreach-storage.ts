@@ -1,35 +1,114 @@
 import { supabase } from '../lib/supabase'; // Import Supabase client
 // import { type Creator } from '../types'; // Currently unused but may be needed later
 
-// Define interfaces for our outreach data structure
-export interface ConversationMessage {
-  id: string; // Will be Supabase generated UUID
-  outreach_id?: string; // Foreign key to outreaches table
-  user_id?: string; // Foreign key to auth.users
+// --- Metadata Interface Definitions ---
+// Base for metadata that might include a call_sid, but it's not always required at base level
+interface BaseCallMetadata {
+  call_sid?: string;
+}
+
+// Metadata for AI-driven negotiation messages
+export interface AiNegotiationMetadata extends BaseCallMetadata {
+  aiMethod?: 'ai_generated' | 'algorithmic_fallback';
+  strategy?: string;
+  tactics?: string[];
+  suggestedOffer?: number;
+  phase?: string;
+  errorInfo?: string; // For errors specific to AI negotiation generation
+}
+
+// Metadata for voice call summaries
+export interface VoiceCallSummaryMetadata extends BaseCallMetadata {
+  call_sid: string; // A summary is always tied to a specific call SID
+  full_recording_url: string;
+  full_recording_duration: string;
+  human_readable_summary?: string;
+  error_message?: string; // For errors during call processing or summary/recording retrieval
+  turns?: Array<{
+    speaker: string;
+    text: string;
+    audio_url?: string; // URL to audio snippet for this turn
+  }>;
+  // The following might be redundant if full_recording_url covers all cases
+  // recording_url?: string; 
+  // recording_duration?: string;
+}
+
+// Metadata for voice transcripts
+export interface VoiceTranscriptMetadata extends BaseCallMetadata {
+  call_sid: string; // A transcript is tied to a specific call SID
+  turns: Array<{
+    speaker: string;
+    text: string;
+    audio_url?: string;
+  }>;
+}
+
+// Metadata for call exchange messages (e.g., specific segments or events in a call)
+export interface CallExchangeMetadata extends BaseCallMetadata {
+  call_sid: string; // An exchange is part of a call
+  creator_segment_recording_sid?: string; // If there's a specific recording SID for a segment
+  turns?: Array<{ // May include turns or be a more general log
+    speaker: string;
+    text: string;
+  }>;
+}
+
+// Metadata for simple call logs (e.g., "call started", "call failed")
+export interface CallLogMetadata extends BaseCallMetadata {
+  call_sid: string; // Log is tied to a call
+  // 'content' field of the message can hold the log message itself
+}
+
+// --- ConversationMessage Discriminated Union ---
+interface MessageBase {
+  id: string;
+  outreach_id?: string;
+  user_id?: string;
   content: string;
   sender: 'brand' | 'creator' | 'ai';
   timestamp: Date;
-  type: 'outreach' | 'response' | 'negotiation' | 'update' | 'call_log' | 'voice_transcript' | 'call_exchange' | 'voice_call_summary';
-  metadata?: {
-    aiMethod?: 'ai_generated' | 'algorithmic_fallback';
-    strategy?: string;
-    tactics?: string[];
-    suggestedOffer?: number;
-    phase?: string;
-    errorInfo?: string;
-    call_sid?: string;
-    recording_url?: string;
-    recording_duration?: string;
-    creator_segment_recording_sid?: string;
-    full_recording_url?: string;
-    full_recording_duration?: string;
-    turns?: Array<{
-      speaker: string;
-      text: string;
-      audio_url?: string;
-    }>;
-  };
 }
+
+// For simple text-based messages or those with generic/currently undefined metadata
+export type GenericMessage = MessageBase & {
+  type: 'outreach' | 'response' | 'update'; // Add other types here if they don't have strongly-typed metadata yet
+  metadata?: Record<string, any>; // Allows any other metadata for flexibility, or make it stricter e.g. Partial<BaseCallMetadata>
+};
+
+export type AiNegotiationMessage = MessageBase & {
+  type: 'negotiation';
+  metadata: AiNegotiationMetadata;
+};
+
+export type CallLogMessage = MessageBase & {
+  type: 'call_log';
+  metadata: CallLogMetadata;
+};
+
+export type VoiceTranscriptMessage = MessageBase & {
+  type: 'voice_transcript';
+  metadata: VoiceTranscriptMetadata;
+};
+
+export type CallExchangeMessage = MessageBase & {
+  type: 'call_exchange';
+  metadata: CallExchangeMetadata;
+};
+
+export type VoiceCallSummaryMessage = MessageBase & {
+  type: 'voice_call_summary';
+  metadata: VoiceCallSummaryMetadata;
+};
+
+// The main ConversationMessage type is now a union of all specific message types
+export type ConversationMessage =
+  | GenericMessage
+  | AiNegotiationMessage
+  | CallLogMessage
+  | VoiceTranscriptMessage
+  | CallExchangeMessage
+  | VoiceCallSummaryMessage;
 
 export interface StoredOutreach {
   id: string; // Will be Supabase generated UUID
@@ -68,6 +147,44 @@ export interface OutreachSummary {
   successRate: number;
 }
 
+// --- Helper function to map database message record to ConversationMessage union type ---
+function mapDbMessageToConversationMessage(dbMsg: any): ConversationMessage {
+  const baseMessage = {
+    id: dbMsg.id,
+    outreach_id: dbMsg.outreach_id,
+    user_id: dbMsg.user_id,
+    content: dbMsg.content,
+    sender: dbMsg.sender as 'brand' | 'creator' | 'ai',
+    timestamp: new Date(dbMsg.timestamp),
+    // Ensure metadata is at least an empty object if null/undefined from DB
+    // Individual types will then validate or use their specific metadata shapes
+    metadata: dbMsg.metadata || {}, 
+  };
+
+  // Discriminate based on type
+  switch (dbMsg.type as ConversationMessage['type']) {
+    case 'negotiation':
+      return { ...baseMessage, type: 'negotiation', metadata: dbMsg.metadata as AiNegotiationMetadata };
+    case 'call_log':
+      return { ...baseMessage, type: 'call_log', metadata: dbMsg.metadata as CallLogMetadata };
+    case 'voice_transcript':
+      return { ...baseMessage, type: 'voice_transcript', metadata: dbMsg.metadata as VoiceTranscriptMetadata };
+    case 'call_exchange':
+      return { ...baseMessage, type: 'call_exchange', metadata: dbMsg.metadata as CallExchangeMetadata };
+    case 'voice_call_summary':
+      return { ...baseMessage, type: 'voice_call_summary', metadata: dbMsg.metadata as VoiceCallSummaryMetadata };
+    case 'outreach':
+    case 'response':
+    case 'update':
+      return { ...baseMessage, type: dbMsg.type, metadata: dbMsg.metadata }; // GenericMessage allows flexible metadata
+    default:
+      // Fallback for any unhandled or new types - treat as generic.
+      // Consider logging a warning here for unexpected types.
+      console.warn(`Unknown message type "${dbMsg.type}" encountered. Treating as generic.`);
+      return { ...baseMessage, type: dbMsg.type as 'outreach', metadata: dbMsg.metadata }; // Default to 'outreach' or a more generic base type
+  }
+}
+
 class OutreachStorageService {
   // private storageKey = 'influencer_outreaches'; // No longer needed
 
@@ -92,7 +209,7 @@ class OutreachStorageService {
         creator_platform: outreachData.creatorPlatform,
         creator_phone_number: outreachData.creatorPhoneNumber,
         subject: outreachData.subject,
-        body: outreachData.body, // Storing initial message here as per table design
+        body: outreachData.body,
         status: outreachData.status || 'pending',
         confidence: outreachData.confidence,
         reasoning: outreachData.reasoning,
@@ -102,7 +219,6 @@ class OutreachStorageService {
         campaign_context: outreachData.campaignContext,
         current_offer: outreachData.currentOffer,
         notes: outreachData.notes,
-        // Supabase will default created_at and last_contact
       };
 
       const { data: savedOutreach, error: outreachError } = await supabase
@@ -124,54 +240,44 @@ class OutreachStorageService {
       console.log('✅ Outreach saved to Supabase, ID:', savedOutreach.id);
 
       // Now save the initial message to conversation_messages
-      const initialMessageContent = savedOutreach.body; // Use body from the saved outreach
-      const initialMessage: Omit<ConversationMessage, 'id' | 'timestamp'> = {
+      // This will be a GenericMessage
+      const initialDbMessage = {
         outreach_id: savedOutreach.id,
         user_id: userId,
-        content: initialMessageContent,
-        sender: 'brand',
-        type: 'outreach',
-        // metadata can be added if needed
+        content: savedOutreach.body, // Use body from the saved outreach
+        sender: 'brand' as const, // Ensure literal type
+        type: 'outreach' as const,    // Ensure literal type
+        metadata: {}, // No specific metadata for initial outreach message
       };
 
-      const { data: savedMessage, error: messageError } = await supabase
+      const { data: savedMessageData, error: messageError } = await supabase
         .from('conversation_messages')
-        .insert(initialMessage)
+        .insert(initialDbMessage)
         .select()
         .single();
 
       if (messageError) {
         console.error('❌ Error saving initial conversation message to Supabase:', messageError);
-        // Optional: decide if we should roll back the outreach insert or handle this state
         throw messageError;
       }
       
-      if (!savedMessage) {
+      if (!savedMessageData) {
         console.error('❌ No data returned after saving initial message.');
-        // This is problematic as the outreach expects a conversation history
         return null; 
       }
 
-      console.log('✅ Initial conversation message saved to Supabase, ID:', savedMessage.id);
+      console.log('✅ Initial conversation message saved to Supabase, ID:', savedMessageData.id);
       
-      // Construct the StoredOutreach object to return
+      const initialConversationMessage: ConversationMessage = mapDbMessageToConversationMessage(savedMessageData);
+
       const fullOutreach: StoredOutreach = {
-        ...outreachData, // Spread the original input data
+        ...outreachData, 
         id: savedOutreach.id,
         user_id: userId,
         campaign_id: outreachData.campaign_id, 
         createdAt: new Date(savedOutreach.created_at),
         lastContact: new Date(savedOutreach.last_contact || savedOutreach.created_at),
-        conversationHistory: [{
-          id: savedMessage.id,
-          outreach_id: savedMessage.outreach_id,
-          user_id: savedMessage.user_id,
-          content: savedMessage.content,
-          sender: savedMessage.sender as 'brand' | 'creator' | 'ai',
-          timestamp: new Date(savedMessage.timestamp),
-          type: savedMessage.type as ConversationMessage['type'],
-          metadata: savedMessage.metadata || undefined,
-        }],
+        conversationHistory: [initialConversationMessage],
       };
       
       return fullOutreach;
@@ -210,7 +316,7 @@ class OutreachStorageService {
       const storedOutreaches: StoredOutreach[] = [];
 
       for (const record of outreachRecords) {
-        const { data: messages, error: messagesError } = await supabase
+        const { data: messagesData, error: messagesError } = await supabase
           .from('conversation_messages')
           .select('*')
           .eq('outreach_id', record.id)
@@ -218,20 +324,9 @@ class OutreachStorageService {
 
         if (messagesError) {
           console.error(`❌ Error loading messages for outreach ${record.id}:`, messagesError);
-          // Decide how to handle this: skip this outreach, return partial, etc.
-          // For now, we'll create the outreach with empty history.
         }
         
-        const conversationHistory: ConversationMessage[] = (messages || []).map(msg => ({
-          id: msg.id,
-          outreach_id: msg.outreach_id,
-          user_id: msg.user_id,
-          content: msg.content,
-          sender: msg.sender as 'brand' | 'creator' | 'ai',
-          timestamp: new Date(msg.timestamp),
-          type: msg.type as ConversationMessage['type'],
-          metadata: msg.metadata || undefined,
-        }));
+        const conversationHistory: ConversationMessage[] = (messagesData || []).map(mapDbMessageToConversationMessage);
         
         storedOutreaches.push({
           id: record.id,
@@ -243,7 +338,7 @@ class OutreachStorageService {
           creatorPlatform: record.creator_platform,
           creatorPhoneNumber: record.creator_phone_number,
           subject: record.subject,
-          body: record.body, // This is the initial message
+          body: record.body, 
           status: record.status as StoredOutreach['status'],
           confidence: record.confidence,
           reasoning: record.reasoning,
@@ -258,77 +353,130 @@ class OutreachStorageService {
           conversationHistory: conversationHistory,
         });
       }
-      
-      console.log('INFO: Loaded ' + storedOutreaches.length + ' outreaches from Supabase.');
       return storedOutreaches;
-
     } catch (error) {
-      console.error('❌ Error in getAllOutreaches service method:', error);
+      console.error('❌ Error in getAllOutreaches:', error);
       return [];
     }
   }
 
-  /**
-   * Get outreaches for a specific creator
-   */
-  getOutreachesForCreator(creatorId: string): StoredOutreach[] {
-    // THIS METHOD IS NOW OUTDATED AND NEEDS REFACTORING FOR SUPABASE
-    // For now, it will return an empty array or could call getAllOutreaches and filter locally,
-    // but that's inefficient. Ideally, it should query Supabase directly.
-    console.warn("getOutreachesForCreator is not yet updated for Supabase and will return empty results or use old logic.");
-    // const allOutreaches = this.getAllOutreaches(); // This is now async!
-    // return allOutreaches.filter(outreach => outreach.creatorId === creatorId);
-    return []; 
+  async getOutreachesForCreator(creatorId: string): Promise<StoredOutreach[]> {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        console.warn('⚠️ User not authenticated. Cannot load outreaches for creator.');
+        return [];
+      }
+      const userId = user.id;
+
+      const { data: outreachRecords, error: outreachError } = await supabase
+        .from('outreaches')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('creator_id', creatorId)
+        .order('created_at', { ascending: false });
+
+      if (outreachError) {
+        console.error('❌ Error loading outreaches for creator from Supabase:', outreachError);
+        throw outreachError;
+      }
+      if (!outreachRecords) return [];
+
+      const storedOutreaches: StoredOutreach[] = [];
+       for (const record of outreachRecords) {
+        const { data: messagesData, error: messagesError } = await supabase
+          .from('conversation_messages')
+          .select('*')
+          .eq('outreach_id', record.id)
+          .order('timestamp', { ascending: true });
+
+        if (messagesError) {
+          console.error(`❌ Error loading messages for outreach ${record.id}:`, messagesError);
+        }
+        const conversationHistory: ConversationMessage[] = (messagesData || []).map(mapDbMessageToConversationMessage);
+        
+        storedOutreaches.push({
+          id: record.id,
+          user_id: record.user_id,
+          campaign_id: record.campaign_id,
+          creatorId: record.creator_id,
+          creatorName: record.creator_name,
+          creatorAvatar: record.creator_avatar,
+          creatorPlatform: record.creator_platform,
+          creatorPhoneNumber: record.creator_phone_number,
+          subject: record.subject,
+          body: record.body,
+          status: record.status as StoredOutreach['status'],
+          confidence: record.confidence,
+          reasoning: record.reasoning,
+          keyPoints: record.key_points || [],
+          nextSteps: record.next_steps || [],
+          brandName: record.brand_name,
+          campaignContext: record.campaign_context,
+          createdAt: new Date(record.created_at),
+          lastContact: new Date(record.last_contact || record.created_at),
+          currentOffer: record.current_offer,
+          notes: record.notes,
+          conversationHistory: conversationHistory,
+        });
+      }
+      return storedOutreaches;
+
+    } catch(e) {
+      console.error("Error fetching outreaches for creator", e);
+      return [];
+    }
   }
 
-  /**
-   * Add a new message to the conversation history in Supabase
-   */
   async addConversationMessage(
     outreachId: string, 
     content: string, 
     sender: 'brand' | 'creator' | 'ai',
-    type: ConversationMessage['type'],
-    metadata?: ConversationMessage['metadata']
-  ): Promise<void> {
+    type: ConversationMessage['type'], // This will be the union of all literal types
+    // Metadata must now match one of the specific metadata types based on 'type'
+    // or be undefined if the specific message type allows optional/no metadata.
+    // For simplicity in the method signature, we'll keep it as `any` here and rely on
+    // the calling code to pass correctly typed metadata according to the 'type' argument.
+    // A more advanced approach could use generics and conditional types for the metadata argument.
+    metadata?: any // Ideally, this would be more strongly typed based on 'type'
+  ): Promise<ConversationMessage | null> {
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('User not authenticated');
+      if (!user) {
+        console.error('❌ User not authenticated. Cannot add message.');
+        throw new Error('User not authenticated');
+      }
 
-      const newMessageData = {
+      const newMessageRecord = {
         outreach_id: outreachId,
-        user_id: user.id,
+        user_id: user.id, // Associate message with the acting user
         content,
         sender,
         type,
-        metadata,
-        // Supabase will default timestamp
+        metadata: metadata || {}, // Ensure metadata is at least an empty object if undefined
       };
 
-      const { error: messageError } = await supabase
+      const { data: savedMessageData, error } = await supabase
         .from('conversation_messages')
-        .insert(newMessageData);
+        .insert(newMessageRecord)
+        .select()
+        .single();
 
-      if (messageError) {
-        console.error('❌ Error adding conversation message to Supabase:', messageError);
-        throw messageError;
+      if (error) {
+        console.error('❌ Error adding conversation message to Supabase:', error);
+        throw error;
       }
-
-      // Also update the last_contact field on the parent outreach
-      const { error: updateError } = await supabase
-        .from('outreaches')
-        .update({ last_contact: new Date().toISOString() })
-        .eq('id', outreachId);
-
-      if (updateError) {
-        console.warn('⚠️ Error updating last_contact on outreach:', updateError);
-        // Not a critical failure, but good to log
+      if (!savedMessageData) {
+         console.error('❌ No data returned after saving message.');
+        return null;
       }
       
-      console.log('✅ Conversation message added to Supabase.');
+      console.log('✅ Conversation message added to Supabase, ID:', savedMessageData.id);
+      return mapDbMessageToConversationMessage(savedMessageData);
 
-    } catch (error) {
-      console.error('❌ Error in addConversationMessage service method:', error);
+    } catch (e) {
+      console.error('❌ Error in addConversationMessage:', e);
+      return null;
     }
   }
 
@@ -337,48 +485,34 @@ class OutreachStorageService {
    */
   async updateOutreachStatus(outreachId: string, status: StoredOutreach['status'], notes?: string, currentOffer?: number): Promise<void> {
     try {
-      // Construct the update object with explicit snake_case for current_offer
-      const updateData: { 
-        status: StoredOutreach['status']; 
-        last_contact: string;
-        current_offer?: number; // Explicitly snake_case
-        notes?: string; 
-      } = {
+      // The `updates` object is for the database, so it should use snake_case for db columns.
+      // However, its type derivation from Partial<StoredOutreach> will use camelCase.
+      // We need to construct the db_updates object carefully.
+      const db_updates: { status: StoredOutreach['status']; last_contact: string; current_offer?: number; notes?: string } = {
         status,
-        last_contact: new Date().toISOString(),
+        last_contact: new Date().toISOString(), // Update last_contact time
       };
-
-      if (currentOffer !== undefined) {
-        updateData.current_offer = currentOffer; // Use snake_case here
-      }
       
       if (notes !== undefined) {
-        updateData.notes = notes; // Assuming 'notes' column in DB is 'notes' (typically snake_cased if not an exact match)
-                                  // StoredOutreach interface uses 'notes', so this should map to 'notes' or 'note' in DB.
-                                  // If 'notes' column is also an issue, it would need similar explicit mapping.
+        db_updates.notes = notes;
+      }
+      if (currentOffer !== undefined) {
+        db_updates.current_offer = currentOffer; // This is the database column name
       }
 
       const { error } = await supabase
         .from('outreaches')
-        .update(updateData) // Pass the object with explicit snake_case field
+        .update(db_updates) // Use the db_updates object with snake_case
         .eq('id', outreachId);
-      
+
       if (error) {
         console.error('❌ Error updating outreach status in Supabase:', error);
         throw error;
       }
-
-      // If 'notes' were provided and intended as a status update message:
-      if (notes) {
-         await this.addConversationMessage(outreachId, `Status updated to ${status}. ${notes}`, 'brand', 'update');
-      } else {
-         await this.addConversationMessage(outreachId, `Status updated to ${status}.`, 'brand', 'update');
-      }
-      
-      console.log('✅ Outreach status updated in Supabase:', status);
-
-    } catch (error) {
-      console.error('❌ Error in updateOutreachStatus service method:', error);
+      console.log(`✅ Outreach ${outreachId} status updated to ${status}.`);
+    } catch (e) {
+      console.error('❌ Error in updateOutreachStatus:', e);
+      // Decide on error handling strategy, e.g., rethrow or log
     }
   }
 
@@ -387,7 +521,7 @@ class OutreachStorageService {
    */
   async getConversationHistory(outreachId: string): Promise<ConversationMessage[]> {
     try {
-      const { data: messages, error } = await supabase
+      const { data: messagesData, error } = await supabase
         .from('conversation_messages')
         .select('*')
         .eq('outreach_id', outreachId)
@@ -397,19 +531,9 @@ class OutreachStorageService {
         console.error(`❌ Error loading conversation history for outreach ${outreachId}:`, error);
         throw error;
       }
-
-      return (messages || []).map(msg => ({
-        id: msg.id,
-        outreach_id: msg.outreach_id,
-        user_id: msg.user_id,
-        content: msg.content,
-        sender: msg.sender as 'brand' | 'creator' | 'ai',
-        timestamp: new Date(msg.timestamp),
-        type: msg.type as ConversationMessage['type'],
-        metadata: msg.metadata || undefined,
-      }));
-    } catch (error) {
-      console.error('❌ Error in getConversationHistory service method:', error);
+      return (messagesData || []).map(mapDbMessageToConversationMessage);
+    } catch (e) {
+      console.error(`❌ Error in getConversationHistory for outreach ${outreachId}:`, e);
       return [];
     }
   }
@@ -418,30 +542,57 @@ class OutreachStorageService {
    * Get conversation context for AI prompts (remains largely the same logic, but uses async getConversationHistory)
    */
   async getConversationContext(outreachId: string): Promise<string> {
-    const history = await this.getConversationHistory(outreachId);
-    
-    if (history.length === 0) return '';
-    
-    return history.map(msg => {
-      const senderLabel = msg.sender === 'brand' ? 'You' : msg.sender === 'creator' ? 'Creator' : 'AI Assistant';
-      const timeStr = msg.timestamp.toLocaleDateString(); // Consider using toLocaleTimeString for more precision if needed
-      return `[${timeStr}] ${senderLabel}: ${msg.content}`;
-    }).join('\n\n');
+    try {
+      const history = await this.getConversationHistory(outreachId);
+      // Simple concatenation for now, can be made more sophisticated
+      return history.map(msg => `${msg.sender.toUpperCase()}: ${msg.content}`).join('\n');
+    } catch (error) {
+      console.error(`Error getting conversation context for outreach ${outreachId}:`, error);
+      return ""; // Return empty string or handle error as appropriate
+    }
   }
 
   /**
    * Get outreach summary for dashboard (this will need significant refactoring for Supabase)
    */
   async getOutreachSummary(): Promise<OutreachSummary> {
-    // THIS METHOD IS NOW OUTDATED AND NEEDS COMPLETE REFACTORING FOR SUPABASE
-    // It requires querying Supabase for counts, statuses, etc.
-    console.warn("getOutreachSummary is not yet updated for Supabase and will return empty/default results.");
-    return {
-      totalOutreaches: 0,
-      statusCounts: {},
-      recentOutreaches: [],
-      successRate: 0
-    };
+    // This is a simplified example. A real implementation might involve more complex queries or multiple queries.
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error("User not authenticated");
+
+      const { data: outreaches, error } = await supabase
+        .from('outreaches')
+        .select('status, created_at')
+        .eq('user_id', user.id);
+
+      if (error) throw error;
+      if (!outreaches) return { totalOutreaches: 0, statusCounts: {}, recentOutreaches: [], successRate: 0 };
+
+      const totalOutreaches = outreaches.length;
+      const statusCounts: Record<string, number> = {};
+      outreaches.forEach(o => {
+        statusCounts[o.status] = (statusCounts[o.status] || 0) + 1;
+      });
+      
+      // For recent outreaches, you'd typically fetch more complete data and sort.
+      // This is a placeholder for brevity.
+      const recent = await this.getAllOutreaches(); // Potentially inefficient for just a summary
+      const recentOutreaches = recent.slice(0, 5); 
+
+      const successfulDeals = statusCounts['deal_closed'] || 0;
+      const successRate = totalOutreaches > 0 ? (successfulDeals / totalOutreaches) * 100 : 0;
+
+      return {
+        totalOutreaches,
+        statusCounts,
+        recentOutreaches, // This would be populated more selectively in a real app
+        successRate,
+      };
+    } catch (e) {
+      console.error("Error fetching outreach summary:", e);
+      return { totalOutreaches: 0, statusCounts: {}, recentOutreaches: [], successRate: 0 };
+    }
   }
 
   /**
@@ -449,20 +600,32 @@ class OutreachStorageService {
    */
   async deleteOutreach(outreachId: string): Promise<void> {
     try {
-      // Supabase is configured with ON DELETE CASCADE for conversation_messages,
-      // so deleting the outreach should automatically delete its messages.
-      const { error } = await supabase
+      // First, delete associated conversation messages (due to potential foreign key constraints or just for cleanup)
+      const { error: messagesError } = await supabase
+        .from('conversation_messages')
+        .delete()
+        .eq('outreach_id', outreachId);
+
+      if (messagesError) {
+        console.error(`❌ Error deleting conversation messages for outreach ${outreachId}:`, messagesError);
+        throw messagesError;
+      }
+
+      // Then, delete the outreach record itself
+      const { error: outreachError } = await supabase
         .from('outreaches')
         .delete()
         .eq('id', outreachId);
 
-      if (error) {
-        console.error('❌ Error deleting outreach from Supabase:', error);
-        throw error;
+      if (outreachError) {
+        console.error(`❌ Error deleting outreach ${outreachId}:`, outreachError);
+        throw outreachError;
       }
-      console.log('✅ Outreach deleted from Supabase:', outreachId);
-    } catch (error) {
-      console.error('❌ Error in deleteOutreach service method:', error);
+      console.log(`✅ Outreach ${outreachId} and its messages deleted successfully.`);
+    } catch (e) {
+      console.error(`❌ Error in deleteOutreach for ${outreachId}:`, e);
+      // Rethrow or handle as appropriate
+      throw e;
     }
   }
 
@@ -470,27 +633,102 @@ class OutreachStorageService {
    * Clear all outreaches for the current user from Supabase (Use with caution!)
    */
   async clearAllOutreaches(): Promise<void> {
+    // USE WITH EXTREME CAUTION - This will delete all outreaches and their messages for the current user.
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('User not authenticated');
+      if (!user) {
+        console.error('❌ User not authenticated. Cannot clear all outreaches.');
+        throw new Error('User not authenticated');
+      }
+      
+      // Get all outreach IDs for the user
+      const { data: outreachRecords, error: fetchError } = await supabase
+        .from('outreaches')
+        .select('id')
+        .eq('user_id', user.id);
 
-      // First delete all conversation messages for the user (optional, as CASCADE should handle it)
-      // This is more explicit if we want to be certain or if CASCADE isn't set on user_id for messages.
-      // However, our DDL for conversation_messages has ON DELETE CASCADE for outreach_id, not directly user_id.
-      // So, deleting from 'outreaches' is the primary action.
+      if (fetchError) {
+        console.error('❌ Error fetching outreach IDs for deletion:', fetchError);
+        throw fetchError;
+      }
 
+      if (outreachRecords && outreachRecords.length > 0) {
+        const outreachIds = outreachRecords.map(r => r.id);
+
+        // Delete messages for these outreaches
+        const { error: messagesError } = await supabase
+          .from('conversation_messages')
+          .delete()
+          .in('outreach_id', outreachIds);
+        
+        if (messagesError) {
+          console.error('❌ Error deleting conversation messages during clearAllOutreaches:', messagesError);
+          // Decide if to proceed with deleting outreaches or to stop and throw
+        }
+
+        // Delete the outreaches
+        const { error: outreachesError } = await supabase
+          .from('outreaches')
+          .delete()
+          .in('id', outreachIds);
+
+        if (outreachesError) {
+          console.error('❌ Error deleting outreaches during clearAllOutreaches:', outreachesError);
+          throw outreachesError;
+        }
+        console.log(`✅ All outreaches and messages for user ${user.id} cleared.`);
+      } else {
+        console.log('ℹ️ No outreaches found for the user to clear.');
+      }
+    } catch (e) {
+      console.error('❌ Error in clearAllOutreaches:', e);
+      throw e; // Rethrow to indicate failure
+    }
+  }
+
+  // NEW METHOD to update specific fields on the outreach record itself
+  async updateOutreachPrimaryArtifacts(
+    outreachId: string, 
+    artifacts: { 
+      lastContact?: Date; 
+      // We can add other direct fields from the 'outreaches' table here if needed in the future
+      // e.g., full_recording_url?: string; (if we decide to duplicate this on the outreach table)
+    }
+  ): Promise<boolean> {
+    if (!outreachId || !artifacts || Object.keys(artifacts).length === 0) {
+      console.warn("[OutreachStorageService] updateOutreachPrimaryArtifacts: outreachId or artifacts missing or empty.");
+      return false;
+    }
+
+    const updates: Partial<any> = {}; // Use 'any' for updates object to match Supabase table column names flexibly
+
+    if (artifacts.lastContact) {
+      updates.last_contact = artifacts.lastContact.toISOString(); // Assuming 'last_contact' is the DB column name
+    }
+
+    // Add other fields to 'updates' if present in 'artifacts' and corresponding DB columns exist
+    // Example: if (artifacts.full_recording_url) updates.last_call_recording_url = artifacts.full_recording_url;
+
+    if (Object.keys(updates).length === 0) {
+      console.log("[OutreachStorageService] updateOutreachPrimaryArtifacts: No updatable fields provided in artifacts.");
+      return true; // No error, just nothing to update
+    }
+
+    try {
       const { error } = await supabase
         .from('outreaches')
-        .delete()
-        .eq('user_id', user.id);
-      
+        .update(updates)
+        .eq('id', outreachId);
+
       if (error) {
-        console.error('❌ Error clearing all outreaches from Supabase:', error);
-        throw error;
+        console.error(`[OutreachStorageService] Error updating outreach ${outreachId} primary artifacts:`, error);
+        return false;
       }
-      console.log('✅ All outreaches for the current user cleared from Supabase.');
-    } catch (error) {
-      console.error('❌ Error in clearAllOutreaches service method:', error);
+      console.log(`[OutreachStorageService] Outreach ${outreachId} primary artifacts updated successfully with:`, updates);
+      return true;
+    } catch (e) {
+      console.error(`[OutreachStorageService] Exception updating outreach ${outreachId} primary artifacts:`, e);
+      return false;
     }
   }
 }
