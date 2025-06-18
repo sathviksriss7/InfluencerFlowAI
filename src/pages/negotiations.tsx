@@ -368,33 +368,14 @@ export default function Negotiations() {
                         <span className="text-xs opacity-75">
                                 {getMessageSenderLabel(message.sender)}
                               </span>
-                              {message.metadata?.aiMethod && (
-                                <span className="text-xs bg-black bg-opacity-10 px-1 rounded">
-                                  {message.metadata.aiMethod === 'ai_generated' ? 'AI' : 'Algo'}
-                        </span>
-                              )}
                       </div>
                             <div className="text-sm whitespace-pre-wrap">{message.content}</div>
                             
-                            {/* Display Call Specific Metadata */}
-                            {message.type === 'call_log' && message.metadata?.recording_url && (
-                              <div className="mt-2 text-xs">
-                                <a 
-                                  href={message.metadata.recording_url} 
-                                  target="_blank" 
-                                  rel="noopener noreferrer"
-                                  className="text-blue-500 hover:underline"
-                                >
-                                  Listen to recording ({message.metadata.recording_duration || 'N/A'}s)
-                                </a>
-                              </div>
-                            )}
                             {message.type === 'voice_transcript' && message.metadata?.call_sid && (
                                 <p className="text-xs opacity-60 mt-1">From call: {message.metadata.call_sid.substring(0,10)}...</p>
                             )}
                             
-                            {/* Display Other Metadata (e.g., from negotiation) */}
-                            {message.type === 'negotiation' && message.metadata && (
+                            {message.type === 'negotiation' && (
                         <div className="mt-2 text-xs opacity-75">
                                 {message.metadata.suggestedOffer && (
                                   <p>💰 Suggested: ₹{message.metadata.suggestedOffer.toLocaleString()}</p>
@@ -404,6 +385,52 @@ export default function Negotiations() {
                           )}
                         </div>
                       )}
+
+                      {/* AI Method & Strategy (Only for AI negotiation messages) */}
+                      {message.type === 'negotiation' && (
+                        <>
+                          {message.metadata.suggestedOffer && (
+                            <p className="mt-2 text-xs opacity-75">💰 Suggested: ₹{message.metadata.suggestedOffer.toLocaleString()}</p>
+                          )}
+                          {message.metadata.strategy && (
+                            <p className="mt-1 text-xs opacity-75">🎯 Strategy: {message.metadata.strategy.replace('_', ' ')}</p>
+                          )}
+                          {message.metadata.aiMethod && (
+                            <div className="mt-1 text-xs text-purple-600">
+                              <span>(Method: {message.metadata.aiMethod === 'ai_generated' ? 'AI Generated' : 'Algorithmic'})</span>
+                            </div>
+                          )}
+                        </>
+                      )}
+
+                      {/* Displaying Voice Call Summary Artifacts */}
+                      {message.type === 'voice_call_summary' && (
+                        <div className="mt-2 p-2 bg-gray-50 rounded-md border border-gray-200">
+                          <p className="text-xs font-semibold text-gray-700 mb-1">Call Recording:</p>
+                          <audio controls src={message.metadata.full_recording_url} className="w-full h-8">
+                            Your browser does not support the audio element.
+                          </audio>
+                          <p className="text-xs text-gray-500 mt-1">
+                            Duration: {message.metadata.full_recording_duration}
+                          </p>
+                          {message.metadata.human_readable_summary && (
+                            <div className="mt-1">
+                              <p className="text-xs font-semibold text-gray-700 mb-0.5">AI Summary:</p>
+                              <p className="text-xs text-gray-600 whitespace-pre-wrap">
+                                {message.metadata.human_readable_summary}
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Displaying Voice Transcript Turns */}
+                      {message.type === 'voice_transcript' && message.metadata?.turns && message.metadata.turns.length > 0 && (
+                        <div className="mt-2 text-xs text-gray-500">
+                          <span>Turns: {message.metadata.turns.length}</span>
+                        </div>
+                      )}
+
                       <p className="text-xs opacity-50 mt-1">
                         {formatTime(message.timestamp)}
                       </p>

@@ -114,7 +114,11 @@ const clearChatHistory = () => {
   }
 };
 
-export default function AICreatorSearchLLM() {
+interface AICreatorSearchLLMProps {
+  campaignId: string;
+}
+
+export default function AICreatorSearchLLM({ campaignId }: AICreatorSearchLLMProps) {
   // Load messages from localStorage on component mount
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     console.log('🚀 AICreatorSearchLLM component initializing...');
@@ -133,7 +137,6 @@ export default function AICreatorSearchLLM() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const isLLMAvailable = groqLLMService.isAvailable();
   const suggestions = groqLLMService.getExampleQueries();
 
   // Save messages to localStorage whenever messages change
@@ -170,17 +173,6 @@ export default function AICreatorSearchLLM() {
   const handleSendMessage = async () => {
     if (!currentQuery.trim() || isAnalyzing) return;
 
-    if (!isLLMAvailable) {
-      const errorMessage: ChatMessage = {
-        id: `error_${Date.now()}`,
-        type: 'ai',
-        content: "🔑 Please set up your Groq API key to use the LLM-powered search. Add VITE_GROQ_API_KEY to your .env.local file. You can get your API key from https://console.groq.com/",
-        timestamp: new Date()
-      };
-      setMessages(prev => [...prev, errorMessage]);
-      return;
-    }
-
     const userMessage: ChatMessage = {
       id: `user_${Date.now()}`,
       type: 'user',
@@ -205,10 +197,39 @@ export default function AICreatorSearchLLM() {
     setMessages(prev => [...prev, loadingMessage]);
 
     try {
-      console.log('🤖 Calling AI with conversation context:', messages.length, 'messages');
-      console.log('📋 Messages being passed:', messages.map(m => `${m.type}: ${m.content.substring(0, 50)}...`));
+      console.log('🤖 Calling backend API with query:', query);
+      console.log('📋 Conversation context being sent:', messages.slice(0, -1).map(m => `${m.type}: ${m.content.substring(0, 50)}...`));
       
-      const llmAnalysis = await groqLLMService.analyzeCreatorQuery(query, mockCreators, messages);
+      const backendApiUrl = import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:5001';
+      const token = localStorage.getItem('token'); // Assuming token is in localStorage
+
+      const response = await fetch(`${backendApiUrl}/api/creator/analyze-query`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token && { 'Authorization': `Bearer ${token}` }),
+        },
+        body: JSON.stringify({
+          query: query,
+          conversation_history: messages.slice(0, -1).map(m => ({ // Exclude current loading message
+            role: m.type === 'user' ? 'user' : 'assistant',
+            content: m.content
+          }))
+        }),
+      });
+
+      if (!response.ok) {
+        let errorData;
+        try {
+          errorData = await response.json();
+        } catch (e) {
+          // Backend didn't return JSON or other error
+        }
+        const detail = errorData?.detail || errorData?.message || response.statusText || 'Unknown error from backend';
+        throw new Error(`Backend request failed: ${response.status} ${detail}`);
+      }
+      
+      const llmAnalysis: LLMCreatorAnalysis = await response.json();
       
       // Remove loading message and add result
       setMessages(prev => prev.filter(m => !m.isLoading));
@@ -225,10 +246,11 @@ export default function AICreatorSearchLLM() {
     } catch (error) {
       setMessages(prev => prev.filter(m => !m.isLoading));
       
+      const errorMessageContent = error instanceof Error ? error.message : "I encountered an error while analyzing your request. This might be due to API limits or connectivity issues. Please try again with a simpler query.";
       const errorMessage: ChatMessage = {
         id: `error_${Date.now()}`,
         type: 'ai',
-        content: "I encountered an error while analyzing your request. This might be due to API limits or connectivity issues. Please try again with a simpler query.",
+        content: errorMessageContent,
         timestamp: new Date()
       };
       setMessages(prev => [...prev, errorMessage]);
@@ -279,7 +301,7 @@ export default function AICreatorSearchLLM() {
                 </span>
               </h2>
               <p className="text-sm text-purple-100">
-                {isLLMAvailable ? 'LLM-powered natural language search' : 'Setup required - Add Groq API key'}
+                {/* isLLMAvailable ? 'LLM-powered natural language search' : 'Setup required - Add Groq API key' */}
               </p>
             </div>
           </div>
@@ -357,7 +379,7 @@ export default function AICreatorSearchLLM() {
       </div>
 
       {/* API Key Warning */}
-      {!isLLMAvailable && (
+      {/* {!isLLMAvailable && (
         <div className="mx-4 mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
           <div className="flex items-start gap-2">
             <svg className="w-5 h-5 text-amber-500 mt-0.5" fill="currentColor" viewBox="0 0 24 24">
@@ -373,10 +395,10 @@ export default function AICreatorSearchLLM() {
             </div>
           </div>
         </div>
-      )}
+      )} */}
 
       {/* Suggestions */}
-      {showSuggestions && isLLMAvailable && (
+      {showSuggestions && (
         <div className="p-4 border-t border-gray-200 bg-gray-50">
           <p className="text-sm text-gray-600 mb-2">✨ Try these AI-powered queries:</p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
@@ -434,13 +456,13 @@ export default function AICreatorSearchLLM() {
             value={currentQuery}
             onChange={(e) => setCurrentQuery(e.target.value)}
             onKeyPress={handleKeyPress}
-            placeholder={isLLMAvailable ? "Ask me to find creators in natural language..." : "Please set up Groq API key first"}
+            placeholder="Ask me to find creators in natural language..."
             className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
-            disabled={isAnalyzing || !isLLMAvailable}
+            disabled={isAnalyzing}
           />
           <button
             onClick={handleSendMessage}
-            disabled={!currentQuery.trim() || isAnalyzing || !isLLMAvailable}
+            disabled={!currentQuery.trim() || isAnalyzing}
             className="bg-gradient-to-r from-purple-600 to-blue-600 text-white px-6 py-2 rounded-lg hover:from-purple-700 hover:to-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
           >
             {isAnalyzing ? 'Analyzing...' : 'Send'}
@@ -453,6 +475,7 @@ export default function AICreatorSearchLLM() {
         <AIOutreachManager
           searchResults={getCurrentSearchResults()}
           onClose={() => setShowOutreachManager(false)}
+          campaignId={campaignId}
         />
       )}
     </div>
@@ -595,18 +618,6 @@ function LLMAnalysisDisplay({ analysis }: LLMAnalysisDisplayProps) {
           {analysis.queryUnderstanding.extractedCriteria.location && (
             <div>
               <strong>Location:</strong> {analysis.queryUnderstanding.extractedCriteria.location}
-            </div>
-          )}
-
-          {analysis.queryUnderstanding.extractedCriteria.qualityRequirements && (
-            <div>
-              <strong>Quality:</strong> {analysis.queryUnderstanding.extractedCriteria.qualityRequirements.join(', ')}
-            </div>
-          )}
-
-          {analysis.queryUnderstanding.extractedCriteria.contentTypes && (
-            <div>
-              <strong>Content:</strong> {analysis.queryUnderstanding.extractedCriteria.contentTypes.join(', ')}
             </div>
           )}
         </div>
