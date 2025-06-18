@@ -2150,31 +2150,60 @@ def handle_recording_status():
     recording_duration = request.form.get('RecordingDuration')
     actual_call_status = request.form.get('CallStatus')
 
-    if not outreach_id_from_query:
-        print(f"🔴 CRITICAL ERROR: 'outreach_id' MISSING from query parameters in /api/voice/recording-status. Callback source: {callback_source}, CallSid: {call_sid}. Cannot reliably process this recording status update.")
-        # Store minimal info with error if CallSid is present
-        if call_sid:
-            call_artifacts_store[call_sid] = {
-                **call_artifacts_store.get(call_sid, {}),
-                "error_message": "CRITICAL: outreach_id missing from callback query parameters.",
-                "latest_call_status": actual_call_status,
-                "callback_source_error": callback_source
-            }
-        return jsonify({"success": False, "error": "Critical: outreach_id missing from request query parameters."}), 400
+    if not call_sid:
+        print(f"🔴 CRITICAL ERROR: 'CallSid' MISSING from form data in /api/voice/recording-status. Callback source: {callback_source}. Cannot process this recording status update.")
+        return jsonify({"success": False, "error": "Critical: CallSid missing from request form data."}), 400
 
-    # Log with the confirmed Supabase outreach_id
+    if not outreach_id_from_query:
+        # Attempt to fetch outreach_id from active_call_sessions if missing from query, using call_sid
+        print(f"⚠️ 'outreach_id' MISSING from query parameters in /api/voice/recording-status. Callback source: {callback_source}, CallSid: {call_sid}. Attempting to find it via CallSid in DB.")
+        temp_call_session = None
+        if supabase_admin_client:
+            try:
+                # Corrected fetch syntax for maybe_single()
+                temp_fetch_response = supabase_admin_client.table("active_call_sessions").select("outreach_id").eq("call_sid", call_sid).maybe_single().execute()
+                if temp_fetch_response.data:
+                    outreach_id_from_query = temp_fetch_response.data.get('outreach_id')
+                    if outreach_id_from_query:
+                        print(f"✅ Found outreach_id '{outreach_id_from_query}' for CallSid {call_sid} from DB.")
+                    else:
+                        print(f"❌ CallSid {call_sid} found in DB, but no outreach_id associated. Cannot proceed.")
+                else:
+                    print(f"❌ CallSid {call_sid} not found in active_call_sessions. Cannot determine outreach_id.")
+            except Exception as e_fetch_oid:
+                print(f"❌ Error fetching outreach_id for CallSid {call_sid} from DB: {e_fetch_oid}")
+        
+        if not outreach_id_from_query:
+            print(f"🔴 CRITICAL ERROR: Could not determine 'outreach_id' for CallSid {call_sid} (query & DB). Callback source: {callback_source}. Cannot reliably process this recording status update.")
+            return jsonify({"success": False, "error": "Critical: outreach_id missing and could not be determined."}), 400
+
     print(f"🎙️ REC STATUS PARSED: Supabase Outreach ID: {outreach_id_from_query}, CallSid: {call_sid}, RecSid: {recording_sid}, ActualCallStatus: '{actual_call_status}', RecURL Present: {recording_url_twilio is not None}, Source: {callback_source}")
 
-    existing_artifact = call_artifacts_store.get(call_sid, {})
-    if existing_artifact.get("recording_processed_successfully"):
-        print(f"☑️ Recording for CallSid {call_sid} (Outreach: {outreach_id_from_query}) already processed. Skipping in handle_recording_status (Source: {callback_source}).")
+    call_session_data = None
+    recording_processed_successfully = False
+    if supabase_admin_client:
+        try:
+            fetch_response = supabase_admin_client.table("active_call_sessions").select("*, metadata").eq("call_sid", call_sid).maybe_single().execute()
+            if fetch_response.data:
+                call_session_data = fetch_response.data
+                if isinstance(call_session_data.get('metadata'), dict):
+                    recording_processed_successfully = call_session_data['metadata'].get("twilio_recording_processed_successfully", False)
+            else:
+                print(f"⚠️ No active_call_session found for CallSid {call_sid} when trying to process recording. OutreachID was {outreach_id_from_query}")
+        except Exception as e_fetch_session:
+            print(f"❌ Error fetching active_call_session for CallSid {call_sid}: {e_fetch_session}")
+            # Proceed cautiously, or return error, depending on desired robustness
+
+    if recording_processed_successfully:
+        print(f"☑️ Recording for CallSid {call_sid} (Outreach: {outreach_id_from_query}) already marked as processed. Skipping in handle_recording_status (Source: {callback_source}).")
     elif actual_call_status == 'completed' and recording_sid and recording_url_twilio:
         print(f"✅ Call {call_sid} (Supabase Outreach: {outreach_id_from_query}) reported completed with recording details by Twilio webhook (Source: {callback_source}). Handing off to _process_and_store_twilio_recording.")
+        # _process_and_store_twilio_recording will need to update the active_call_sessions record upon success
         _process_and_store_twilio_recording(
             call_sid=call_sid,
             recording_sid=recording_sid,
             recording_url_twilio=recording_url_twilio,
-            outreach_id=outreach_id_from_query,
+            outreach_id=outreach_id_from_query, # Pass the definitive outreach_id
             recording_duration_str=recording_duration
         )
     elif actual_call_status != 'completed':
@@ -2184,15 +2213,38 @@ def handle_recording_status():
     else:
         print(f"🤷 CallSid {call_sid} (Supabase Outreach: {outreach_id_from_query}): Conditions for Supabase upload not fully met. Status: '{actual_call_status}', RecSid: {recording_sid is not None}, RecUrl: {recording_url_twilio is not None}, Clients OK: {supabase_admin_client is not None and twilio_client is not None}")
 
-    # Always update/ensure basic info in call_artifacts_store using the CallSid as key
-    # and ensure the Supabase outreach_id is correctly associated.
-    if call_sid:
-        current_info = call_artifacts_store.get(call_sid, {})
-        current_info['outreach_id'] = outreach_id_from_query # Ensure Supabase ID is set/updated
-        current_info['latest_call_status'] = actual_call_status
-        current_info['last_callback_source'] = callback_source
-        call_artifacts_store[call_sid] = current_info
-        print(f"   Updated/checked artifact store for CallSid {call_sid}. Supabase Outreach ID: {outreach_id_from_query}, Status: '{actual_call_status}', Source: {callback_source}.")
+    # Update the active_call_sessions record with the latest call status from this callback
+    if supabase_admin_client and call_sid: # Ensure client and call_sid are available
+        update_payload = {
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        current_metadata = {}
+        if call_session_data and isinstance(call_session_data.get('metadata'), dict):
+            current_metadata = call_session_data['metadata']
+        elif call_session_data: # if metadata is not a dict, log warning but start fresh
+            print(f"⚠️ Metadata for CallSid {call_sid} was not a dict or was missing. Initializing fresh metadata for this update.")
+        
+        current_metadata['latest_twilio_call_status'] = actual_call_status # Use a distinct key
+        current_metadata['last_twilio_callback_source'] = callback_source
+        if recording_sid: current_metadata['last_twilio_recording_sid'] = recording_sid
+        # outreach_id should already be correct in the record, but good to be sure it matches query if possible
+        update_payload['metadata'] = current_metadata
+        update_payload['status'] = actual_call_status # Also update the main status field if appropriate
+
+        try:
+            print(f"💾 Attempting to update active_call_session for SID {call_sid} with recording callback info.")
+            update_response = supabase_admin_client.table("active_call_sessions").update(update_payload).eq("call_sid", call_sid).execute()
+            if not (hasattr(update_response, 'data') and update_response.data):
+                if hasattr(update_response, 'error') and update_response.error:
+                    print(f"⚠️ Supabase DB Error updating call session (recording status) for SID {call_sid}: {update_response.error.message if hasattr(update_response.error, 'message') else update_response.error}")
+                else:
+                    print(f"✅ Call session for SID {call_sid} (recording status) updated in Supabase (possibly minimal return).")
+            else:
+                 print(f"✅ Call session for SID {call_sid} (recording status) updated successfully in Supabase.")
+        except Exception as e_update_rec_status:
+            print(f"❌ General DB Error updating call session (recording status) for SID {call_sid}: {str(e_update_rec_status)}")
+    else:
+        print(f"⚠️ Cannot update active_call_session for SID {call_sid}: Supabase client or CallSid missing for final update block.")
 
     return jsonify({"success": True, "message": "Recording status received."}), 200
 
@@ -2201,46 +2253,95 @@ def handle_transcription_status():
     outreach_id_from_query = request.args.get('outreach_id')
     call_sid = request.form.get('CallSid')
     transcription_sid = request.form.get('TranscriptionSid')
-    transcription_status = request.form.get('TranscriptionStatus')
+    transcription_status_from_twilio = request.form.get('TranscriptionStatus') # Renamed to avoid conflict
     transcription_text = request.form.get('TranscriptionText')
-    transcription_url = request.form.get('TranscriptionUrl') # URL to the transcription resource (JSON)
+    transcription_url = request.form.get('TranscriptionUrl')
     
-    # Ensure outreach_id from query is prioritized, fallback to call_sid for print, then use for store key
-    log_display_id = outreach_id_from_query if outreach_id_from_query else call_sid # For logging clarity
+    log_display_id = outreach_id_from_query if outreach_id_from_query else call_sid
+    print(f"📝 TRANSCRIPT STATUS RECEIVED: LogDisplayID: {log_display_id}, CallSid: {call_sid}, TranSid: {transcription_sid}, Status: {transcription_status_from_twilio}")
 
-    print(f"📝 TRANSCRIPT STATUS: LogDisplayID: {log_display_id}, CallSid: {call_sid}, TranSid: {transcription_sid}, Status: {transcription_status}")
+    if not call_sid or not supabase_admin_client:
+        print(f"🔴 CRITICAL: CallSid ('{call_sid}') missing or Supabase client not available. Cannot process transcript.")
+        return "", 200
 
-    # Try to get the definitive Supabase outreach_id associated with this call_sid from our store
-    current_call_artifact = call_artifacts_store.get(call_sid, {})
-    # Use outreach_id from query as primary, then from artifact, then call_sid as last resort for ID association
-    final_outreach_id_for_processing = outreach_id_from_query or current_call_artifact.get('outreach_id')
+    call_session_data = None
+    final_outreach_id = outreach_id_from_query
+    current_metadata = {}
+    current_conversation_history = []
+    current_db_status = None
 
-    if not final_outreach_id_for_processing:
-        print(f"🔴 CRITICAL: No usable outreach_id found for CallSid {call_sid} in handle_transcription_status (query: {outreach_id_from_query}, artifact: {current_call_artifact.get('outreach_id')}). Cannot process transcript or recording.")
-        return "", 200 # Acknowledge webhook
+    try:
+        fetch_response = supabase_admin_client.table("active_call_sessions").select("*, metadata, conversation_history, status").eq("call_sid", call_sid).maybe_single().execute()
+        if fetch_response.data:
+            call_session_data = fetch_response.data
+            if not final_outreach_id:
+                final_outreach_id = call_session_data.get('outreach_id')
+            current_metadata = call_session_data.get('metadata') if isinstance(call_session_data.get('metadata'), dict) else {}
+            current_conversation_history = call_session_data.get('conversation_history') if isinstance(call_session_data.get('conversation_history'), list) else []
+            current_db_status = call_session_data.get('status')
+            print(f"✅ Fetched active_call_session for SID {call_sid} to process transcript. OutreachID: {final_outreach_id}")
+        else:
+            print(f"⚠️ No active_call_session found for SID {call_sid}. Cannot associate transcript. OutreachID from query was: {outreach_id_from_query}")
+            return "", 200 # Acknowledge webhook, but can't process further
+    except Exception as e_fetch:
+        print(f"❌ Error fetching active_call_session for SID {call_sid}: {e_fetch}. Cannot process transcript.")
+        return "", 200
 
-    if transcription_status == 'completed' and transcription_text:
-        print(f"🗣️ Transcript for OutreachID {final_outreach_id_for_processing} (CallSid: {call_sid}):\n{transcription_text}")
-        
-        # Update call_artifacts_store with transcript text
-        current_call_artifact['transcript'] = transcription_text
-        current_call_artifact['outreach_id'] = final_outreach_id_for_processing # Ensure it's set or updated
-        current_call_artifact.setdefault('conversation_history', []).append({
-            "speaker": "user", 
+    if not final_outreach_id:
+        print(f"🔴 CRITICAL: No usable outreach_id for CallSid {call_sid} (query: {outreach_id_from_query}, DB: {call_session_data.get('outreach_id') if call_session_data else 'N/A'}). Cannot process transcript.")
+        return "", 200
+
+    update_payload = {"updated_at": datetime.now(timezone.utc).isoformat()}
+
+    if transcription_status_from_twilio == 'completed' and transcription_text:
+        print(f"🗣️ Transcript COMPLETED for OutreachID {final_outreach_id} (CallSid: {call_sid}):\n{transcription_text[:200]}...")
+        current_metadata['twilio_transcription_text'] = transcription_text
+        current_metadata['twilio_transcription_sid'] = transcription_sid
+        current_metadata['twilio_transcription_status'] = transcription_status_from_twilio
+        current_metadata['twilio_transcription_url'] = transcription_url
+        current_metadata['twilio_transcription_error_code'] = None # Clear previous errors
+        current_metadata['twilio_transcription_error_message'] = None
+
+        # Optional: Append to conversation_history if desired.
+        # This might be redundant if SpeechResult from handle_user_speech is considered the main history source.
+        # If adding, ensure it's distinct.
+        current_conversation_history.append({
+            "speaker": "user", # Assuming transcript is usually user speech
             "text": transcription_text,
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "source": "twilio_transcript",
-            "transcription_sid": transcription_sid
+            "source": "twilio_final_transcript", # Differentiate from intermediate SpeechResult
+            "transcription_sid": transcription_sid,
+            "confidence": None # Confidence not typically provided with final transcript callback
         })
-        call_artifacts_store[call_sid] = current_call_artifact
-        print(f"💾 Transcript for CallSid {call_sid} (OutreachID: {final_outreach_id_for_processing}) stored in call_artifacts_store.")
+        update_payload['conversation_history'] = current_conversation_history
+        update_payload['status'] = f"{current_db_status or 'unknown'}_transcript_completed" # Append to status
 
-        # --- WORKAROUND REMOVED: No longer fetching recording here. --- 
-        # The main call recording (record=True) is handled by handle_recording_status.
-        # We just ensure the transcript is stored.
+    elif transcription_status_from_twilio == 'failed':
+        error_code = request.form.get('ErrorCode')
+        error_message = request.form.get('ErrorMessage')
+        print(f"❌ Transcription FAILED for {final_outreach_id} (CallSid: {call_sid}). Error: {error_code} - {error_message}")
+        current_metadata['twilio_transcription_status'] = transcription_status_from_twilio
+        current_metadata['twilio_transcription_error_code'] = error_code
+        current_metadata['twilio_transcription_error_message'] = error_message
+        update_payload['status'] = f"{current_db_status or 'unknown'}_transcript_failed"
+    else:
+        print(f"ℹ️ Transcription status for {final_outreach_id} (CallSid: {call_sid}) is '{transcription_status_from_twilio}'. Not processing as completed or failed.")
+        current_metadata['twilio_transcription_status'] = transcription_status_from_twilio # Log other statuses too
+    
+    update_payload['metadata'] = current_metadata
 
-    elif transcription_status == 'failed':
-        print(f"❌ Transcription failed for {final_outreach_id_for_processing} (CallSid: {call_sid}). Error: {request.form.get('ErrorCode')} - {request.form.get('ErrorMessage')}")
+    try:
+        print(f"💾 Attempting to update active_call_session for SID {call_sid} with transcription info.")
+        db_response = supabase_admin_client.table("active_call_sessions").update(update_payload).eq("call_sid", call_sid).execute()
+        if not (hasattr(db_response, 'data') and db_response.data):
+            if hasattr(db_response, 'error') and db_response.error:
+                 print(f"⚠️ Supabase DB Error updating call session (transcription) for SID {call_sid}: {db_response.error.message if hasattr(db_response.error, 'message') else db_response.error}")
+            else:
+                 print(f"✅ Call session for SID {call_sid} (transcription) updated in Supabase (possibly minimal return).")
+        else:
+            print(f"✅ Call session for SID {call_sid} (transcription) updated successfully in Supabase.")
+    except Exception as e_update_transcript:
+        print(f"❌ General DB Error updating call session (transcription) for SID {call_sid}: {str(e_update_transcript)}")
 
     return "", 200 # Twilio expects a 200 OK
 
@@ -2575,71 +2676,117 @@ def serve_temp_audio(filename):
 @app.route("/api/voice/call-details", methods=['GET', 'OPTIONS']) # CHANGED: Removed 'OPTIONS' from methods -> ADDED 'OPTIONS' back
 @token_required # Frontend will call this, so needs auth
 def get_call_details():
-    # REMOVED: Explicit OPTIONS handling block from within the route function.
-    # The @token_required decorator now solely handles OPTIONS preflight for this route.
-
-    # Existing GET logic starts here
     call_sid = request.args.get('call_sid')
     if not call_sid:
         return jsonify({"success": False, "error": "Missing 'call_sid' in request parameters."}), 400
 
-    call_data = call_artifacts_store.get(call_sid)
-    if not call_data:
-        return jsonify({"success": False, "error": f"Call artifacts not found for call_sid: {call_sid}"}), 404
+    if not supabase_admin_client:
+        print("❌ get_call_details: Supabase admin client not available.")
+        return jsonify({"success": False, "error": "Database client not configured."}), 500
 
-    # This structure matches what the frontend (NegotiationAgent.tsx) expects
-    # when it processes data.details
-    return jsonify({
-        "success": True,
-        "details": { # Match the frontend's expectation of a "details" object
-            "call_sid": call_sid,
-            "outreach_id": call_data.get('outreach_id'),
-            "conversation_history": call_data.get('conversation_history'),
-            "full_recording_url": call_data.get('full_recording_url'),
-            "full_recording_duration": call_data.get('full_recording_duration'),
-            # Include creator_transcript and creator_segment_recording_sid if they might exist
-            # from the old one-way flow or if hybrid use is possible.
-            # If these are definitively not part of the new call_artifacts_store structure for 2-way calls, 
-            # ensure frontend doesn't break if they are missing.
-            # For now, let's assume they might not be there for a pure 2-way call.
-            "creator_transcript": call_data.get('creator_transcript'), 
-            "creator_segment_recording_sid": call_data.get('creator_segment_recording_sid')
+    try:
+        print(f"🔍 get_call_details: Fetching call session from Supabase for SID {call_sid}...")
+        fetch_response = supabase_admin_client.table("active_call_sessions").select("*").eq("call_sid", call_sid).maybe_single().execute()
+
+        if not fetch_response.data:
+            print(f"⚠️ get_call_details: Call session not found in Supabase for call_sid: {call_sid}")
+            return jsonify({"success": False, "error": f"Call details not found for call_sid: {call_sid}"}), 404
+
+        call_session = fetch_response.data
+        metadata = call_session.get('metadata', {}) if isinstance(call_session.get('metadata'), dict) else {}
+        
+        details_payload = {
+            "call_sid": call_session.get('call_sid'),
+            "outreach_id": call_session.get('outreach_id'),
+            "status": call_session.get('status'), # Adding status
+            "conversation_history": call_session.get('conversation_history', []),
+            "full_recording_url": metadata.get('twilio_recording_url'), # Mapped from metadata
+            "full_recording_duration": metadata.get('twilio_recording_duration'), # Mapped from metadata
+            "creator_transcript": metadata.get('twilio_transcription_text'), # Mapped from metadata for main transcript
+            "creator_segment_recording_sid": metadata.get('twilio_recording_sid'), # Mapped from metadata, likely main recording SID
+            "metadata": metadata, # Including the whole metadata object for frontend flexibility
+            "created_at": call_session.get('created_at'),
+            "updated_at": call_session.get('updated_at')
         }
-    })
+        
+        print(f"✅ get_call_details: Returning details for SID {call_sid}: {details_payload}")
+        return jsonify({
+            "success": True,
+            "details": details_payload
+        })
+
+    except APIError as e_db_fetch:
+        print(f"Error get_call_details: Supabase DB Error for SID {call_sid}. Message: {e_db_fetch.message}. Details: {e_db_fetch.details if hasattr(e_db_fetch, 'details') else 'N/A'}")
+        return jsonify({"success": False, "error": "Database error fetching call details."}), 500
+    except Exception as e_general_fetch:
+        print(f"Error get_call_details: General DB Error for SID {call_sid}. Error: {str(e_general_fetch)}")
+        return jsonify({"success": False, "error": "Server error fetching call details."}), 500
 
 # --- NEW Endpoint to check call processing status ---
 @app.route('/api/voice/call-progress-status', methods=['GET', 'OPTIONS']) # Add OPTIONS for CORS preflight
 @token_required
 def get_call_progress_status():
-    if request.method == 'OPTIONS':
-        response = app.make_response(jsonify(message="OPTIONS request successful for call-progress-status"))
-        response.status_code = 200
-        return response
+    # OPTIONS preflight is handled by @token_required and Flask-CORS
 
     call_sid = request.args.get('call_sid')
     if not call_sid:
         return jsonify({"success": False, "error": "Missing 'call_sid' in request parameters."}), 400
 
-    call_data = call_artifacts_store.get(call_sid)
+    if not supabase_admin_client:
+        print("Error get_call_progress_status: Supabase admin client not available.")
+        return jsonify({"success": False, "error": "Database client not configured."}), 500
 
-    if not call_data:
-        return jsonify({"success": True, "status": "not_found", "call_sid": call_sid}), 200 # Still success:true, status indicates finding
-    
-    # Check if the full recording URL is present, which implies processing is complete for artifacts.
-    if call_data.get('full_recording_url'):
+    try:
+        print(f"Info get_call_progress_status: Fetching call session for SID {call_sid}...")
+        # Select only the fields needed for status determination
+        fetch_response = supabase_admin_client.table("active_call_sessions") \
+            .select("outreach_id, status, metadata") \
+            .eq("call_sid", call_sid) \
+            .maybe_single() \
+            .execute()
+
+        if not fetch_response.data:
+            print(f"Info get_call_progress_status: Call session not found for SID {call_sid}. Returning status 'not_found'.")
+            return jsonify({"success": True, "status": "not_found", "call_sid": call_sid}), 200
+
+        call_session = fetch_response.data
+        outreach_id = call_session.get('outreach_id')
+        # Ensure metadata is a dict, default to empty dict if None or not a dict
+        metadata = call_session.get('metadata') if isinstance(call_session.get('metadata'), dict) else {}
+        db_status = call_session.get('status', 'unknown') # Main status from DB record
+
+        current_progress_status = "processing" # Default status
+
+        is_recording_processed = metadata.get('twilio_recording_processed_successfully', False)
+        has_recording_url = bool(metadata.get('twilio_recording_url'))
+
+        if is_recording_processed and has_recording_url:
+            current_progress_status = "completed" # Artifacts are ready
+        elif db_status in ['completed', 'failed', 'canceled', 'error_processing_recording']:
+            # If the main call status indicates a terminal state from Twilio or our processing
+            current_progress_status = db_status 
+            if db_status == 'completed' and not (is_recording_processed and has_recording_url):
+                # Twilio call completed, but our artifact processing (recording download/upload) isn't done
+                current_progress_status = "processing_artifacts"
+            # If db_status is 'failed', 'canceled', or 'error_processing_recording', current_progress_status will correctly reflect that.
+        # If db_status is something like 'initiated', 'ringing', 'in-progress', 'waiting_for_user_speech', 
+        # and recording is not yet processed, it remains 'processing'.
+
+        print(f"Info get_call_progress_status: SID {call_sid}, DB Status: '{db_status}', Recording Processed: {is_recording_processed}, URL Present: {has_recording_url}. Determined progress: '{current_progress_status}'")
+        
         return jsonify({
             "success": True, 
-            "status": "completed", 
+            "status": current_progress_status,
             "call_sid": call_sid,
-            "outreach_id": call_data.get('outreach_id')
+            "outreach_id": outreach_id
         }), 200
-    else:
-        return jsonify({
-            "success": True, 
-            "status": "processing", 
-            "call_sid": call_sid,
-            "outreach_id": call_data.get('outreach_id')
-        }), 200
+
+    except APIError as e_db:
+        print(f"Error get_call_progress_status: Supabase DB Error for SID {call_sid}. Message: {e_db.message}")
+        return jsonify({"success": False, "error": "Database error checking call progress.", "call_sid": call_sid}), 500
+    except Exception as e_general:
+        print(f"Error get_call_progress_status: General Error for SID {call_sid}. Error: {str(e_general)}")
+        return jsonify({"success": False, "error": "Server error checking call progress.", "call_sid": call_sid}), 500
 
 # NEW ENDPOINT FOR DOCUMENT EXTRACTION
 @app.route('/api/campaign/extract_from_document', methods=['POST'])
@@ -3534,41 +3681,55 @@ def discover_creators():
 def _process_and_store_twilio_recording(call_sid, recording_sid, recording_url_twilio, outreach_id, recording_duration_str=None):
     """
     Downloads a recording from Twilio, uploads it to Supabase, 
-    and updates the call_artifacts_store.
+    and updates the active_call_sessions table.
     """
-    global call_artifacts_store # To modify it
+    # global call_artifacts_store # REMOVED
     global supabase_admin_client # To use it
     global twilio_client # To use it
 
+    def update_call_session_with_error(error_message_key, error_message_value, current_status="error_processing_recording"):
+        if supabase_admin_client and call_sid:
+            try:
+                existing_session_resp = supabase_admin_client.table("active_call_sessions").select("metadata").eq("call_sid", call_sid).maybe_single().execute()
+                current_metadata = {}
+                if existing_session_resp.data and isinstance(existing_session_resp.data.get('metadata'), dict):
+                    current_metadata = existing_session_resp.data['metadata']
+                elif existing_session_resp.data: # Metadata exists but not a dict
+                    print(f"⚠️ Metadata for CallSid {call_sid} was not a dict. Initializing for error update.")
+                
+                current_metadata[error_message_key] = error_message_value
+                current_metadata['twilio_recording_processed_successfully'] = False
+                
+                update_payload = {
+                    "metadata": current_metadata,
+                    "status": current_status,
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }
+                supabase_admin_client.table("active_call_sessions").update(update_payload).eq("call_sid", call_sid).execute()
+                print(f"💾 Call session for SID {call_sid} updated with error: {error_message_key}='{error_message_value}'")
+            except Exception as e_update_err:
+                print(f"❌❌ Nested error while updating call session with error state for SID {call_sid}: {e_update_err}")
+        else:
+            print(f"❌ Cannot update call session with error for SID {call_sid}: Supabase client or CallSid missing.")
+
     if not supabase_admin_client or not twilio_client:
-        print(f"❌ _process_and_store_twilio_recording: Supabase or Twilio client not available. Cannot process CallSid {call_sid}.")
-        if call_sid and outreach_id: # Ensure outreach_id is present
-            call_artifacts_store[call_sid] = {
-                **call_artifacts_store.get(call_sid, {}),
-                "outreach_id": outreach_id, # Store outreach_id
-                "recording_error": "Client configuration error."
-            }
+        err_msg = "Supabase or Twilio client not available."
+        print(f"❌ _process_and_store_twilio_recording: {err_msg} Cannot process CallSid {call_sid}.")
+        update_call_session_with_error("recording_processing_error", err_msg)
         return
 
     print(f"⚙️ [_process_and_store_twilio_recording] Initiated for CallSid: {call_sid}, RecSid: {recording_sid}, OutreachID: {outreach_id}")
 
-    # The 5-second delay for media processing
     print(f"⏳ Waiting for 5 seconds for Twilio media processing before download for CallSid {call_sid}, RecSid {recording_sid}...")
     time.sleep(5)
 
     try:
         print(f"⬇️ Downloading recording for CallSid {call_sid} (RecSid: {recording_sid}) from Twilio URL: {recording_url_twilio}...")
-        
         recording_url_twilio_mp3 = recording_url_twilio
-        # Ensure the URL ends with .mp3 if we're constructing it (e.g., from API)
-        # Twilio webhooks usually provide the full .mp3 URL for RecordingUrl
         if not recording_url_twilio.lower().endswith('.mp3'):
-            # This logic is more for when we fetch from Twilio API's recordings list,
-            # where the media URL might not have .mp3
-            if ".mp3" not in recording_url_twilio.lower(): # Check if .mp3 is anywhere
+            if ".mp3" not in recording_url_twilio.lower():
                  recording_url_twilio_mp3 = f"{recording_url_twilio}.mp3"
                  print(f"    Adjusted Twilio Recording URL to: {recording_url_twilio_mp3} (appended .mp3)")
-            # If .mp3 is in the middle, or it already ends with it, this won't alter it badly.
 
         recording_content_response = requests.get(
             recording_url_twilio_mp3,
@@ -3578,96 +3739,89 @@ def _process_and_store_twilio_recording(call_sid, recording_sid, recording_url_t
         recording_data = recording_content_response.content
         print(f"✅ Downloaded {len(recording_data)} bytes for CallSid {call_sid}, RecSid {recording_sid}.")
 
-        if not recording_data: # Check if data is empty
+        if not recording_data:
+            err_msg = "Downloaded recording was empty."
             print(f"⚠️ Recording data for CallSid {call_sid}, RecSid {recording_sid} is empty. Aborting Supabase upload.")
-            call_artifacts_store[call_sid] = {
-                 **call_artifacts_store.get(call_sid, {}),
-                "outreach_id": outreach_id,
-                "recording_error": "Downloaded recording was empty."
-            }
+            update_call_session_with_error("recording_processing_error", err_msg)
             return
 
         storage_path = f"{outreach_id}/{call_sid}_{recording_sid}.mp3"
-        print(f"⬆️ Uploading to Supabase bucket \'call-recordings\' at path \'{storage_path}\' for CallSid {call_sid}...")
+        print(f"⬆️ Uploading to Supabase bucket 'call-recordings' at path '{storage_path}' for CallSid {call_sid}...")
         
-        try:
-            # supabase-py v2.x style:
-            upload_response = supabase_admin_client.storage.from_("call-recordings").upload(
-                path=storage_path,
-                file=recording_data, # Pass bytes directly
-                file_options={"cache-control": "3600", "upsert": "true", "content-type": "audio/mpeg"}
-            )
-            print(f"☁️ Supabase upload initiated/completed for CallSid {call_sid}.")
-
-        except APIError as e_supabase_api:
-            print(f"❌ Supabase APIError during upload for CallSid {call_sid}: {e_supabase_api}")
-            error_message_detail = str(e_supabase_api)
-            if hasattr(e_supabase_api, 'message') and e_supabase_api.message:
-                error_message_detail = e_supabase_api.message
-            elif hasattr(e_supabase_api, 'args') and e_supabase_api.args:
-                error_message_detail = str(e_supabase_api.args)
-            print(f"   Supabase APIError details: {error_message_detail}")
-            call_artifacts_store[call_sid] = {
-                **call_artifacts_store.get(call_sid, {}),
-                "outreach_id": outreach_id,
-                "recording_error": f"Supabase API upload error: {error_message_detail}"
-            }
-            return
+        supabase_admin_client.storage.from_("call-recordings").upload(
+            path=storage_path,
+            file=recording_data,
+            file_options={"cache-control": "3600", "upsert": "true", "content-type": "audio/mpeg"}
+        )
+        print(f"☁️ Supabase upload initiated/completed for CallSid {call_sid}.")
 
         public_url_response = supabase_admin_client.storage.from_("call-recordings").get_public_url(storage_path)
-        public_url = public_url_response # In v2, this is the URL string
-        print(f"🔗 Public URL for CallSid {call_sid}: {public_url}")
+        public_url_supabase = public_url_response
+        print(f"🔗 Supabase Storage Public URL for CallSid {call_sid}: {public_url_supabase}")
 
-        current_artifacts = call_artifacts_store.get(call_sid, {})
-        current_artifacts.update({
-            "full_recording_url": public_url,
-            "full_recording_duration": recording_duration_str if recording_duration_str else current_artifacts.get("full_recording_duration"),
-            "outreach_id": outreach_id, 
-            "status": current_artifacts.get("status", "completed"),
-            "recording_processed_successfully": True,
-            "recording_sid": recording_sid # Store the recording SID as well
+        # Fetch existing metadata before updating
+        existing_session_resp = supabase_admin_client.table("active_call_sessions").select("metadata, status").eq("call_sid", call_sid).maybe_single().execute()
+        current_metadata = {}
+        current_status = "call_completed_recorded" # Default status if successfully recorded
+
+        if existing_session_resp.data:
+            if isinstance(existing_session_resp.data.get('metadata'), dict):
+                current_metadata = existing_session_resp.data['metadata']
+            else:
+                 print(f"⚠️ Metadata for CallSid {call_sid} was not a dict. Initializing for recording update.")
+            # Preserve existing status unless we explicitly override it here
+            current_status = existing_session_resp.data.get('status', current_status)
+        else:
+            print(f"⚠️ Could not fetch existing session data for CallSid {call_sid} before updating with recording. Proceeding with defaults.")
+
+        current_metadata.update({
+            "twilio_recording_url": public_url_supabase, # Changed from full_recording_url
+            "twilio_recording_duration": recording_duration_str if recording_duration_str else current_metadata.get("twilio_recording_duration"),
+            "twilio_recording_sid": recording_sid,
+            "twilio_recording_processed_successfully": True,
+            "recording_processing_error": None # Clear any previous error
         })
-        call_artifacts_store[call_sid] = current_artifacts
-        print(f"💾 Artifact store for CallSid {call_sid} updated with Supabase recording URL. Supabase Outreach ID: {outreach_id}")
+        
+        update_payload = {
+            "metadata": current_metadata,
+            "status": current_status, # Keep existing status or set to completed_recorded
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
 
-        # Log the voice call summary to Supabase conversation_messages table
-        if outreach_id and public_url:
+        supabase_admin_client.table("active_call_sessions").update(update_payload).eq("call_sid", call_sid).execute()
+        print(f"💾 Active call session for CallSid {call_sid} updated with Supabase recording URL. Supabase Outreach ID: {outreach_id}")
+
+        if outreach_id and public_url_supabase:
+            user_id_for_message = existing_session_resp.data.get('user_id') if existing_session_resp.data else None
             add_supabase_conversation_message(
                 outreach_id=outreach_id,
                 content=f"Call recording available. Duration: {recording_duration_str if recording_duration_str else 'N/A'}.",
                 sender='system',
-                message_type='voice_call_summary',
+                message_type='call_recording',
                 metadata={
-                    'call_sid': call_sid,
-                    'full_recording_url': public_url,
-                    'full_recording_duration': recording_duration_str if recording_duration_str else "N/A",
-                    'recording_sid': recording_sid
+                    'call_sid': call_sid, 
+                    'recording_sid': recording_sid, 
+                    'recording_url': public_url_supabase, 
+                    'duration': recording_duration_str
                 },
-                user_id=None # System-generated message, no specific user
+                user_id=user_id_for_message
             )
-        else:
-            print(f"⚠️ Cannot log voice_call_summary to Supabase: outreach_id ('{outreach_id}') or public_url ('{public_url}') is missing.")
-    
-    except requests.exceptions.HTTPError as e_http:
-        print(f"❌ HTTPError during Twilio recording download for CallSid {call_sid} (Supabase Outreach: {outreach_id}): {e_http}. Response: {e_http.response.text if e_http.response else 'No response body'}")
-        call_artifacts_store[call_sid] = {
-            **call_artifacts_store.get(call_sid, {}),
-            "outreach_id": outreach_id,
-            "recording_error": f"Twilio download failed: {str(e_http)}"
-        }
-    except Exception as e_generic:
-        print(f"❌ Generic error in _process_and_store_twilio_recording for CallSid {call_sid} (Supabase Outreach: {outreach_id}): {type(e_generic).__name__} - {e_generic}")
+
+    except APIError as e_supabase_outer:
+        err_msg = f"Supabase APIError during recording processing for CallSid {call_sid}: {e_supabase_outer.message}"
+        print(f"❌ {err_msg}")
+        update_call_session_with_error("recording_processing_error", err_msg)
+    except requests.exceptions.RequestException as e_requests:
+        err_msg = f"Network error downloading recording for CallSid {call_sid}: {e_requests}"
+        print(f"❌ {err_msg}")
+        update_call_session_with_error("recording_processing_error", err_msg)
+    except Exception as e_general:
+        err_msg = f"General error in _process_and_store_twilio_recording for CallSid {call_sid}: {str(e_general)}"
+        print(f"❌ {err_msg}")
         import traceback
         traceback.print_exc()
-        if call_sid and outreach_id:
-             call_artifacts_store[call_sid] = {
-                **call_artifacts_store.get(call_sid, {}),
-                "outreach_id": outreach_id,
-                "recording_error": f"Generic recording processing error: {type(e_generic).__name__} - {str(e_generic)}"
-            }
-# --- END NEW HELPER FUNCTION ---
+        update_call_session_with_error("recording_processing_error", err_msg)
 
-# Helper function to add messages to Supabase conversation_messages table
 def add_supabase_conversation_message(outreach_id: str, content: str, sender: str, message_type: str, metadata: dict = None, user_id: str = None): # MODIFIED: Added user_id parameter
     """
     Adds a message to the Supabase conversation_messages table.
