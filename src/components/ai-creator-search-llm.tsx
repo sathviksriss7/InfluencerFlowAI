@@ -115,7 +115,7 @@ const clearChatHistory = () => {
 };
 
 interface AICreatorSearchLLMProps {
-  campaignId: string;
+  campaignId?: string;
 }
 
 export default function AICreatorSearchLLM({ campaignId }: AICreatorSearchLLMProps) {
@@ -417,8 +417,8 @@ export default function AICreatorSearchLLM({ campaignId }: AICreatorSearchLLMPro
 
       {/* Input */}
       <div className="p-4 border-t border-gray-200">
-        {/* Add Outreach Manager Button when there are search results */}
-        {getCurrentSearchResults().length > 0 && (
+        {/* Add Outreach Manager Button when there are search results AND a campaignId is present */}
+        {getCurrentSearchResults().length > 0 && campaignId && (
           <div className="mb-3 p-3 bg-gradient-to-r from-green-50 to-blue-50 border border-green-200 rounded-lg">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -432,7 +432,7 @@ export default function AICreatorSearchLLM({ campaignId }: AICreatorSearchLLMPro
                     📧 Ready to reach out to {getCurrentSearchResults().length} creators?
                   </p>
                   <p className="text-xs text-gray-600">
-                    Use AI to generate personalized outreach emails and negotiate deals
+                    Use AI to generate personalized outreach emails and negotiate deals for campaign: {campaignId}
                   </p>
                 </div>
               </div>
@@ -471,7 +471,7 @@ export default function AICreatorSearchLLM({ campaignId }: AICreatorSearchLLMPro
       </div>
 
       {/* AI Outreach Manager Modal */}
-      {showOutreachManager && (
+      {showOutreachManager && campaignId && (
         <AIOutreachManager
           searchResults={getCurrentSearchResults()}
           onClose={() => setShowOutreachManager(false)}
@@ -690,11 +690,12 @@ function LLMCreatorCard({ match, showDetails, queryType }: LLMCreatorCardProps) 
   };
 
   const calculateCostPerFollower = () => {
+    if (creator.metrics.followers === 0) return 'N/A'; // Avoid division by zero
     return (creator.rates.post / creator.metrics.followers * 1000).toFixed(2);
   };
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg p-3">
+    <div className="bg-white border border-gray-200 rounded-lg p-3 hover:shadow-md transition-shadow">
       <div className="flex items-start gap-3">
         <img
           src={creator.avatar}
@@ -706,17 +707,17 @@ function LLMCreatorCard({ match, showDetails, queryType }: LLMCreatorCardProps) 
             <div className="flex items-center gap-2">
               <Link 
                 to={`/creators/${creator.id}`}
-                className="font-medium text-gray-900 hover:text-purple-600 transition-colors"
+                className="font-medium text-gray-900 hover:text-purple-600 transition-colors truncate"
               >
                 {creator.name}
               </Link>
               {creator.verified && (
-                <svg className="w-4 h-4 text-blue-500" fill="currentColor" viewBox="0 0 24 24">
+                <svg className="w-4 h-4 text-blue-500 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
                 </svg>
               )}
             </div>
-            <div className="text-right">
+            <div className="text-right flex-shrink-0">
               <div className={`text-sm font-bold ${getRecommendationColor(recommendationLevel)}`}>
                 {relevanceScore}% match
               </div>
@@ -726,7 +727,7 @@ function LLMCreatorCard({ match, showDetails, queryType }: LLMCreatorCardProps) 
             </div>
           </div>
           
-          <div className="text-xs text-gray-600 mb-2">
+          <div className="text-xs text-gray-600 mb-2 truncate">
             {creator.username} • {creator.platform} • {creator.metrics.followers.toLocaleString()} followers
           </div>
           
@@ -773,31 +774,31 @@ function LLMCreatorCard({ match, showDetails, queryType }: LLMCreatorCardProps) 
           )}
           
           {showDetails && (
-            <div className="space-y-2">
+            <div className="space-y-2 mt-2 pt-2 border-t border-gray-100">
               {/* Strengths */}
               <div>
                 <h5 className="text-xs font-medium text-gray-700 mb-1">Strengths:</h5>
-                <ul className="text-xs text-gray-600 space-y-0.5">
+                <ul className="text-xs text-gray-600 space-y-0.5 list-disc list-inside">
                   {strengths.map((strength, index) => (
-                    <li key={index}>• {strength}</li>
+                    <li key={index}>{strength}</li>
                   ))}
                 </ul>
               </div>
               
               {/* Concerns */}
               {concerns && concerns.length > 0 && (
-                <div className="bg-orange-50 rounded p-2">
+                <div className="bg-orange-50 rounded p-2 mt-2">
                   <h5 className="text-xs font-medium text-orange-700 mb-1">Considerations:</h5>
-                  <ul className="text-xs text-orange-600 space-y-0.5">
+                  <ul className="text-xs text-orange-600 space-y-0.5 list-disc list-inside">
                     {concerns.map((concern, index) => (
-                      <li key={index}>• {concern}</li>
+                      <li key={index}>{concern}</li>
                     ))}
                   </ul>
                 </div>
               )}
               
               {/* Quick Stats */}
-              <div className="grid grid-cols-3 gap-2 text-xs">
+              <div className="grid grid-cols-3 gap-2 text-xs pt-2 mt-2 border-t border-gray-100">
                 <div className="text-center bg-gray-50 rounded p-1">
                   <div className="font-medium text-gray-900">{creator.metrics.engagementRate}%</div>
                   <div className="text-gray-600">Engagement</div>
@@ -817,4 +818,4 @@ function LLMCreatorCard({ match, showDetails, queryType }: LLMCreatorCardProps) 
       </div>
     </div>
   );
-} 
+}
