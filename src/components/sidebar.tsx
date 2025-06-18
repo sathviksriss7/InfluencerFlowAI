@@ -1,4 +1,6 @@
 import { Link, useLocation } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { outreachStorageService, type OutreachSummary } from '../services/outreach-storage';
 
 interface SidebarProps {
   className?: string;
@@ -6,6 +8,32 @@ interface SidebarProps {
 
 export default function Sidebar({ className = "" }: SidebarProps) {
   const location = useLocation();
+  const [quickStats, setQuickStats] = useState<OutreachSummary | null>(null);
+  const [isLoadingStats, setIsLoadingStats] = useState(true);
+
+  useEffect(() => {
+    const fetchQuickStats = async () => {
+      setIsLoadingStats(true);
+      try {
+        const summary = await outreachStorageService.getOutreachSummary();
+        setQuickStats(summary);
+      } catch (error) {
+        console.error("Error fetching quick stats for sidebar:", error);
+        setQuickStats({
+            totalOutreaches: 0,
+            statusCounts: {},
+            recentOutreaches: [],
+            successRate: 0,
+            totalCreators: 0,
+            activeCampaigns: 0,
+        });
+      } finally {
+        setIsLoadingStats(false);
+      }
+    };
+
+    fetchQuickStats();
+  }, []);
 
   const navigationItems = [
     {
@@ -128,11 +156,15 @@ export default function Sidebar({ className = "" }: SidebarProps) {
           <div className="space-y-3">
             <div className="bg-white p-3 rounded-lg border">
               <div className="text-sm text-gray-500">Active Campaigns</div>
-              <div className="text-lg font-semibold text-gray-900">12</div>
+              <div className="text-lg font-semibold text-gray-900">
+                {isLoadingStats ? '...' : quickStats?.activeCampaigns ?? '0'}
+              </div>
             </div>
             <div className="bg-white p-3 rounded-lg border">
               <div className="text-sm text-gray-500">Total Creators</div>
-              <div className="text-lg font-semibold text-gray-900">1,247</div>
+              <div className="text-lg font-semibold text-gray-900">
+                {isLoadingStats ? '...' : quickStats?.totalCreators ?? '0'}
+              </div>
             </div>
           </div>
         </div>

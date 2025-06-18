@@ -145,6 +145,8 @@ export interface OutreachSummary {
   statusCounts: Record<string, number>;
   recentOutreaches: StoredOutreach[];
   successRate: number;
+  totalCreators?: number; // Added for unique creators count
+  activeCampaigns?: number; // Added for active campaigns count
 }
 
 // --- Helper function to map database message record to ConversationMessage union type ---
@@ -556,42 +558,123 @@ class OutreachStorageService {
    * Get outreach summary for dashboard (this will need significant refactoring for Supabase)
    */
   async getOutreachSummary(): Promise<OutreachSummary> {
-    // This is a simplified example. A real implementation might involve more complex queries or multiple queries.
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error("User not authenticated");
+      if (!user) throw new Error("User not authenticated for outreach summary");
 
-      const { data: outreaches, error } = await supabase
+      // Fetch all outreaches for status counts and total
+      const { data: allUserOutreaches, error: allOutreachesError } = await supabase
         .from('outreaches')
-        .select('status, created_at')
+        .select('status, created_at, creator_id') // Added creator_id for distinct count
         .eq('user_id', user.id);
 
-      if (error) throw error;
-      if (!outreaches) return { totalOutreaches: 0, statusCounts: {}, recentOutreaches: [], successRate: 0 };
+      if (allOutreachesError) {
+        console.error("Error fetching outreaches for summary (counts/total/creators):", allOutreachesError);
+        throw allOutreachesError;
+      }
+      if (!allUserOutreaches) {
+        return { totalOutreaches: 0, statusCounts: {}, recentOutreaches: [], successRate: 0, totalCreators: 0, activeCampaigns: 0 };
+      }
 
-      const totalOutreaches = outreaches.length;
+      const totalOutreaches = allUserOutreaches.length;
       const statusCounts: Record<string, number> = {};
-      outreaches.forEach(o => {
+      // const uniqueCreatorIds = new Set<string>(); // No longer needed for total creators from outreaches
+
+      allUserOutreaches.forEach(o => {
         statusCounts[o.status] = (statusCounts[o.status] || 0) + 1;
+        // if (o.creator_id) { // We will get total creators from the 'creators' table directly
+        //   uniqueCreatorIds.add(o.creator_id);
+        // }
       });
+      // const totalCreators = uniqueCreatorIds.size; // This is now count of *contacted* unique creators
+
+      // Fetch TOTAL CREATORS count (from the creators table)
+      let totalCreators = 0;
+      try {
+        // Assuming a global 'creators' table. If creators are user-specific and that should be reflected here,
+        // add .eq('user_id', user.id) if applicable to your 'creators' table schema.
+        const { count, error: creatorsError } = await supabase
+          .from('creators') // Assuming your main creators table is named 'creators'
+          .select('id', { count: 'exact', head: true });
+
+        if (creatorsError) {
+          console.error("Error fetching total creators count:", creatorsError);
+        } else {
+          totalCreators = count || 0;
+        }
+      } catch (creatorsEx) {
+        console.error("Exception fetching total creators count:", creatorsEx);
+      }
       
-      // For recent outreaches, you'd typically fetch more complete data and sort.
-      // This is a placeholder for brevity.
-      const recent = await this.getAllOutreaches(); // Potentially inefficient for just a summary
-      const recentOutreaches = recent.slice(0, 5); 
+      // Fetch recent outreaches
+      const selectFieldsForRecent = 'id, user_id, campaign_id, creator_id, creator_name, creator_avatar, creator_platform, subject, body, status, confidence, reasoning, key_points, next_steps, brand_name, campaign_context, created_at, last_contact, current_offer, notes';
+      const { data: recentOutreachRecords, error: recentOutreachesError } = await supabase
+        .from('outreaches')
+        .select(selectFieldsForRecent)
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false })
+        .limit(5);
+
+      if (recentOutreachesError) {
+        console.error("Error fetching recent outreaches for summary:", recentOutreachesError);
+      }
+      const recentOutreaches: StoredOutreach[] = (recentOutreachRecords || []).map(record => ({
+        id: record.id,
+        user_id: record.user_id,
+        campaign_id: record.campaign_id,
+        creatorId: record.creator_id,
+        creatorName: record.creator_name,
+        creatorAvatar: record.creator_avatar,
+        creatorPlatform: record.creator_platform,
+        subject: record.subject,
+        body: record.body,
+        status: record.status,
+        confidence: record.confidence,
+        reasoning: record.reasoning,
+        keyPoints: record.key_points || [],
+        nextSteps: record.next_steps || [],
+        brandName: record.brand_name,
+        campaignContext: record.campaign_context,
+        createdAt: new Date(record.created_at),
+        lastContact: new Date(record.last_contact),
+        currentOffer: record.current_offer,
+        notes: record.notes,
+        conversationHistory: [], 
+      }));
+
+      // Fetch active campaigns count
+      let activeCampaigns = 0;
+      try {
+        const { count, error: campaignsError } = await supabase
+          .from('campaigns') // Assuming your campaigns table is named 'campaigns'
+          .select('id', { count: 'exact', head: true })
+          .eq('user_id', user.id)
+          .eq('status', 'active'); // Assuming 'active' is the status for active campaigns
+
+        if (campaignsError) {
+          console.error("Error fetching active campaigns count:", campaignsError);
+          // Don't throw, allow summary to proceed, activeCampaigns will be 0 or previous value
+        } else {
+          activeCampaigns = count || 0;
+        }
+      } catch (campaignsEx) {
+        console.error("Exception fetching active campaigns count:", campaignsEx);
+      }
 
       const successfulDeals = statusCounts['deal_closed'] || 0;
-      const successRate = totalOutreaches > 0 ? (successfulDeals / totalOutreaches) * 100 : 0;
+      const successRate = totalOutreaches > 0 ? Math.round((successfulDeals / totalOutreaches) * 100) : 0;
 
       return {
         totalOutreaches,
         statusCounts,
-        recentOutreaches, // This would be populated more selectively in a real app
+        recentOutreaches,
         successRate,
+        totalCreators, // Now sourced from 'creators' table count
+        activeCampaigns,
       };
     } catch (e) {
       console.error("Error fetching outreach summary:", e);
-      return { totalOutreaches: 0, statusCounts: {}, recentOutreaches: [], successRate: 0 };
+      return { totalOutreaches: 0, statusCounts: {}, recentOutreaches: [], successRate: 0, totalCreators: 0, activeCampaigns: 0 };
     }
   }
 
