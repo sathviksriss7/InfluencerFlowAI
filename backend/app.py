@@ -140,33 +140,51 @@ NICHE_MAP = {
 def token_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        print(f"🕵️ ENTERING @token_required for endpoint: {request.endpoint}, method: {request.method}") # DEBUG
         if request.method == 'OPTIONS':
+            print("🕵️ @token_required: OPTIONS request, passing through.") # DEBUG
             # Allow OPTIONS requests to pass through. Flask-CORS will handle them.
             return f(*args, **kwargs)
 
         token = None
         if "Authorization" in request.headers:
             auth_header = request.headers["Authorization"]
+            print(f"🕵️ @token_required: Authorization header found: {auth_header[:30]}...") # DEBUG
             try:
                 token = auth_header.split(" ")[1] # Bearer <token>
             except IndexError:
+                print("🕵️ @token_required: Malformed Authorization header.") # DEBUG
                 return jsonify({"success": False, "error": "Malformed Authorization header"}), 401
+        else:
+            print("🕵️ @token_required: Authorization header MISSING.") # DEBUG
+
 
         if not token:
+            print("🕵️ @token_required: Token is missing after checks.") # DEBUG
             return jsonify({"success": False, "error": "Authorization token is missing"}), 401
 
         if not supabase_client:
+            print("🕵️ @token_required: Supabase client not initialized.") # DEBUG
             return jsonify({"success": False, "error": "Supabase client not initialized on backend for token validation."}), 500
 
+        print(f"🕵️ @token_required: Attempting to validate token: {token[:20]}...") # DEBUG
         try:
             user_response = supabase_client.auth.get_user(token)
-            print(f"🔑 Token validated for user: {user_response.user.id if user_response and user_response.user else 'Unknown'}")
-            request.current_user = user_response.user
+            # Ensure user_response and user_response.user are not None before accessing properties
+            user_id_for_log = 'Unknown'
+            if user_response and hasattr(user_response, 'user') and user_response.user and hasattr(user_response.user, 'id'):
+                user_id_for_log = user_response.user.id
+            
+            print(f"🔑 @token_required: Token validated for user: {user_id_for_log}") # DEBUG
+            request.current_user = user_response.user if user_response else None # Ensure request.current_user can be None
             request.raw_jwt = token # Store raw token on request
         except Exception as e:
-            print(f"❌ Token validation error: {e}")
-            return jsonify({"success": False, "error": f"Invalid or expired token: {e}"}), 401
+            print(f"❌ @token_required: Token validation error: {type(e).__name__} - {str(e)}") # DEBUG
+            import traceback
+            traceback.print_exc() # Print full traceback for this error
+            return jsonify({"success": False, "error": f"Invalid or expired token: {str(e)}"}), 401
         
+        print(f"🕵️ @token_required: Proceeding to execute wrapped function: {f.__name__}") # DEBUG
         return f(*args, **kwargs)
     return decorated_function
 
