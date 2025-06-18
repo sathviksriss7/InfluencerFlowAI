@@ -51,7 +51,15 @@ const fetchCampaignsFromAPI = async (token: string | null): Promise<Campaign[]> 
     throw new Error("User not authenticated. Please log in.");
   }
 
-  const response = await fetch('/api/campaigns', {
+  const backendBaseUrl = import.meta.env.VITE_BACKEND_API_URL;
+  if (!backendBaseUrl) {
+    console.error("VITE_BACKEND_API_URL is not set in environment variables.");
+    throw new Error("Backend API URL is not configured. Please contact support.");
+  }
+  const apiUrl = `${backendBaseUrl}/api/campaigns`;
+  console.log("Attempting to fetch campaigns from:", apiUrl); // DEBUG: Log the full URL
+
+  const response = await fetch(apiUrl, {
     headers: {
       'Authorization': `Bearer ${token}`,
       'Content-Type': 'application/json'
