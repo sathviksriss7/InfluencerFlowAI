@@ -60,6 +60,15 @@ export interface CallLogMetadata extends BaseCallMetadata {
   // 'content' field of the message can hold the log message itself
 }
 
+// Metadata for call recording messages
+export interface CallRecordingMetadata extends BaseCallMetadata {
+  // Currently, the content field of the message holds "Call recording available. Duration: ..."
+  // If backend adds specific metadata fields like recording_url or duration here, define them.
+  // For now, call_sid from BaseCallMetadata is sufficient.
+  recording_url?: string; // Optional: if backend provides direct link in this message type
+  duration?: string;    // Optional: e.g., "35s"
+}
+
 // --- ConversationMessage Discriminated Union ---
 interface MessageBase {
   id: string;
@@ -101,6 +110,11 @@ export type VoiceCallSummaryMessage = MessageBase & {
   metadata: VoiceCallSummaryMetadata;
 };
 
+export type CallRecordingMessage = MessageBase & {
+  type: 'call_recording';
+  metadata: CallRecordingMetadata; // Using the new metadata type
+};
+
 // The main ConversationMessage type is now a union of all specific message types
 export type ConversationMessage =
   | GenericMessage
@@ -108,7 +122,8 @@ export type ConversationMessage =
   | CallLogMessage
   | VoiceTranscriptMessage
   | CallExchangeMessage
-  | VoiceCallSummaryMessage;
+  | VoiceCallSummaryMessage
+  | CallRecordingMessage; // Added CallRecordingMessage
 
 export interface StoredOutreach {
   id: string; // Will be Supabase generated UUID
@@ -164,6 +179,7 @@ function mapDbMessageToConversationMessage(dbMsg: any): ConversationMessage {
   };
 
   // Discriminate based on type
+  // Explicitly list all known types in the switch
   switch (dbMsg.type as ConversationMessage['type']) {
     case 'negotiation':
       return { ...baseMessage, type: 'negotiation', metadata: dbMsg.metadata as AiNegotiationMetadata };
@@ -175,6 +191,8 @@ function mapDbMessageToConversationMessage(dbMsg: any): ConversationMessage {
       return { ...baseMessage, type: 'call_exchange', metadata: dbMsg.metadata as CallExchangeMetadata };
     case 'voice_call_summary':
       return { ...baseMessage, type: 'voice_call_summary', metadata: dbMsg.metadata as VoiceCallSummaryMetadata };
+    case 'call_recording': // Added case for call_recording
+      return { ...baseMessage, type: 'call_recording', metadata: dbMsg.metadata as CallRecordingMetadata };
     case 'outreach':
     case 'response':
     case 'update':
@@ -182,8 +200,9 @@ function mapDbMessageToConversationMessage(dbMsg: any): ConversationMessage {
     default:
       // Fallback for any unhandled or new types - treat as generic.
       // Consider logging a warning here for unexpected types.
-      console.warn(`Unknown message type "${dbMsg.type}" encountered. Treating as generic.`);
-      return { ...baseMessage, type: dbMsg.type as 'outreach', metadata: dbMsg.metadata }; // Default to 'outreach' or a more generic base type
+      const unknownType: string = dbMsg.type;
+      console.warn(`Unknown message type "${unknownType}" encountered in mapDbMessageToConversationMessage. Treating as generic 'update'.`);
+      return { ...baseMessage, type: 'update', metadata: dbMsg.metadata }; // Default to 'update' for safety
   }
 }
 

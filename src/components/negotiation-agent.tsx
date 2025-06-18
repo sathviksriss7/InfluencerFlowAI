@@ -5,7 +5,12 @@ import {
   type PollingState,
   type NegotiationInsight
 } from '../services/ai-agents';
-import { type StoredOutreach, type ConversationMessage, type VoiceCallSummaryMetadata } from '../services/outreach-storage';
+import { 
+  type StoredOutreach, 
+  type ConversationMessage, 
+  type VoiceCallSummaryMetadata,
+  type CallRecordingMetadata
+} from '../services/outreach-storage';
 // Supabase import removed as it was not used in the backup component's logic
 
 interface NegotiationState {
@@ -394,20 +399,44 @@ export const NegotiationAgentComponent: React.FC = () => {
             {servicePollingState.isPolling && servicePollingState.activePollingCallSid && " (Currently Polling)"}
           </p>
         }
+        {/* Display Status Message if available */}
         {servicePollingState.statusMessage && (
-          <p className={`text-sm mt-2 ${servicePollingState.errorMessage ? 'text-red-600' : 'text-green-600'}`}>
-            <strong>Status:</strong> {servicePollingState.statusMessage}
+          <p className='text-sm mt-2 text-green-600'>
+            <strong>Service Status:</strong> {servicePollingState.statusMessage}
           </p>
         )}
-        {servicePollingState.errorMessage && (
-          <p className="text-sm text-red-600 mt-1">
-            <strong>Error:</strong> 
-            {(servicePollingState.errorMessage.includes("Unexpected token") || servicePollingState.errorMessage.includes("JSON") || servicePollingState.errorMessage.includes("is not valid JSON"))
-              ? "Error fetching or parsing call details. The backend may have returned an unexpected response (e.g., HTML error page instead of JSON). Please check backend logs."
-              : servicePollingState.errorMessage
-            }
-          </p>
-        )}
+        {/* Display Error/Info Message from servicePollingState.errorMessage */}
+        {servicePollingState.errorMessage && (() => {
+          let messagePrefix = "Service Error:";
+          let messageColor = "text-red-600";
+
+          if (servicePollingState.errorMessage.includes("Unexpected token") || 
+              servicePollingState.errorMessage.includes("JSON") || 
+              servicePollingState.errorMessage.includes("is not valid JSON")) {
+            messagePrefix = "Fetch Error:";
+            servicePollingState.errorMessage = "Error parsing call details. Backend might have returned non-JSON. Check logs.";
+          } else if (servicePollingState.errorMessage.startsWith("Call details fetched, but its effective outreach ID")) {
+            messagePrefix = "Data Note:";
+            messageColor = "text-orange-600";
+            // Keep original message: servicePollingState.errorMessage = "Call details were fetched, but the associated outreach record was not found locally. History might not be saved correctly.";
+          } else if (servicePollingState.errorMessage.includes("Call artifacts not found")) {
+            messagePrefix = "Fetch Info:";
+            messageColor = "text-orange-600";
+            // Keep original message: servicePollingState.errorMessage = "Could not find call artifacts on the backend for the given Call SID.";
+          } else if (servicePollingState.errorMessage.startsWith("Call ") && servicePollingState.errorMessage.includes(" status: ")) {
+            messagePrefix = "Call Status:";
+            messageColor = "text-blue-600"; // Or a neutral/info color
+          } else if (servicePollingState.errorMessage.startsWith("Polling for ") && servicePollingState.errorMessage.includes(" timed out")) {
+            messagePrefix = "Polling Info:";
+            messageColor = "text-orange-600";
+          }
+
+          return (
+            <p className={`text-sm mt-1 ${messageColor}`}>
+              <strong>{messagePrefix}</strong> {servicePollingState.errorMessage}
+            </p>
+          );
+        })()}
         {servicePollingState.fetchedArtifactsForLastCall && (
             <div className="mt-3 p-3 bg-yellow-100 rounded border border-yellow-200">
                 <h5 className="text-sm font-medium text-yellow-800">
@@ -729,18 +758,19 @@ export const NegotiationAgentComponent: React.FC = () => {
                           <h6 className="font-semibold text-gray-700 mb-2">Other Messages:</h6>
                           <div className="max-h-60 overflow-y-auto bg-gray-50 p-2 rounded border space-y-2">
                             {displayHistory.generalMessages.map(msg => {
-                              // Use type assertion for 'call_recording' case
-                              if ((msg as any).type === 'call_recording') {
-                                const callRecMsg = msg as any; // Treat as any to access properties
+                              // Type check for 'call_recording' should now work directly
+                              if (msg.type === 'call_recording') {
+                                // const callRecMsg = msg as any; // No longer needed
                                 return (
-                                  <div key={callRecMsg.id} className="p-2 border-b last:border-b-0 text-xs bg-purple-50 border-purple-200 rounded">
+                                  <div key={msg.id} className="p-2 border-b last:border-b-0 text-xs bg-purple-50 border-purple-200 rounded">
                                     <p className="font-semibold text-purple-700">
-                                      SYSTEM ({new Date(callRecMsg.timestamp).toLocaleString()}):
+                                      SYSTEM ({new Date(msg.timestamp).toLocaleString()}):
                                     </p>
-                                    <p className="whitespace-pre-wrap">{callRecMsg.content}</p>
-                                    {callRecMsg.metadata?.recording_url && (
+                                    <p className="whitespace-pre-wrap">{msg.content}</p>
+                                    {/* Cast metadata to CallRecordingMetadata if needed, or check its existence based on updated type */}
+                                    {(msg.metadata as CallRecordingMetadata)?.recording_url && (
                                       <a 
-                                        href={callRecMsg.metadata.recording_url} 
+                                        href={(msg.metadata as CallRecordingMetadata).recording_url} 
                                         target="_blank" 
                                         rel="noopener noreferrer"
                                         className="text-blue-500 hover:text-blue-700 underline"
