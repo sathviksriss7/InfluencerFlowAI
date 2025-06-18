@@ -400,7 +400,13 @@ export const NegotiationAgentComponent: React.FC = () => {
           </p>
         )}
         {servicePollingState.errorMessage && (
-          <p className="text-sm text-red-600 mt-1"><strong>Error:</strong> {servicePollingState.errorMessage}</p>
+          <p className="text-sm text-red-600 mt-1">
+            <strong>Error:</strong> 
+            {(servicePollingState.errorMessage.includes("Unexpected token") || servicePollingState.errorMessage.includes("JSON") || servicePollingState.errorMessage.includes("is not valid JSON"))
+              ? "Error fetching or parsing call details. The backend may have returned an unexpected response (e.g., HTML error page instead of JSON). Please check backend logs."
+              : servicePollingState.errorMessage
+            }
+          </p>
         )}
         {servicePollingState.fetchedArtifactsForLastCall && (
             <div className="mt-3 p-3 bg-yellow-100 rounded border border-yellow-200">
@@ -722,15 +728,40 @@ export const NegotiationAgentComponent: React.FC = () => {
                         <div className="mt-4 pt-3 border-t">
                           <h6 className="font-semibold text-gray-700 mb-2">Other Messages:</h6>
                           <div className="max-h-60 overflow-y-auto bg-gray-50 p-2 rounded border space-y-2">
-                            {displayHistory.generalMessages.map(msg => (
-                              <div key={msg.id} className="p-2 border-b last:border-b-0 text-xs">
-                                <p className={`font-semibold ${msg.sender === 'creator' ? 'text-green-600' : msg.sender === 'ai' ? 'text-blue-600' : 'text-purple-600'}`}>
-                                  {msg.sender.toUpperCase()} ({new Date(msg.timestamp).toLocaleString()}):
-                                </p>
-                                <p className="whitespace-pre-wrap">{msg.content}</p>
-                                {/* You could render other metadata for general messages if needed */}
-                              </div>
-                            ))}
+                            {displayHistory.generalMessages.map(msg => {
+                              // Use type assertion for 'call_recording' case
+                              if ((msg as any).type === 'call_recording') {
+                                const callRecMsg = msg as any; // Treat as any to access properties
+                                return (
+                                  <div key={callRecMsg.id} className="p-2 border-b last:border-b-0 text-xs bg-purple-50 border-purple-200 rounded">
+                                    <p className="font-semibold text-purple-700">
+                                      SYSTEM ({new Date(callRecMsg.timestamp).toLocaleString()}):
+                                    </p>
+                                    <p className="whitespace-pre-wrap">{callRecMsg.content}</p>
+                                    {callRecMsg.metadata?.recording_url && (
+                                      <a 
+                                        href={callRecMsg.metadata.recording_url} 
+                                        target="_blank" 
+                                        rel="noopener noreferrer"
+                                        className="text-blue-500 hover:text-blue-700 underline"
+                                      >
+                                        Listen to associated recording
+                                      </a>
+                                    )}
+                                  </div>
+                                );
+                              }
+                              // Original rendering for other general messages
+                              return (
+                                <div key={msg.id} className="p-2 border-b last:border-b-0 text-xs">
+                                  <p className={`font-semibold ${msg.sender === 'creator' ? 'text-green-600' : msg.sender === 'ai' ? 'text-blue-600' : 'text-purple-600'}`}>
+                                    {msg.sender.toUpperCase()} ({new Date(msg.timestamp).toLocaleString()}):
+                                  </p>
+                                  <p className="whitespace-pre-wrap">{msg.content}</p>
+                                  {/* You could render other metadata for general messages if needed */}
+                                </div>
+                              );
+                            })}
                           </div>
                         </div>
                       )}

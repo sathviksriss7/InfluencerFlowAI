@@ -117,6 +117,21 @@ const _serviceFetchAndStoreArtifacts = async (callSidToFetch: string, originalOu
     const data = await response.json();
 
     if (data.success && data.details) {
+      // Ensure timestamps in conversation_history are serializable (strings)
+      if (data.details.conversation_history && Array.isArray(data.details.conversation_history)) {
+        data.details.conversation_history.forEach((message: any) => {
+          if (message && message.timestamp && !(typeof message.timestamp === 'string')) {
+            try {
+              message.timestamp = new Date(message.timestamp).toISOString();
+            } catch (e) {
+              console.warn(`[ServicePolling] Could not convert timestamp to ISOString for message:`, message, e);
+              // If conversion fails, leave it as is or set to a default string
+              message.timestamp = String(message.timestamp);
+            }
+          }
+        });
+      }
+
       serviceCurrentPollingState.fetchedArtifactsForLastCall = data.details as CallArtifactsForService;
       serviceCurrentPollingState.statusMessage = "Call details fetched.";
 
