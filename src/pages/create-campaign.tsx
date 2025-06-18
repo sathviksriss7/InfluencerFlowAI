@@ -430,7 +430,16 @@ export default function CreateCampaign() {
     };
 
     try {
-      const response = await fetch('/api/campaigns', {
+      const backendBaseUrl = import.meta.env.VITE_BACKEND_API_URL;
+      if (!backendBaseUrl) {
+        toast.error("Backend API URL is not configured.");
+        setIsSubmitting(false);
+        return;
+      }
+      const apiUrl = `${backendBaseUrl}/api/campaigns`;
+      console.log("Attempting to create campaign (POST request) to:", apiUrl); // DEBUG
+
+      const response = await fetch(apiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -510,17 +519,13 @@ export default function CreateCampaign() {
                     {step.number}
                   </div>
                   <div className="ml-3 hidden sm:block">
-                    <p className={`text-sm font-medium ${
-                      currentStep >= step.number ? 'text-blue-600' : 'text-gray-500'
-                    }`}>
+                    <p className={`text-sm font-medium ${currentStep >= step.number ? 'text-blue-600' : 'text-gray-500'}`}>
                       {step.title}
                     </p>
                     <p className="text-xs text-gray-500">{step.description}</p>
                   </div>
                   {index < steps.length - 1 && (
-                    <div className={`ml-4 w-16 h-1 ${
-                      currentStep > step.number ? 'bg-blue-600' : 'bg-gray-200'
-                    }`} />
+                    <div className={`ml-4 w-16 h-1 ${currentStep > step.number ? 'bg-blue-600' : 'bg-gray-200'}`} />
                   )}
                 </div>
               ))}
@@ -547,11 +552,9 @@ export default function CreateCampaign() {
               >
                 Previous
               </button>
-
               <div className="text-sm text-gray-500">
                 Step {currentStep} of {steps.length}
               </div>
-
               <button
                 onClick={currentStep === 5 ? handleCampaignSubmit : nextStep}
                 disabled={!canProceed() || isSubmitting || (currentStep === 5 && authLoading)}
@@ -574,7 +577,7 @@ export default function CreateCampaign() {
         {showAIAssistant && (
           <div className="lg:col-span-1">
             <div className="sticky top-6">
-              <CampaignAIAssistant 
+              <CampaignAIAssistant
                 onAnalysisComplete={(analysis) => {
                   // Optionally pre-fill form with AI recommendations
                   console.log('AI Analysis:', analysis);
@@ -586,4 +589,4 @@ export default function CreateCampaign() {
       </div>
     </div>
   );
-} 
+}

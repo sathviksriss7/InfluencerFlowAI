@@ -151,7 +151,16 @@ const CampaignDetailPage: React.FC = () => {
     setError(null);
 
     try {
-      const response = await fetch(`/api/campaigns/${campaignId}`, {
+      const backendBaseUrl = import.meta.env.VITE_BACKEND_API_URL;
+      if (!backendBaseUrl) {
+        toast.error("Backend API URL is not configured.");
+        setIsCancelling(false);
+        return;
+      }
+      const apiUrl = `${backendBaseUrl}/api/campaigns/${campaignId}`;
+      console.log("Attempting to cancel campaign from detail page (PUT request) to:", apiUrl); // DEBUG
+
+      const response = await fetch(apiUrl, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
