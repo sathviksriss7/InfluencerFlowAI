@@ -69,7 +69,16 @@ const CampaignDetailPage: React.FC = () => {
     if (campaignId) {
       const accessToken = session.access_token;
       
-      fetch(`/api/campaigns/${campaignId}`, {
+      const backendBaseUrl = import.meta.env.VITE_BACKEND_API_URL;
+      if (!backendBaseUrl) {
+        setError("Backend API URL is not configured. Please contact support.");
+        setLoading(false);
+        return;
+      }
+      const apiUrl = `${backendBaseUrl}/api/campaigns/${campaignId}`;
+      console.log("Attempting to fetch campaign details from:", apiUrl); // DEBUG
+
+      fetch(apiUrl, {
         headers: {
           'Authorization': `Bearer ${accessToken}`,
           'Content-Type': 'application/json'

@@ -147,7 +147,16 @@ export default function Campaigns() {
     setCancellingCampaignId(campaignId);
 
     try {
-      const response = await fetch(`/api/campaigns/${campaignId}`, {
+      const backendBaseUrl = import.meta.env.VITE_BACKEND_API_URL;
+      if (!backendBaseUrl) {
+        toast.error("Backend API URL is not configured.");
+        setCancellingCampaignId(null);
+        return;
+      }
+      const apiUrl = `${backendBaseUrl}/api/campaigns/${campaignId}`;
+      console.log("Attempting to cancel campaign (PUT request) to:", apiUrl); // DEBUG
+
+      const response = await fetch(apiUrl, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
