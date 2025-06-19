@@ -59,7 +59,7 @@ interface CampaignFormData {
   companyName?: string;
   productService?: string;
   campaignObjective?: string;
-  targetAudience?: string;
+  targetCreators?: string;
   keyMessage?: string;
   // aiInsights are usually not directly editable by user in a simple form
   createdAt?: string; // Add createdAt
@@ -164,7 +164,7 @@ const CampaignEditPage: React.FC = () => {
               companyName: fetched.companyName,
               productService: fetched.productService,
               campaignObjective: fetched.campaignObjective,
-              targetAudience: fetched.targetAudience,
+              targetCreators: fetched.targetCreators,
               keyMessage: fetched.keyMessage,
               createdAt: fetched.createdAt, // Include createdAt
               updatedAt: fetched.updatedAt, // Include updatedAt

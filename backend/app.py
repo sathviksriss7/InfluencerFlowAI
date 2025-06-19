@@ -751,7 +751,7 @@ def build_campaign_generation_prompt(requirements_data):
     product_service = requirements_data.get('productService', '[Product/Service]')
     business_goals_list = requirements_data.get('businessGoals', [])
     business_goals = ", ".join(business_goals_list) if business_goals_list else '[Business Goals]'
-    target_audience = requirements_data.get('targetAudience', '[Target Audience]')
+    target_audience = requirements_data.get('targetCreators', '[Target Audience]')
     demographics = requirements_data.get('demographics', '[Demographics]') # Assuming this key might exist
     
     # Handle campaignObjective, ensuring it's a string for the prompt
@@ -784,7 +784,7 @@ Company Name: {company_name}
 Industry: {requirements_data.get('industry', 'Not specified')}
 Product/Service: {requirements_data.get('productServiceName', 'Not specified')}
 Campaign Objective: {campaign_objective_str_for_prompt}
-Target Audience: {requirements_data.get('targetAudience', 'Not specified')}
+Target Audience: {requirements_data.get('targetCreators', 'Not specified')}
 Key Message: {requirements_data.get('keyMessage', 'Not specified')}
 Budget Range: {requirements_data.get('budgetMin', 'N/A')} - {requirements_data.get('budgetMax', 'N/A')}
 Timeline: {requirements_data.get('timeline', 'Not specified')}
@@ -883,7 +883,7 @@ def generate_fallback_campaign_py(requirements_data):
     
     industry_value = requirements_data.get('industry', 'General') # This can be a list or a string
     product_service = requirements_data.get('productService', '[Product/Service]')
-    target_audience = requirements_data.get('targetAudience', '[Target Audience]')
+    target_audience = requirements_data.get('targetCreators', '[Target Audience]')
     budget_min = int(requirements_data.get('budgetRange', {}).get('min', 10000) * 0.8)
     budget_max = int(requirements_data.get('budgetRange', {}).get('max', 50000) * 0.9)
 
@@ -991,7 +991,7 @@ def save_campaign_to_db(campaign_payload, user_id, original_requirements, raw_jw
         'company_name': original_requirements.get('companyName'), 
         'product_service_name': original_requirements.get('productService'),
         'campaign_objective': original_requirements.get('campaignObjective'),
-        'target_audience': original_requirements.get('targetAudience'),
+        'target_audience': original_requirements.get('targetCreators'),
         'key_message': original_requirements.get('keyMessage'),
         # created_at and updated_at will be set by Supabase default or triggers if defined,
         # otherwise we can set them here if needed like in the other create endpoint

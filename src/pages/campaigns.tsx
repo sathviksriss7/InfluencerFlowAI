@@ -40,7 +40,7 @@ interface Campaign {
   companyName?: string;
   productService?: string;
   campaignObjective?: string;
-  targetAudience?: string;
+  targetCreators?: string;
   keyMessage?: string;
 }
 

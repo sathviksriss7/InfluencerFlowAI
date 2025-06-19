@@ -307,7 +307,7 @@ export interface BusinessRequirements {
   industry: string[];
   productService: string;
   businessGoals: string[];
-  targetAudience: string;
+  targetCreators: string;
   demographics?: string; 
   campaignObjective: string[];
   keyMessage?: string;
@@ -653,7 +653,7 @@ class CampaignBuildingAgent {
       id: `local-fallback-campaign-${Date.now()}`, // ADDED: ID for fallback campaign
       title: `Exciting Campaign for ${requirements.companyName}`,
       brand: requirements.companyName,
-      description: `A dynamic campaign focusing on ${requirements.productService} for the ${industryText} sector. We aim to ${requirements.businessGoals.join(', ')}. Target audience: ${requirements.targetAudience}`,
+      description: `A dynamic campaign focusing on ${requirements.productService} for the ${industryText} sector. We aim to ${requirements.businessGoals.join(', ')}. Target audience: ${requirements.targetCreators}`,
       brief: `Campaign Objectives: ${campaignObjectiveTextForBrief}. Key Message: ${requirements.keyMessage || 'Experience the best!'}. Platforms: ${finalPlatforms.join(', ')}. Content: ${(requirements.contentTypes || []).join(', ')}. Special Notes: ${requirements.specialRequirements || 'None'}`,
       platforms: finalPlatforms,
       minFollowers: 5000,
@@ -1433,7 +1433,7 @@ class WorkflowOrchestrationAgent {
       // Stage 2: Creator Discovery
       onProgress?.({ stageId: 'discovery', status: 'running' });
       const discoveryStartTime = Date.now();
-      discoveredCreators = await this.discoveryAgent.findCreators(generatedCampaign, requirements.targetAudience );
+      discoveredCreators = await this.discoveryAgent.findCreators(generatedCampaign, requirements.targetCreators );
       const discoveryDuration = Date.now() - discoveryStartTime;
       onProgress?.({ stageId: 'discovery', status: 'completed', duration: discoveryDuration });
       console.log(`🚀 Workflow Orchestrator (FE): Step 2 (Discovery) COMPLETE. Found ${discoveredCreators.length} potential creators. Time: ${discoveryDuration}ms`);
@@ -1557,7 +1557,7 @@ export const createExampleRequirements = (): BusinessRequirements => ({
   industry: ['Technology'],
   productService: 'Cloud-based AI Analytics Platform',
   businessGoals: ['Generate B2B leads', 'Increase enterprise demo requests by 20%'],
-  targetAudience: 'CTOs, VPs of Engineering, Data Science Managers in mid-to-large enterprises',
+  targetCreators: 'CTOs, VPs of Engineering, Data Science Managers in mid-to-large enterprises',
   demographics: 'Tech-savvy decision-makers, interested in AI, Big Data, Cloud Solutions',
   campaignObjective: ['Drive sign-ups for our upcoming webinar on AI in Finance.'],
   keyMessage: "Unlock financial insights with Innovatech's next-gen AI analytics.",

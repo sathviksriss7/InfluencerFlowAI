@@ -276,7 +276,7 @@ export default function AgenticAI() {
           const newReqs = { ...prevReqs };
           newReqs.companyName = extracted.brand_name === null ? '' : extracted.brand_name;
           newReqs.productService = extracted.product_service_name === null ? '' : extracted.product_service_name;
-          newReqs.targetAudience = extracted.target_audience_description === null ? '' : extracted.target_audience_description;
+          newReqs.targetCreators = extracted.target_audience_description === null ? '' : extracted.target_audience_description;
           newReqs.keyMessage = (extracted.key_message_points === null || (Array.isArray(extracted.key_message_points) && extracted.key_message_points.length === 0)) 
             ? '' 
             : Array.isArray(extracted.key_message_points) ? extracted.key_message_points.join(', ') : String(extracted.key_message_points);
@@ -634,11 +634,11 @@ export default function AgenticAI() {
                           />
                         </div>
                         <div className="md:col-span-2">
-                          <label htmlFor="targetAudience" className="block text-sm font-medium leading-6 text-gray-900">Target Audience</label>
+                          <label htmlFor="targetCreators" className="block text-sm font-medium leading-6 text-gray-900">Target Creators</label>
                           <textarea
-                            id="targetAudience"
-                            value={requirements.targetAudience}
-                            onChange={(e) => updateRequirements('targetAudience', e.target.value)}
+                            id="targetCreators"
+                            value={requirements.targetCreators}
+                            onChange={(e) => updateRequirements('targetCreators', e.target.value)}
                             rows={4}
                             placeholder="e.g., Young professionals aged 25-35 interested in sustainable fashion and technology, primarily based in urban areas."
                             className={"w-full px-2 py-2 rounded-md text-sm font-medium border"}
