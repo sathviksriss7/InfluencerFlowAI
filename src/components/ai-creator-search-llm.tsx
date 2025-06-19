@@ -46,6 +46,13 @@ const loadMessagesFromStorage = (): ChatMessage[] => {
     }
     
     const parsed = JSON.parse(stored);
+    // Add a check to ensure 'parsed' is an array
+    if (!Array.isArray(parsed)) {
+      console.warn('❌ Stored chat history is not an array, using default messages.');
+      localStorage.removeItem(CHAT_STORAGE_KEY); // Clear corrupted data
+      return getDefaultMessages();
+    }
+
     const loadedMessages = parsed.map((msg: any) => ({
       ...msg,
       timestamp: new Date(msg.timestamp)
@@ -55,6 +62,8 @@ const loadMessagesFromStorage = (): ChatMessage[] => {
     return loadedMessages;
   } catch (error) {
     console.warn('❌ Failed to load chat history from localStorage:', error);
+    // Clear potentially corrupted data if parsing failed or structure is wrong
+    localStorage.removeItem(CHAT_STORAGE_KEY);
     return getDefaultMessages();
   }
 };
@@ -167,9 +176,11 @@ export default function AICreatorSearchLLM({ campaignId }: AICreatorSearchLLMPro
     if (aiMessages.length === 0) return [];
     
     const latestAnalysis = aiMessages[aiMessages.length - 1].llmAnalysis;
-    if (!latestAnalysis) return [];
+    // Ensure latestAnalysis and its matchedCreators property exist
+    if (!latestAnalysis || !latestAnalysis.matchedCreators) return []; 
     
-    return latestAnalysis.matchedCreators.map(mc => mc.creator);
+    // Safely map over matchedCreators, defaulting to an empty array if it's somehow still not an array
+    return (latestAnalysis.matchedCreators || []).map(mc => mc.creator);
   };
 
   const handleSendMessage = async () => {
@@ -344,7 +355,7 @@ export default function AICreatorSearchLLM({ campaignId }: AICreatorSearchLLMPro
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4 max-h-96">
-        {messages.map((message) => (
+        {(messages || []).map((message) => (
           <div key={message.id} className={`flex ${message.type === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div className={`max-w-[85%] rounded-lg p-3 ${
               message.type === 'user' 
@@ -404,7 +415,7 @@ export default function AICreatorSearchLLM({ campaignId }: AICreatorSearchLLMPro
         <div className="p-4 border-t border-gray-200 bg-gray-50">
           <p className="text-sm text-gray-600 mb-2">✨ Try these AI-powered queries:</p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-            {suggestions.slice(0, 4).map((suggestion, index) => (
+            {(suggestions || []).slice(0, 4).map((suggestion, index) => (
               <button
                 key={index}
                 onClick={() => handleSuggestionClick(suggestion)}
@@ -491,6 +502,9 @@ interface LLMAnalysisDisplayProps {
 function LLMAnalysisDisplay({ analysis }: LLMAnalysisDisplayProps) {
   const [showDetails, setShowDetails] = useState(false);
 
+  // Log the entire analysis object when the component renders
+  console.log('[LLMAnalysisDisplay] Received analysis prop:', JSON.stringify(analysis, null, 2));
+
   const getQueryTypeDisplay = (queryType: string) => {
     switch (queryType) {
       case 'budget_optimization': return '💰 Budget Optimization';
@@ -534,9 +548,9 @@ function LLMAnalysisDisplay({ analysis }: LLMAnalysisDisplayProps) {
             AI Query Analysis
             {/* Show if this was a contextual follow-up */}
             {(() => {
-              const queryLower = analysis.query.toLowerCase();
+              const queryLower = analysis.query?.toLowerCase();
               const hasFollowUpIndicators = ['them', 'these', 'those', 'among them', 'from above', 'from the above', 'who among'].some(indicator => 
-                queryLower.includes(indicator)
+                queryLower?.includes(indicator)
               );
               return hasFollowUpIndicators ? (
                 <span className="ml-2 px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-full font-medium">
@@ -546,25 +560,27 @@ function LLMAnalysisDisplay({ analysis }: LLMAnalysisDisplayProps) {
             })()}
           </h4>
           <div className="flex items-center gap-2 text-xs text-gray-600">
-            <span>Confidence: {Math.round(analysis.queryUnderstanding.confidence * 100)}%</span>
+            <span>Confidence: {Math.round((analysis.queryUnderstanding?.confidence || 0) * 100)}%</span>
             <span>•</span>
             <span>{analysis.totalProcessingTime}ms</span>
           </div>
         </div>
         
         {/* Primary Query Type Badge */}
-        <div className="mb-2">
-          <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${getQueryTypeColor(analysis.queryUnderstanding.queryType)}`}>
-            {getQueryTypeDisplay(analysis.queryUnderstanding.queryType)}
-          </span>
-        </div>
+        {analysis.queryUnderstanding?.queryType && (
+          <div className="mb-2">
+            <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${getQueryTypeColor(analysis.queryUnderstanding.queryType)}`}>
+              {getQueryTypeDisplay(analysis.queryUnderstanding.queryType)}
+            </span>
+          </div>
+        )}
 
         {/* Secondary Aspects */}
-        {analysis.queryUnderstanding.secondaryAspects && analysis.queryUnderstanding.secondaryAspects.length > 0 && (
+        {analysis.queryUnderstanding?.secondaryAspects && analysis.queryUnderstanding.secondaryAspects.length > 0 && (
           <div className="mb-2">
             <span className="text-xs text-gray-600 mr-2">Also includes:</span>
             <div className="flex flex-wrap gap-1 mt-1">
-              {analysis.queryUnderstanding.secondaryAspects.map((aspect: string, index: number) => (
+              {(analysis.queryUnderstanding.secondaryAspects || []).map((aspect: string, index: number) => (
                 <span key={index} className="px-2 py-1 bg-gray-100 text-gray-700 rounded text-xs">
                   {getSecondaryAspectDisplay(aspect)}
                 </span>
@@ -573,16 +589,18 @@ function LLMAnalysisDisplay({ analysis }: LLMAnalysisDisplayProps) {
           </div>
         )}
         
-        <p className="text-xs text-gray-600 mb-2">
-          <strong>Intent:</strong> {analysis.queryUnderstanding.intent}
-        </p>
+        {analysis.queryUnderstanding?.intent && (
+          <p className="text-xs text-gray-600 mb-2">
+            <strong>Intent:</strong> {analysis.queryUnderstanding.intent}
+          </p>
+        )}
         
         {/* Key Requirements */}
-        {analysis.queryUnderstanding.keyRequirements && analysis.queryUnderstanding.keyRequirements.length > 0 && (
+        {analysis.queryUnderstanding?.keyRequirements && analysis.queryUnderstanding.keyRequirements.length > 0 && (
           <div className="text-xs text-gray-600 mb-2">
             <strong>Key Requirements:</strong>
             <div className="flex flex-wrap gap-1 mt-1">
-              {analysis.queryUnderstanding.keyRequirements.map((req, index) => (
+              {(analysis.queryUnderstanding.keyRequirements || []).map((req, index) => (
                 <span key={index} className="px-2 py-1 bg-purple-100 text-purple-700 rounded text-xs">
                   {req}
                 </span>
@@ -592,37 +610,39 @@ function LLMAnalysisDisplay({ analysis }: LLMAnalysisDisplayProps) {
         )}
         
         {/* Extracted Criteria Details */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-gray-600">
-          {analysis.queryUnderstanding.extractedCriteria.platforms && (
-            <div>
-              <strong>Platforms:</strong> {analysis.queryUnderstanding.extractedCriteria.platforms.join(', ')}
-            </div>
-          )}
-          
-          {analysis.queryUnderstanding.extractedCriteria.niches && (
-            <div>
-              <strong>Niches:</strong> {analysis.queryUnderstanding.extractedCriteria.niches.join(', ')}
-            </div>
-          )}
-          
-          {analysis.queryUnderstanding.extractedCriteria.followerRange && (
-            <div>
-              <strong>Audience Size:</strong> {analysis.queryUnderstanding.extractedCriteria.followerRange}
-            </div>
-          )}
+        {(analysis.queryUnderstanding?.extractedCriteria) && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-gray-600">
+            {analysis.queryUnderstanding.extractedCriteria.platforms && (
+              <div>
+                <strong>Platforms:</strong> {(analysis.queryUnderstanding.extractedCriteria.platforms || []).join(', ')}
+              </div>
+            )}
+            
+            {analysis.queryUnderstanding.extractedCriteria.niches && (
+              <div>
+                <strong>Niches:</strong> {(analysis.queryUnderstanding.extractedCriteria.niches || []).join(', ')}
+              </div>
+            )}
+            
+            {analysis.queryUnderstanding.extractedCriteria.followerRange && (
+              <div>
+                <strong>Audience Size:</strong> {analysis.queryUnderstanding.extractedCriteria.followerRange}
+              </div>
+            )}
 
-          {analysis.queryUnderstanding.extractedCriteria.budget && (
-            <div>
-              <strong>Budget Focus:</strong> {analysis.queryUnderstanding.extractedCriteria.budget}
-            </div>
-          )}
+            {analysis.queryUnderstanding.extractedCriteria.budget && (
+              <div>
+                <strong>Budget Focus:</strong> {analysis.queryUnderstanding.extractedCriteria.budget}
+              </div>
+            )}
 
-          {analysis.queryUnderstanding.extractedCriteria.location && (
-            <div>
-              <strong>Location:</strong> {analysis.queryUnderstanding.extractedCriteria.location}
-            </div>
-          )}
-        </div>
+            {analysis.queryUnderstanding.extractedCriteria.location && (
+              <div>
+                <strong>Location:</strong> {analysis.queryUnderstanding.extractedCriteria.location}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Top Recommendations */}
@@ -639,8 +659,8 @@ function LLMAnalysisDisplay({ analysis }: LLMAnalysisDisplayProps) {
           </button>
         </div>
         
-        {(analysis.matchedCreators || []).slice(0, showDetails ? 10 : 3).map((match) => (
-          <LLMCreatorCard key={match.creator.id} match={match} showDetails={showDetails} queryType={analysis.queryUnderstanding.queryType} />
+        {(analysis.matchedCreators || []).filter(Boolean).slice(0, showDetails ? 10 : 3).map((match) => (
+          <LLMCreatorCard key={match.creator.id} match={match} showDetails={showDetails} queryType={analysis.queryUnderstanding?.queryType || 'general_search'} />
         ))}
       </div>
 
@@ -654,7 +674,7 @@ function LLMAnalysisDisplay({ analysis }: LLMAnalysisDisplayProps) {
             Smart Suggestions
           </h4>
           <ul className="text-xs text-purple-700 space-y-1">
-            {analysis.suggestions.map((suggestion, index) => (
+            {(analysis.suggestions || []).map((suggestion, index) => (
               <li key={index}>• {suggestion}</li>
             ))}
           </ul>
@@ -671,6 +691,9 @@ interface LLMCreatorCardProps {
 }
 
 function LLMCreatorCard({ match, showDetails, queryType }: LLMCreatorCardProps) {
+  // Log the received match prop for debugging
+  console.log('[LLMCreatorCard] Received match prop:', JSON.stringify(match, null, 2));
+
   const { creator, relevanceScore, reasoning, strengths, concerns, recommendationLevel, costEffectivenessScore, reachPotential } = match;
 
   const getRecommendationColor = (level: string) => {
@@ -792,7 +815,7 @@ function LLMCreatorCard({ match, showDetails, queryType }: LLMCreatorCardProps) 
                 <div className="bg-orange-50 rounded p-2 mt-2">
                   <h5 className="text-xs font-medium text-orange-700 mb-1">Considerations:</h5>
                   <ul className="text-xs text-orange-600 space-y-0.5 list-disc list-inside">
-                    {concerns.map((concern, index) => (
+                    {(concerns || []).map((concern, index) => (
                       <li key={index}>{concern}</li>
                     ))}
                   </ul>
