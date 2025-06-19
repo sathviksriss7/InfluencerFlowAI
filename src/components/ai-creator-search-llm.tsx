@@ -4,6 +4,7 @@ import { mockCreators } from '../mock-data/creators';
 import { type Creator } from '../types';
 import { Link } from 'react-router-dom';
 import AIOutreachManager from './ai-outreach-manager';
+import { useAuth } from '../contexts/AuthContext';
 
 interface ChatMessage {
   id: string;
@@ -136,6 +137,7 @@ export default function AICreatorSearchLLM({ campaignId }: AICreatorSearchLLMPro
   const [showOutreachManager, setShowOutreachManager] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const { session } = useAuth();
 
   const suggestions = groqLLMService.getExampleQueries();
 
@@ -201,7 +203,7 @@ export default function AICreatorSearchLLM({ campaignId }: AICreatorSearchLLMPro
       console.log('📋 Conversation context being sent:', messages.slice(0, -1).map(m => `${m.type}: ${m.content.substring(0, 50)}...`));
       
       const backendApiUrl = import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:5001';
-      const token = localStorage.getItem('token'); // Assuming token is in localStorage
+      const token = session?.access_token;
 
       const response = await fetch(`${backendApiUrl}/api/creator/analyze-query`, {
         method: 'POST',
