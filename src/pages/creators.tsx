@@ -1,7 +1,8 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { mockCreators } from '../mock-data/creators';
 import AICreatorSearchLLM from '../components/ai-creator-search-llm';
+import { supabase } from '../lib/supabase';
+import { type Creator } from '../types';
 
 export default function Creators() {
   const [searchMode, setSearchMode] = useState<'filter' | 'ai'>('filter');
@@ -11,13 +12,53 @@ export default function Creators() {
   const [sortBy, setSortBy] = useState('followers');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
 
-  // Get unique platforms and niches for filters
-  const platforms = [...new Set(mockCreators.map(creator => creator.platform))];
-  const niches = [...new Set(mockCreators.flatMap(creator => creator.niche))];
+  // State for creators fetched from Supabase
+  const [allCreators, setAllCreators] = useState<Creator[]>([]);
+  const [loadingCreators, setLoadingCreators] = useState(true);
+  const [errorCreators, setErrorCreators] = useState<string | null>(null);
+
+  // Fetch creators from Supabase on component mount
+  useEffect(() => {
+    const fetchCreators = async () => {
+      setLoadingCreators(true);
+      setErrorCreators(null);
+      try {
+        const { data, error } = await supabase
+          .from('creators') // Assuming your table is named 'creators'
+          .select('*'); // Adjust columns as needed, e.g., Supabase might auto-convert snake_case
+
+        if (error) {
+          console.error("Error fetching creators from Supabase:", error);
+          throw error;
+        }
+        // Ensure data is not null and is an array (Supabase might return null if table is empty)
+        setAllCreators(data || []); 
+      } catch (err: any) {
+        setErrorCreators(err.message || "Failed to fetch creators.");
+        setAllCreators([]); // Set to empty array on error
+      } finally {
+        setLoadingCreators(false);
+      }
+    };
+
+    fetchCreators();
+  }, []);
+
+  // Get unique platforms and niches for filters from fetched data
+  const platforms = useMemo(() => {
+    if (loadingCreators || errorCreators || !allCreators.length) return [];
+    return [...new Set(allCreators.map(creator => creator.platform))].filter(Boolean);
+  }, [allCreators, loadingCreators, errorCreators]);
+
+  const niches = useMemo(() => {
+    if (loadingCreators || errorCreators || !allCreators.length) return [];
+    return [...new Set(allCreators.flatMap(creator => Array.isArray(creator.niche) ? creator.niche : []).filter(Boolean))];
+  }, [allCreators, loadingCreators, errorCreators]);
 
   // Filter and sort creators
   const filteredCreators = useMemo(() => {
-    let filtered = mockCreators.filter(creator => {
+    if (loadingCreators || errorCreators) return []; // Return empty if loading or error
+    let filtered = allCreators.filter(creator => {
       const matchesSearch = searchTerm === '' || 
         creator.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         creator.username.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -67,7 +108,7 @@ export default function Creators() {
     });
 
     return filtered;
-  }, [searchTerm, platformFilter, nicheFilter, sortBy, sortOrder]);
+  }, [searchTerm, platformFilter, nicheFilter, sortBy, sortOrder, allCreators, loadingCreators, errorCreators]);
 
   const getVerificationIcon = (verified: boolean) => {
     if (!verified) return null;
@@ -258,98 +299,115 @@ export default function Creators() {
               </div>
 
               {/* Creators Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {filteredCreators.map((creator) => (
-                  <Link
-                    key={creator.id}
-                    to={`/creators/${creator.id}`}
-                    className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-lg transition-shadow"
-                  >
-                    <div className="flex items-start gap-3">
-                      <img
-                        src={creator.avatar}
-                        alt={creator.name}
-                        className="w-12 h-12 rounded-full object-cover"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <h3 className="font-semibold text-gray-900 truncate">{creator.name}</h3>
-                          {getVerificationIcon(creator.verified)}
-                        </div>
-                        <p className="text-sm text-gray-600 mb-2">{creator.username}</p>
-                        <div className="flex items-center gap-2 mb-2">
-                          {getPlatformIcon(creator.platform)}
-                          <span className="text-xs text-gray-500 capitalize">{creator.platform}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="mt-3 space-y-2">
-                      <div className="flex flex-wrap gap-1">
-                        {creator.niche.slice(0, 2).map((tag) => (
-                          <span
-                            key={tag}
-                            className="inline-block px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full"
-                          >
-                            {tag}
-                          </span>
-                        ))}
-                        {creator.niche.length > 2 && (
-                          <span className="inline-block px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">
-                            +{creator.niche.length - 2}
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="grid grid-cols-3 gap-2 text-xs text-gray-600">
-                        <div>
-                          <span className="font-medium text-gray-900">{formatFollowers(creator.metrics.followers)}</span>
-                          <br />Followers
-                        </div>
-                        <div>
-                          <span className="font-medium text-gray-900">{creator.metrics.engagementRate}%</span>
-                          <br />Engagement
-                        </div>
-                        <div>
-                          <span className="font-medium text-gray-900">{creator.rating}/5</span>
-                          <br />Rating
-                        </div>
-                      </div>
-
-                      <div className="pt-2 border-t border-gray-100">
-                        <div className="flex justify-between items-center">
-                          <div className="text-center">
-                            <p className="font-semibold text-gray-900">₹{creator.rates.post}/post</p>
-                            <p className="text-xs text-gray-500">Starting rate</p>
+              {loadingCreators ? (
+                <div className="text-center py-12 col-span-full">
+                  <p className="text-gray-500">Loading creators...</p>
+                </div>
+              ) : errorCreators ? (
+                <div className="text-center py-12 col-span-full text-red-600">
+                  <p>Error: {errorCreators}</p>
+                </div>
+              ) : filteredCreators.length > 0 ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {filteredCreators.map((creator) => (
+                    <Link
+                      key={creator.id}
+                      to={`/creators/${creator.id}`}
+                      className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-lg transition-shadow"
+                    >
+                      <div className="flex items-start gap-3">
+                        <img
+                          src={creator.avatar}
+                          alt={creator.name}
+                          className="w-12 h-12 rounded-full object-cover"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <h3 className="font-semibold text-gray-900 truncate">{creator.name}</h3>
+                            {getVerificationIcon(creator.verified)}
                           </div>
-                          <span className="text-xs text-gray-500">
-                            {creator.location}
-                          </span>
+                          <p className="text-sm text-gray-600 mb-2">{creator.username}</p>
+                          <div className="flex items-center gap-2 mb-2">
+                            {getPlatformIcon(creator.platform)}
+                            <span className="text-xs text-gray-500 capitalize">{creator.platform}</span>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  </Link>
-                ))}
-              </div>
 
-              {/* No Results */}
-              {filteredCreators.length === 0 && (
-                <div className="text-center py-12">
+                      <div className="mt-3 space-y-2">
+                        <div className="flex flex-wrap gap-1">
+                          {creator.niche.slice(0, 2).map((tag) => (
+                            <span
+                              key={tag}
+                              className="inline-block px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full"
+                            >
+                              {tag}
+                            </span>
+                          ))}
+                          {creator.niche.length > 2 && (
+                            <span className="inline-block px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">
+                              +{creator.niche.length - 2}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-2 text-xs text-gray-600">
+                          <div>
+                            <span className="font-medium text-gray-900">{formatFollowers(creator.metrics.followers)}</span>
+                            <br />Followers
+                          </div>
+                          <div>
+                            <span className="font-medium text-gray-900">{creator.metrics.engagementRate}%</span>
+                            <br />Engagement
+                          </div>
+                          <div>
+                            <span className="font-medium text-gray-900">{creator.rating}/5</span>
+                            <br />Rating
+                          </div>
+                        </div>
+
+                        <div className="pt-2 border-t border-gray-100">
+                          <div className="flex justify-between items-center">
+                            <div className="text-center">
+                              <p className="font-semibold text-gray-900">₹{creator.rates.post}/post</p>
+                              <p className="text-xs text-gray-500">Starting rate</p>
+                            </div>
+                            <span className="text-xs text-gray-500">
+                              {creator.location}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </Link>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-12 col-span-full">
                   <svg className="w-12 h-12 text-gray-400 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                   </svg>
-                  <h3 className="text-lg font-medium text-gray-900 mb-2">No creators found</h3>
-                  <p className="text-gray-500 mb-4">Try adjusting your filters or search terms</p>
-                  <button
-                    onClick={() => {
-                      setSearchTerm('');
-                      setPlatformFilter('all');
-                      setNicheFilter('all');
-                    }}
-                    className="text-blue-600 hover:underline"
-                  >
-                    Clear all filters
-                  </button>
+                  <h3 className="text-lg font-medium text-gray-900 mb-2">
+                    {searchTerm || platformFilter !== 'all' || nicheFilter !== 'all' 
+                      ? "No creators match your current filters"
+                      : "No creators found in the database"}
+                  </h3>
+                  <p className="text-gray-500 mb-4">
+                    {searchTerm || platformFilter !== 'all' || nicheFilter !== 'all' 
+                      ? "Try adjusting your filters or search terms"
+                      : "Check back later or add new creators."}
+                  </p>
+                  {(searchTerm || platformFilter !== 'all' || nicheFilter !== 'all') && (
+                    <button
+                      onClick={() => {
+                        setSearchTerm('');
+                        setPlatformFilter('all');
+                        setNicheFilter('all');
+                      }}
+                      className="text-blue-600 hover:underline"
+                    >
+                      Clear all filters
+                    </button>
+                  )}
                 </div>
               )}
             </div>
