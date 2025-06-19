@@ -629,7 +629,7 @@ function LLMAnalysisDisplay({ analysis }: LLMAnalysisDisplayProps) {
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <h4 className="text-sm font-medium text-gray-800">
-            🎯 Intelligent Recommendations ({analysis.matchedCreators.length} found)
+            🎯 Intelligent Recommendations ({(analysis.matchedCreators || []).length} found)
           </h4>
           <button
             onClick={() => setShowDetails(!showDetails)}
@@ -639,13 +639,13 @@ function LLMAnalysisDisplay({ analysis }: LLMAnalysisDisplayProps) {
           </button>
         </div>
         
-        {analysis.matchedCreators.slice(0, showDetails ? 10 : 3).map((match) => (
+        {(analysis.matchedCreators || []).slice(0, showDetails ? 10 : 3).map((match) => (
           <LLMCreatorCard key={match.creator.id} match={match} showDetails={showDetails} queryType={analysis.queryUnderstanding.queryType} />
         ))}
       </div>
 
       {/* AI Suggestions */}
-      {analysis.suggestions.length > 0 && (
+      {analysis.suggestions && analysis.suggestions.length > 0 && (
         <div className="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-3">
           <h4 className="text-sm font-medium text-purple-800 mb-2 flex items-center gap-1">
             <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
@@ -781,7 +781,7 @@ function LLMCreatorCard({ match, showDetails, queryType }: LLMCreatorCardProps) 
               <div>
                 <h5 className="text-xs font-medium text-gray-700 mb-1">Strengths:</h5>
                 <ul className="text-xs text-gray-600 space-y-0.5 list-disc list-inside">
-                  {strengths.map((strength, index) => (
+                  {(strengths || []).map((strength, index) => (
                     <li key={index}>{strength}</li>
                   ))}
                 </ul>
