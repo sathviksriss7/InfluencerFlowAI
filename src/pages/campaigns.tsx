@@ -40,7 +40,8 @@ interface Campaign {
   companyName?: string;
   productService?: string;
   campaignObjective?: string;
-  targetCreators?: string;
+  campaignAudienceDescription?: string; // New field for viewer audience
+  targetInfluencerDescription?: string; // New field for creator profile
   keyMessage?: string;
 }
 

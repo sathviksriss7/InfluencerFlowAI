@@ -276,7 +276,12 @@ export default function AgenticAI() {
           const newReqs = { ...prevReqs };
           newReqs.companyName = extracted.brand_name === null ? '' : extracted.brand_name;
           newReqs.productService = extracted.product_service_name === null ? '' : extracted.product_service_name;
-          newReqs.targetCreators = extracted.target_audience_description === null ? '' : extracted.target_audience_description;
+          newReqs.campaignAudienceDescription = extracted.target_audience_description === null ? '' : extracted.target_audience_description;
+          if (typeof extracted.target_influencer_profile_description === 'string') {
+            newReqs.targetInfluencerDescription = extracted.target_influencer_profile_description;
+          } else {
+            newReqs.targetInfluencerDescription = prevReqs.targetInfluencerDescription || '';
+          }
           newReqs.keyMessage = (extracted.key_message_points === null || (Array.isArray(extracted.key_message_points) && extracted.key_message_points.length === 0)) 
             ? '' 
             : Array.isArray(extracted.key_message_points) ? extracted.key_message_points.join(', ') : String(extracted.key_message_points);
@@ -634,13 +639,24 @@ export default function AgenticAI() {
                           />
                         </div>
                         <div className="md:col-span-2">
-                          <label htmlFor="targetCreators" className="block text-sm font-medium leading-6 text-gray-900">Target Creators</label>
+                          <label htmlFor="campaignAudienceDescription" className="block text-sm font-medium leading-6 text-gray-900">Campaign's Target Audience Description</label>
                           <textarea
-                            id="targetCreators"
-                            value={requirements.targetCreators}
-                            onChange={(e) => updateRequirements('targetCreators', e.target.value)}
-                            rows={4}
+                            id="campaignAudienceDescription"
+                            value={requirements.campaignAudienceDescription}
+                            onChange={(e) => updateRequirements('campaignAudienceDescription', e.target.value)}
+                            rows={3}
                             placeholder="e.g., Young professionals aged 25-35 interested in sustainable fashion and technology, primarily based in urban areas."
+                            className={"w-full px-2 py-2 rounded-md text-sm font-medium border"}
+                          ></textarea>
+                        </div>
+                        <div className="md:col-span-2">
+                          <label htmlFor="targetInfluencerDescription" className="block text-sm font-medium leading-6 text-gray-900">Target Influencer Profile Description</label>
+                          <textarea
+                            id="targetInfluencerDescription"
+                            value={requirements.targetInfluencerDescription}
+                            onChange={(e) => updateRequirements('targetInfluencerDescription', e.target.value)}
+                            rows={3}
+                            placeholder="e.g., Female influencers, aged 22-30, based in India, with expertise in beauty and lifestyle. Minimum 10k followers on Instagram."
                             className={"w-full px-2 py-2 rounded-md text-sm font-medium border"}
                           ></textarea>
                         </div>

@@ -5,7 +5,7 @@ export interface CampaignRequirement {
   budget: { min: number; max: number };
   timeline: { duration: number; urgency: 'low' | 'medium' | 'high' };
   goals: Array<'brand_awareness' | 'engagement' | 'conversions' | 'reach' | 'sales'>;
-  targetCreators: {
+  targetAudience: {
     ageRange: string;
     gender: 'male' | 'female' | 'all';
     interests: string[];
@@ -196,7 +196,7 @@ class CampaignAIAssistant {
       budget: { min: budget * 0.8, max: budget * 1.2 },
       timeline: { duration: 30, urgency },
       goals: goals as CampaignRequirement['goals'],
-      targetCreators: {
+      targetAudience: {
         ageRange: '18-34', // Default, could be extracted from description
         gender: 'all',
         interests: this.extractInterests(description),
@@ -497,14 +497,14 @@ class CampaignAIAssistant {
         if (!requirements.platforms.includes(creator.platform)) return false;
         
         // Niche/interest match
-        const hasMatchingNiche = requirements.targetCreators.interests.some(interest =>
+        const hasMatchingNiche = requirements.targetAudience.interests.some(interest =>
           creator.niche.some(niche => 
             niche.toLowerCase().includes(interest.toLowerCase()) ||
             interest.toLowerCase().includes(niche.toLowerCase())
           )
         );
         
-        return hasMatchingNiche || requirements.targetCreators.interests.length === 0;
+        return hasMatchingNiche || requirements.targetAudience.interests.length === 0;
       })
       .sort((a, b) => {
         // Sort by relevance score
@@ -522,7 +522,7 @@ class CampaignAIAssistant {
     if (requirements.platforms.includes(creator.platform)) score += 20;
     
     // Niche match
-    const nicheMatches = requirements.targetCreators.interests.filter(interest =>
+    const nicheMatches = requirements.targetAudience.interests.filter(interest =>
       creator.niche.some(niche => 
         niche.toLowerCase().includes(interest.toLowerCase()) ||
         interest.toLowerCase().includes(niche.toLowerCase())

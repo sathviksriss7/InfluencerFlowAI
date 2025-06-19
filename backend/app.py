@@ -750,8 +750,14 @@ def build_campaign_generation_prompt(requirements_data):
     industry_str = ', '.join(industry_list) if industry_list else '[General Industry]'
     product_service = requirements_data.get('productService', '[Product/Service]')
     business_goals_list = requirements_data.get('businessGoals', [])
-    business_goals = ", ".join(business_goals_list) if business_goals_list else '[Business Goals]'
-    target_audience = requirements_data.get('targetCreators', '[Target Audience]')
+    business_goals_str = ", ".join(business_goals_list) if business_goals_list else '[Business Goals]'
+    
+    # Updated to use campaignAudienceDescription for the viewers
+    campaign_audience_desc = requirements_data.get('campaignAudienceDescription', '[Campaign Target Audience - Viewers]')
+    
+    # Added to get targetInfluencerDescription for the creators
+    target_influencer_desc = requirements_data.get('targetInfluencerDescription', '[Target Influencer Profile - Creators]')
+    
     demographics = requirements_data.get('demographics', '[Demographics]') # Assuming this key might exist
     
     # Handle campaignObjective, ensuring it's a string for the prompt
@@ -777,23 +783,25 @@ def build_campaign_generation_prompt(requirements_data):
     budget_min_ai = int(budget_min_req * 0.8)
     budget_max_ai = int(budget_max_req * 0.9)
 
+    # Original prompt structure with modifications for new audience fields:
     prompt = f"""You are an expert campaign strategist. Based on the following business requirements, generate a comprehensive and creative influencer marketing campaign plan.
 
 Business Requirements:
 Company Name: {company_name}
-Industry: {requirements_data.get('industry', 'Not specified')}
-Product/Service: {requirements_data.get('productServiceName', 'Not specified')}
+Industry: {industry_str} # MODIFIED: Use industry_str
+Product/Service: {product_service} # MODIFIED: Use product_service
 Campaign Objective: {campaign_objective_str_for_prompt}
-Target Audience: {requirements_data.get('targetCreators', 'Not specified')}
-Key Message: {requirements_data.get('keyMessage', 'Not specified')}
-Budget Range: {requirements_data.get('budgetMin', 'N/A')} - {requirements_data.get('budgetMax', 'N/A')}
-Timeline: {requirements_data.get('timeline', 'Not specified')}
-Content Requirements/Deliverables: {", ".join(requirements_data.get('contentRequirements', ['Not specified']))}
-Preferred Platforms: {", ".join(requirements_data.get('platforms', ['Not specified']))}
-Geographic Focus: {", ".join(requirements_data.get('locations', ['Not specified']))}
+Campaign's Target Audience (Viewers): {campaign_audience_desc} # MODIFIED: New field and label
+Target Influencer Profile (Creators): {target_influencer_desc} # MODIFIED: New field and label
+Key Message: {key_message}
+Budget Range: {budget_min_req} - {budget_max_req} # MODIFIED: Use budget_min_req, budget_max_req
+Timeline: {timeline}
+Content Requirements/Deliverables: {content_types} # MODIFIED: Use content_types
+Preferred Platforms: {preferred_platforms} # MODIFIED: Use preferred_platforms
+Geographic Focus: {requirements_data.get('locations', ['Not specified'])}
 Tone/Voice: {requirements_data.get('toneOfVoice', 'Professional and engaging')}
 Existing Brand Guidelines: {requirements_data.get('brandGuidelines', 'None specified')}
-KPIs for Success: {", ".join(requirements_data.get('kpis', ['Not specified']))}
+KPIs for Success: {requirements_data.get('kpis', ['Not specified'])}
 
 CAMPAIGN GENERATION REQUIREMENTS:
 Your response MUST be a single, valid JSON object and NOTHING ELSE.
@@ -883,7 +891,11 @@ def generate_fallback_campaign_py(requirements_data):
     
     industry_value = requirements_data.get('industry', 'General') # This can be a list or a string
     product_service = requirements_data.get('productService', '[Product/Service]')
-    target_audience = requirements_data.get('targetCreators', '[Target Audience]')
+    
+    # Fetch new audience descriptions
+    campaign_audience_desc = requirements_data.get('campaignAudienceDescription', '[Campaign Target Audience - Viewers]')
+    target_influencer_desc = requirements_data.get('targetInfluencerDescription', '[Target Influencer Profile - Creators]')
+
     budget_min = int(requirements_data.get('budgetRange', {}).get('min', 10000) * 0.8)
     budget_max = int(requirements_data.get('budgetRange', {}).get('max', 50000) * 0.9)
 
@@ -908,15 +920,27 @@ def generate_fallback_campaign_py(requirements_data):
     # Create niches list, ensuring 'lifestyle' is present and avoiding duplicates
     niches = list(set([first_industry_niche, 'lifestyle']))
 
+    # Updated description and brief
+    final_campaign_description = (
+        f"Algorithmic fallback campaign to {campaign_objective_str_for_description} for {product_service}. "
+        f"Targeting viewers described as: {campaign_audience_desc}. "
+        f"Seeking creators like: {target_influencer_desc}."
+    )
+    final_campaign_brief = (
+        f"This fallback campaign aims to support {company_name}'s objectives for {product_service} "
+        f"targeting viewers ({campaign_audience_desc}) by collaborating with creators fitting the profile: {target_influencer_desc}, "
+        f"using {', '.join(platforms)}."
+    )
+
     return {
         "title": f"{company_name} {campaign_objective_short_for_title} Fallback Campaign",
         "brand": company_name,
-        "description": f"Algorithmic fallback campaign to {campaign_objective_str_for_description} for {product_service}.",
-        "brief": f"This fallback campaign aims to support {company_name}'s objectives for {product_service} targeting {target_audience} using {', '.join(platforms)}.",
+        "description": final_campaign_description, # Use updated variable
+        "brief": final_campaign_brief,             # Use updated variable
         "platforms": platforms,
         "minFollowers": 10000,
         "niches": niches,
-        "locations": ["India"],
+        "locations": ["India"], # Default or make dynamic if needed
         "deliverables": ["Generic Post", "Generic Story"],
         "budgetMin": budget_min,
         "budgetMax": budget_max,
@@ -931,7 +955,7 @@ def generate_fallback_campaign_py(requirements_data):
             "optimizationSuggestions": ["Manually refine creator list", "Customize outreach messages"]
         },
         "confidence": 0.60, # Lower confidence for algorithmic fallback
-        "agentVersion": "campaign-builder-fallback-py-v1.0",
+        "agentVersion": "campaign-builder-fallback-py-v1.1", # Updated version to reflect changes
         "generatedAt": datetime.now().isoformat()
     }
 
@@ -991,7 +1015,8 @@ def save_campaign_to_db(campaign_payload, user_id, original_requirements, raw_jw
         'company_name': original_requirements.get('companyName'), 
         'product_service_name': original_requirements.get('productService'),
         'campaign_objective': original_requirements.get('campaignObjective'),
-        'target_audience': original_requirements.get('targetCreators'),
+        'campaign_audience_description': original_requirements.get('campaignAudienceDescription'),
+        'target_influencer_description': original_requirements.get('targetInfluencerDescription'),
         'key_message': original_requirements.get('keyMessage'),
         # created_at and updated_at will be set by Supabase default or triggers if defined,
         # otherwise we can set them here if needed like in the other create endpoint

@@ -35,7 +35,8 @@ interface CampaignDetail {
   companyName?: string;
   productService?: string;
   campaignObjective?: string;
-  targetCreators?: string;
+  campaignAudienceDescription?: string;
+  targetInfluencerDescription?: string;
   keyMessage?: string;
 }
 
@@ -334,7 +335,7 @@ const CampaignDetailPage: React.FC = () => {
         )}
 
         {/* Original Brief Input Section - NEW */}
-        {(campaign.companyName || campaign.productService || campaign.campaignObjective || campaign.targetCreators || campaign.keyMessage) && (
+        {(campaign.companyName || campaign.productService || campaign.campaignObjective || campaign.campaignAudienceDescription || campaign.targetInfluencerDescription || campaign.keyMessage) && (
             <div className="bg-gray-50 shadow-sm rounded-lg p-4 border border-gray-200 mt-6">
                 <h2 className="text-xl font-semibold text-gray-700 mb-3 border-b border-gray-300 pb-2">Original Brief Input</h2>
                 <div className="space-y-3 text-sm">
@@ -356,10 +357,16 @@ const CampaignDetailPage: React.FC = () => {
                             <p className="text-gray-700 whitespace-pre-wrap">{campaign.campaignObjective}</p>
                         </div>
                     )}
-                    {campaign.targetCreators && (
+                    {campaign.campaignAudienceDescription && (
                         <div>
-                            <h3 className="font-semibold text-gray-600 mb-0.5">Target Audience:</h3>
-                            <p className="text-gray-700 whitespace-pre-wrap">{campaign.targetCreators}</p>
+                            <h3 className="font-semibold text-gray-600 mb-0.5">Campaign's Target Audience (Viewers):</h3>
+                            <p className="text-gray-700 whitespace-pre-wrap">{campaign.campaignAudienceDescription}</p>
+                        </div>
+                    )}
+                    {campaign.targetInfluencerDescription && (
+                        <div>
+                            <h3 className="font-semibold text-gray-600 mb-0.5">Target Influencer Profile (Creators):</h3>
+                            <p className="text-gray-700 whitespace-pre-wrap">{campaign.targetInfluencerDescription}</p>
                         </div>
                     )}
                     {campaign.keyMessage && (

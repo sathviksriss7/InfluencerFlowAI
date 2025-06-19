@@ -59,7 +59,8 @@ interface CampaignFormData {
   companyName?: string;
   productService?: string;
   campaignObjective?: string;
-  targetCreators?: string;
+  campaignAudienceDescription?: string;
+  targetInfluencerDescription?: string;
   keyMessage?: string;
   // aiInsights are usually not directly editable by user in a simple form
   createdAt?: string; // Add createdAt
@@ -164,7 +165,8 @@ const CampaignEditPage: React.FC = () => {
               companyName: fetched.companyName,
               productService: fetched.productService,
               campaignObjective: fetched.campaignObjective,
-              targetCreators: fetched.targetCreators,
+              campaignAudienceDescription: fetched.campaignAudienceDescription || fetched.targetAudience || '',
+              targetInfluencerDescription: fetched.targetInfluencerDescription || '',
               keyMessage: fetched.keyMessage,
               createdAt: fetched.createdAt, // Include createdAt
               updatedAt: fetched.updatedAt, // Include updatedAt
@@ -509,6 +511,34 @@ const CampaignEditPage: React.FC = () => {
               placeholder="Detailed brief including goals, deliverables, key messages, do's and don'ts..."
             ></textarea>
             {formErrors.brief && <p className="mt-1 text-xs text-red-600">{formErrors.brief}</p>}
+          </div>
+
+          <div className="mb-6">
+            <label htmlFor="campaignAudienceDescription" className="block text-sm font-medium text-gray-700 mb-1">Campaign's Target Audience Description (Viewers)</label>
+            <textarea
+              id="campaignAudienceDescription"
+              name="campaignAudienceDescription"
+              rows={3}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 disabled:bg-gray-100 disabled:text-gray-500"
+              value={campaign.campaignAudienceDescription || ''}
+              onChange={handleChange}
+              placeholder="Describe the primary audience who will be viewing the campaign content (e.g., age, interests, location)."
+              disabled={isAiCampaignReadOnly}
+            />
+          </div>
+
+          <div className="mb-6">
+            <label htmlFor="targetInfluencerDescription" className="block text-sm font-medium text-gray-700 mb-1">Target Influencer Profile Description (Creators)</label>
+            <textarea
+              id="targetInfluencerDescription"
+              name="targetInfluencerDescription"
+              rows={3}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 disabled:bg-gray-100 disabled:text-gray-500"
+              value={campaign.targetInfluencerDescription || ''}
+              onChange={handleChange}
+              placeholder="Describe the ideal influencers you want to collaborate with (e.g., niche, style, follower count, platform expertise)."
+              disabled={isAiCampaignReadOnly}
+            />
           </div>
         </fieldset>
 
