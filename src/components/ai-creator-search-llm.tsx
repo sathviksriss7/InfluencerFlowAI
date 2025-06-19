@@ -1,10 +1,18 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { groqLLMService, type LLMCreatorAnalysis } from '../services/groq-llm';
 import { mockCreators } from '../mock-data/creators';
-import { type Creator } from '../types';
+import { type Creator, type Campaign as FullCampaignType } from '../types';
 import { Link } from 'react-router-dom';
 import AIOutreachManager from './ai-outreach-manager';
 import { useAuth } from '../contexts/AuthContext';
+import { supabase } from '../lib/supabase';
+
+// Simplified Campaign type for selection
+interface CampaignSelectItem {
+  id: string;
+  title: string;
+  status: string; // Keep status if needed for any display logic, though we primarily filter by it
+}
 
 interface ChatMessage {
   id: string;
@@ -157,7 +165,7 @@ interface AICreatorSearchLLMProps {
   campaignId?: string;
 }
 
-export default function AICreatorSearchLLM({ campaignId }: AICreatorSearchLLMProps) {
+export default function AICreatorSearchLLM({ campaignId: propCampaignId }: AICreatorSearchLLMProps) {
   // Load messages from localStorage on component mount
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     console.log('🚀 AICreatorSearchLLM component initializing...');
@@ -178,6 +186,115 @@ export default function AICreatorSearchLLM({ campaignId }: AICreatorSearchLLMPro
   const { session } = useAuth();
 
   const suggestions = groqLLMService.getExampleQueries();
+
+  // State for campaign assignment
+  const [availableCampaigns, setAvailableCampaigns] = useState<CampaignSelectItem[]>([]);
+  const [isLoadingCampaigns, setIsLoadingCampaigns] = useState<boolean>(true);
+  const [campaignsError, setCampaignsError] = useState<string | null>(null);
+  const [isAssignModalOpen, setIsAssignModalOpen] = useState<boolean>(false);
+  const [selectedCreatorForAssignment, setSelectedCreatorForAssignment] = useState<Creator | null>(null);
+  const [selectedCampaignIdForAssignment, setSelectedCampaignIdForAssignment] = useState<string>('');
+  const [isAssigning, setIsAssigning] = useState<boolean>(false);
+
+  // Fetch active campaigns for assignment dropdown
+  useEffect(() => {
+    const fetchCampaigns = async () => {
+      setIsLoadingCampaigns(true);
+      setCampaignsError(null);
+      console.log('Fetching active campaigns for assignment...');
+      try {
+        const { data, error } = await supabase
+          .from('campaigns')
+          .select('id, title, status') // Fetch only necessary fields
+          .eq('status', 'active'); // Fetch only active campaigns
+
+        if (error) {
+          console.error("Error fetching campaigns:", error);
+          throw error;
+        }
+        const activeCampaigns = (data || []) as CampaignSelectItem[];
+        setAvailableCampaigns(activeCampaigns);
+        console.log('Fetched active campaigns:', activeCampaigns.length);
+        if (activeCampaigns.length > 0) {
+          setSelectedCampaignIdForAssignment(activeCampaigns[0].id); // Default to first campaign
+        }
+      } catch (err: any) {
+        console.error("Error in fetchCampaigns catch block:", err);
+        setCampaignsError(err.message || "Failed to fetch campaigns.");
+        setAvailableCampaigns([]);
+      } finally {
+        setIsLoadingCampaigns(false);
+      }
+    };
+
+    fetchCampaigns();
+  }, []);
+
+  const handleOpenAssignModal = (creator: Creator) => {
+    setSelectedCreatorForAssignment(creator);
+    setIsAssignModalOpen(true);
+    if (availableCampaigns.length > 0 && !selectedCampaignIdForAssignment) {
+      setSelectedCampaignIdForAssignment(availableCampaigns[0].id);
+    }
+  };
+
+  const handleCloseAssignModal = () => {
+    setIsAssignModalOpen(false);
+    setSelectedCreatorForAssignment(null);
+    setIsAssigning(false);
+  };
+
+  const handleConfirmAssignment = async () => {
+    if (!selectedCreatorForAssignment || !selectedCampaignIdForAssignment) {
+      console.error('No creator or campaign selected for assignment.');
+      alert('Please select a creator and a campaign.');
+      return;
+    }
+
+    if (!session?.access_token) {
+      alert('Authentication error. Please log in again.');
+      return;
+    }
+
+    setIsAssigning(true);
+
+    const payload = {
+      campaign_id: selectedCampaignIdForAssignment,
+      creator_id: selectedCreatorForAssignment.id,
+      creator_name: selectedCreatorForAssignment.name,
+      creator_avatar: selectedCreatorForAssignment.avatar,
+      creator_platform: selectedCreatorForAssignment.platform,
+      creator_phone_number: (selectedCreatorForAssignment as any).phone_number || selectedCreatorForAssignment.phone_number || null 
+    };
+
+    const backendApiUrl = import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:5001';
+
+    try {
+      const response = await fetch(`${backendApiUrl}/api/outreaches`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const responseData = await response.json();
+
+      if (response.ok && responseData.success) {
+        alert(`Creator '${selectedCreatorForAssignment.name}' has been successfully assigned to the campaign!`);
+      } else {
+        console.error('Failed to assign creator:', responseData.error || response.statusText);
+        alert(`Failed to assign creator: ${responseData.error || response.statusText}`);
+      }
+    } catch (error) {
+      console.error('Error during assignment API call:', error);
+      alert('An unexpected error occurred while trying to assign the creator. Please check the console.');
+    }
+
+    setIsAssigning(false);
+    handleCloseAssignModal();
+  };
 
   // Save messages to localStorage whenever messages change
   useEffect(() => {
@@ -480,7 +597,7 @@ export default function AICreatorSearchLLM({ campaignId }: AICreatorSearchLLMPro
                 <div className="flex-1">
                   <p className="text-sm">{message.content}</p>
                   {message.llmAnalysis && (
-                    <LLMAnalysisDisplay analysis={message.llmAnalysis} />
+                    <LLMAnalysisDisplay analysis={message.llmAnalysis} onAssignCreator={handleOpenAssignModal} />
                   )}
                   <p className="text-xs opacity-70 mt-1">
                     {message.timestamp.toLocaleTimeString()}
@@ -534,7 +651,7 @@ export default function AICreatorSearchLLM({ campaignId }: AICreatorSearchLLMPro
       {/* Input */}
       <div className="p-4 border-t border-gray-200">
         {/* Add Outreach Manager Button when there are search results AND a campaignId is present */}
-        {getCurrentSearchResults().length > 0 && campaignId && (
+        {getCurrentSearchResults().length > 0 && propCampaignId && (
           <div className="mb-3 p-3 bg-gradient-to-r from-green-50 to-blue-50 border border-green-200 rounded-lg">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -548,7 +665,7 @@ export default function AICreatorSearchLLM({ campaignId }: AICreatorSearchLLMPro
                     📧 Ready to reach out to {getCurrentSearchResults().length} creators?
                   </p>
                   <p className="text-xs text-gray-600">
-                    Use AI to generate personalized outreach emails and negotiate deals for campaign: {campaignId}
+                    Use AI to generate personalized outreach emails and negotiate deals for campaign: {propCampaignId}
                   </p>
                 </div>
               </div>
@@ -587,12 +704,83 @@ export default function AICreatorSearchLLM({ campaignId }: AICreatorSearchLLMPro
       </div>
 
       {/* AI Outreach Manager Modal */}
-      {showOutreachManager && campaignId && (
+      {showOutreachManager && propCampaignId && (
         <AIOutreachManager
           searchResults={getCurrentSearchResults()}
           onClose={() => setShowOutreachManager(false)}
-          campaignId={campaignId}
+          campaignId={propCampaignId}
         />
+      )}
+
+      {/* Assign Creator to Campaign Modal */}
+      {isAssignModalOpen && selectedCreatorForAssignment && (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-75 overflow-y-auto h-full w-full z-50 flex items-center justify-center transition-opacity duration-300 ease-in-out" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+          <div className="relative mx-auto p-6 border w-full max-w-lg shadow-xl rounded-2xl bg-white transform transition-all duration-300 ease-in-out scale-100">
+            <div className="flex justify-between items-center pb-3 border-b border-gray-200">
+                <h3 className="text-xl font-semibold text-gray-800" id="modal-title">
+                    Assign Creator
+                </h3>
+                <button onClick={handleCloseAssignModal} className="text-gray-400 hover:text-gray-600 transition-colors rounded-full p-1 focus:outline-none focus:ring-2 focus:ring-gray-400">
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            <div className="mt-4">
+              <p className="text-sm text-gray-700 mb-1">You are assigning:</p>
+              <p className="text-lg font-semibold text-green-700 mb-4">{selectedCreatorForAssignment.name}</p>
+              
+              {isLoadingCampaigns ? (
+                <div className="flex justify-center items-center h-20">
+                    <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-purple-500"></div>
+                    <p className="ml-3 text-sm text-gray-500">Loading campaigns...</p>
+                </div>
+              ) : campaignsError ? (
+                <div className="p-3 mb-4 text-sm text-red-700 bg-red-100 rounded-lg" role="alert">
+                    <span className="font-medium">Error:</span> {campaignsError}
+                </div>
+              ) : availableCampaigns.length === 0 ? (
+                <div className="p-3 mb-4 text-sm text-yellow-700 bg-yellow-100 rounded-lg" role="alert">
+                    <span className="font-medium">No Active Campaigns:</span> No active campaigns available to assign this creator to.
+                </div>
+              ) : (
+                <div className="mb-6">
+                  <label htmlFor="campaign-select" className="block text-sm font-medium text-gray-700 mb-1">
+                    Select campaign to assign to:
+                  </label>
+                  <select
+                    id="campaign-select"
+                    name="campaign-select"
+                    value={selectedCampaignIdForAssignment}
+                    onChange={(e) => setSelectedCampaignIdForAssignment(e.target.value)}
+                    className="mt-1 block w-full pl-3 pr-10 py-2.5 text-base border-gray-300 focus:outline-none focus:ring-purple-500 focus:border-purple-500 sm:text-sm rounded-md shadow-sm transition-colors duration-150 ease-in-out hover:border-gray-400"
+                  >
+                    {availableCampaigns.map((campaign) => (
+                      <option key={campaign.id} value={campaign.id}>
+                        {campaign.title} (Status: {campaign.status})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+            <div className="mt-6 flex justify-end gap-3 pt-4 border-t border-gray-200">
+              <button
+                type="button"
+                onClick={handleCloseAssignModal}
+                className="px-6 py-2.5 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-400 transition-all duration-150 ease-in-out"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmAssignment}
+                disabled={isLoadingCampaigns || !!campaignsError || availableCampaigns.length === 0 || !selectedCampaignIdForAssignment || isAssigning}
+                className="px-6 py-2.5 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-60 disabled:cursor-not-allowed transition-all duration-150 ease-in-out shadow-sm hover:shadow-md"
+              >
+                {isAssigning ? 'Assigning...' : 'Confirm Assignment'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -600,185 +788,122 @@ export default function AICreatorSearchLLM({ campaignId }: AICreatorSearchLLMPro
 
 interface LLMAnalysisDisplayProps {
   analysis: LLMCreatorAnalysis;
+  onAssignCreator: (creator: Creator) => void;
 }
 
-function LLMAnalysisDisplay({ analysis }: LLMAnalysisDisplayProps) {
+function LLMAnalysisDisplay({ analysis, onAssignCreator }: LLMAnalysisDisplayProps) {
   const [showDetails, setShowDetails] = useState(false);
+  const { matchedCreators, analysisInsights, suggestions, queryUnderstanding } = analysis;
 
   // Log the entire analysis object when the component renders
-  console.log('[LLMAnalysisDisplay] Received analysis prop:', JSON.stringify(analysis, null, 2));
+  useEffect(() => {
+    // console.log('[LLMAnalysisDisplay] Analysis object received:', JSON.stringify(analysis, null, 2));
+  }, [analysis]);
 
-  const getQueryTypeDisplay = (queryType: string) => {
+  const getQueryTypeDisplay = (queryType: string | undefined) => {
+    if (!queryType) return 'General Analysis';
+    return queryType.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+  };
+
+  const getSecondaryAspectDisplay = (aspect: string | undefined) => {
+    if (!aspect) return '';
+    return aspect.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+  };
+
+  const getQueryTypeColor = (queryType: string | undefined) => {
+    if (!queryType) return 'bg-gray-100 text-gray-800';
     switch (queryType) {
-      case 'budget_optimization': return '💰 Budget Optimization';
-      case 'reach_maximization': return '📈 Reach Maximization';
-      case 'engagement_focused': return '❤️ Engagement Focused';
-      case 'niche_targeting': return '🎯 Niche Targeting';
-      default: return '🔍 General Search';
+      case 'budget_optimization': return 'bg-green-100 text-green-800';
+      case 'reach_maximization': return 'bg-blue-100 text-blue-800';
+      case 'engagement_focused': return 'bg-yellow-100 text-yellow-800';
+      case 'niche_targeting': return 'bg-purple-100 text-purple-800';
+      default: return 'bg-gray-100 text-gray-800';
     }
   };
 
-  const getSecondaryAspectDisplay = (aspect: string) => {
-    switch (aspect) {
-      case 'budget_optimization': return '💰 Budget';
-      case 'reach_maximization': return '📈 Reach';
-      case 'engagement_focused': return '❤️ Engagement';
-      case 'niche_targeting': return '🎯 Niche';
-      case 'quality_focused': return '⭐ Quality';
-      default: return aspect;
-    }
-  };
-
-  const getQueryTypeColor = (queryType: string) => {
-    switch (queryType) {
-      case 'budget_optimization': return 'text-green-600 bg-green-50';
-      case 'reach_maximization': return 'text-blue-600 bg-blue-50';
-      case 'engagement_focused': return 'text-pink-600 bg-pink-50';
-      case 'niche_targeting': return 'text-purple-600 bg-purple-50';
-      default: return 'text-gray-600 bg-gray-50';
-    }
-  };
+  if (!matchedCreators && !analysisInsights && !suggestions) {
+    return <p className="text-sm text-gray-500 p-4">No detailed analysis to display.</p>;
+  }
 
   return (
-    <div className="mt-3 space-y-3">
-      {/* Enhanced Query Understanding */}
-      <div className="bg-white bg-opacity-50 rounded-lg p-3">
-        <div className="flex items-center justify-between mb-2">
-          <h4 className="text-sm font-medium text-gray-800 flex items-center gap-1">
-            <svg className="w-4 h-4 text-purple-600" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
-            </svg>
-            AI Query Analysis
-            {/* Show if this was a contextual follow-up */}
-            {(() => {
-              const queryLower = analysis.query?.toLowerCase();
-              const hasFollowUpIndicators = ['them', 'these', 'those', 'among them', 'from above', 'from the above', 'who among'].some(indicator => 
-                queryLower?.includes(indicator)
-              );
-              return hasFollowUpIndicators ? (
-                <span className="ml-2 px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-full font-medium">
-                  🔗 Context-Aware
-                </span>
-              ) : null;
-            })()}
-          </h4>
-          <div className="flex items-center gap-2 text-xs text-gray-600">
-            <span>Confidence: {Math.round((analysis.queryUnderstanding?.confidence || 0) * 100)}%</span>
-            <span>•</span>
-            <span>{analysis.totalProcessingTime}ms</span>
+    <div className="mt-3 space-y-4">
+      {queryUnderstanding && (
+        <div className="bg-gray-50 p-3 rounded-lg border border-gray-200">
+          <div className="flex items-center justify-between mb-2">
+            <h4 className={`text-sm font-semibold px-2 py-0.5 rounded-full ${getQueryTypeColor(queryUnderstanding.queryType)}`}>
+              {getQueryTypeDisplay(queryUnderstanding.queryType)}
+            </h4>
+            {queryUnderstanding.confidence && (
+              <span className="text-xs text-gray-500">Confidence: {(queryUnderstanding.confidence * 100).toFixed(0)}%</span>
+            )}
           </div>
+          <ul className="text-xs text-gray-700 space-y-1">
+            {queryUnderstanding.intent && <li><strong>Intent:</strong> {queryUnderstanding.intent}</li>}
+            {queryUnderstanding.extractedCriteria && Object.keys(queryUnderstanding.extractedCriteria).length > 0 && (
+              <li>
+                <strong>Key Criteria:</strong>
+                <ul className="list-disc list-inside ml-2 space-y-0.5">
+                  {Object.entries(queryUnderstanding.extractedCriteria).map(([key, value]) => {
+                    if (!value || (Array.isArray(value) && value.length === 0)) return null;
+                    const displayValue = Array.isArray(value) ? value.join(', ') : String(value);
+                    return <li key={key}><span className="capitalize">{key.replace(/([A-Z])/g, ' $1')}:</span> {displayValue}</li>;
+                  })}
+                </ul>
+              </li>
+            )}
+            {queryUnderstanding.keyRequirements && queryUnderstanding.keyRequirements.length > 0 && (
+                <li><strong>User's Key Requirements:</strong> {queryUnderstanding.keyRequirements.join(', ')}</li>
+            )}
+            {queryUnderstanding.secondaryAspects && queryUnderstanding.secondaryAspects.length > 0 && (
+                <li><strong>Considered Aspects:</strong> {queryUnderstanding.secondaryAspects.map(getSecondaryAspectDisplay).join(', ')}</li>
+            )}
+          </ul>
         </div>
-        
-        {/* Primary Query Type Badge */}
-        {analysis.queryUnderstanding?.queryType && (
-          <div className="mb-2">
-            <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${getQueryTypeColor(analysis.queryUnderstanding.queryType)}`}>
-              {getQueryTypeDisplay(analysis.queryUnderstanding.queryType)}
-            </span>
-          </div>
-        )}
+      )}
 
-        {/* Secondary Aspects */}
-        {analysis.queryUnderstanding?.secondaryAspects && analysis.queryUnderstanding.secondaryAspects.length > 0 && (
-          <div className="mb-2">
-            <span className="text-xs text-gray-600 mr-2">Also includes:</span>
-            <div className="flex flex-wrap gap-1 mt-1">
-              {(analysis.queryUnderstanding.secondaryAspects || []).map((aspect: string, index: number) => (
-                <span key={index} className="px-2 py-1 bg-gray-100 text-gray-700 rounded text-xs">
-                  {getSecondaryAspectDisplay(aspect)}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-        
-        {analysis.queryUnderstanding?.intent && (
-          <p className="text-xs text-gray-600 mb-2">
-            <strong>Intent:</strong> {analysis.queryUnderstanding.intent}
-          </p>
-        )}
-        
-        {/* Key Requirements */}
-        {analysis.queryUnderstanding?.keyRequirements && analysis.queryUnderstanding.keyRequirements.length > 0 && (
-          <div className="text-xs text-gray-600 mb-2">
-            <strong>Key Requirements:</strong>
-            <div className="flex flex-wrap gap-1 mt-1">
-              {(analysis.queryUnderstanding.keyRequirements || []).map((req, index) => (
-                <span key={index} className="px-2 py-1 bg-purple-100 text-purple-700 rounded text-xs">
-                  {req}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-        
-        {/* Extracted Criteria Details */}
-        {(analysis.queryUnderstanding?.extractedCriteria) && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-gray-600">
-            {analysis.queryUnderstanding.extractedCriteria.platforms && (
-              <div>
-                <strong>Platforms:</strong> {(analysis.queryUnderstanding.extractedCriteria.platforms || []).join(', ')}
-              </div>
-            )}
-            
-            {analysis.queryUnderstanding.extractedCriteria.niches && (
-              <div>
-                <strong>Niches:</strong> {(analysis.queryUnderstanding.extractedCriteria.niches || []).join(', ')}
-              </div>
-            )}
-            
-            {analysis.queryUnderstanding.extractedCriteria.followerRange && (
-              <div>
-                <strong>Audience Size:</strong> {analysis.queryUnderstanding.extractedCriteria.followerRange}
-              </div>
-            )}
-
-            {analysis.queryUnderstanding.extractedCriteria.budget && (
-              <div>
-                <strong>Budget Focus:</strong> {analysis.queryUnderstanding.extractedCriteria.budget}
-              </div>
-            )}
-
-            {analysis.queryUnderstanding.extractedCriteria.location && (
-              <div>
-                <strong>Location:</strong> {analysis.queryUnderstanding.extractedCriteria.location}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Top Recommendations */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <h4 className="text-sm font-medium text-gray-800">
-            🎯 Intelligent Recommendations ({(analysis.matchedCreators || []).length} found)
-          </h4>
-          <button
-            onClick={() => setShowDetails(!showDetails)}
-            className="text-xs text-purple-600 hover:underline"
-          >
-            {showDetails ? 'Show Less' : 'Show Details'}
-          </button>
+      {analysisInsights && (
+        <div className="bg-indigo-50 p-3 rounded-lg border border-indigo-200">
+          <h5 className="text-xs font-semibold text-indigo-700 mb-1">AI Insights:</h5>
+          <p className="text-xs text-indigo-600 whitespace-pre-wrap">{analysisInsights}</p>
         </div>
-        
-        {(analysis.matchedCreators || []).filter(Boolean).slice(0, showDetails ? 10 : 3).map((match) => (
-          <LLMCreatorCard key={match.creator.id} match={match} showDetails={showDetails} queryType={analysis.queryUnderstanding?.queryType || 'general_search'} />
-        ))}
-      </div>
+      )}
 
-      {/* AI Suggestions */}
-      {analysis.suggestions && analysis.suggestions.length > 0 && (
-        <div className="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-3">
-          <h4 className="text-sm font-medium text-purple-800 mb-2 flex items-center gap-1">
-            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
-            </svg>
-            Smart Suggestions
-          </h4>
-          <ul className="text-xs text-purple-700 space-y-1">
-            {(analysis.suggestions || []).map((suggestion, index) => (
-              <li key={index}>• {suggestion}</li>
+      {(matchedCreators || []).length > 0 && (
+        <div className="space-y-3">
+          <h5 className="text-sm font-semibold text-gray-800">
+            Found {(matchedCreators || []).length} potential creators based on your query.
+            {((matchedCreators || []).length > 3 && !showDetails) && 
+              <span className="text-xs ml-2 text-gray-500">(Showing top 3)</span>
+            }
+          </h5>
+          
+          {(matchedCreators || []).filter(Boolean).slice(0, showDetails ? 10 : 3).map((match) => (
+            <LLMCreatorCard 
+              key={match.creator.id} 
+              match={match} 
+              showDetails={showDetails} 
+              queryType={queryUnderstanding?.queryType || 'general_search'} 
+              onAssignCreator={onAssignCreator}
+            />
+          ))}
+        </div>
+      )}
+
+      {((matchedCreators || []).length > 3) && (
+        <button 
+          onClick={() => setShowDetails(!showDetails)}
+          className="text-xs text-purple-600 hover:text-purple-800 hover:underline focus:outline-none mt-2"
+        >
+          {showDetails ? 'Show Less' : 'Show More Creators'}
+        </button>
+      )}
+
+      {suggestions && suggestions.length > 0 && (
+        <div className="bg-gray-50 p-3 rounded-lg border border-gray-200">
+          <h5 className="text-xs font-semibold text-gray-700 mb-1">AI Suggestions:</h5>
+          <ul className="text-xs text-gray-600 space-y-0.5 list-disc list-inside">
+            {(suggestions || []).map((suggestion, index) => (
+              <li key={index}>{suggestion}</li>
             ))}
           </ul>
         </div>
@@ -791,9 +916,10 @@ interface LLMCreatorCardProps {
   match: LLMCreatorAnalysis['matchedCreators'][0];
   showDetails: boolean;
   queryType: string;
+  onAssignCreator: (creator: Creator) => void;
 }
 
-function LLMCreatorCard({ match, showDetails, queryType }: LLMCreatorCardProps) {
+function LLMCreatorCard({ match, showDetails, queryType, onAssignCreator }: LLMCreatorCardProps) {
   // Log the received match prop for debugging
   console.log('[LLMCreatorCard] Received match prop:', JSON.stringify(match, null, 2));
 
@@ -835,114 +961,47 @@ function LLMCreatorCard({ match, showDetails, queryType }: LLMCreatorCardProps) 
             <div className="flex items-center gap-2">
               <Link 
                 to={`/creators/${creator.id}`}
-                className="font-medium text-gray-900 hover:text-purple-600 transition-colors truncate"
+                className="text-sm font-medium text-gray-900 hover:underline"
               >
                 {creator.name}
               </Link>
-              {creator.verified && (
-                <svg className="w-4 h-4 text-blue-500 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                </svg>
-              )}
-            </div>
-            <div className="text-right flex-shrink-0">
-              <div className={`text-sm font-bold ${getRecommendationColor(recommendationLevel)}`}>
-                {relevanceScore}% match
-              </div>
-              <div className="text-xs text-gray-500">
-                {getRecommendationBadge(recommendationLevel)}
-              </div>
             </div>
           </div>
-          
-          <div className="text-xs text-gray-600 mb-2 truncate">
-            {creator.username} • {creator.platform} • {creator.metrics.followers.toLocaleString()} followers
-          </div>
-          
-          {/* LLM Reasoning */}
-          <div className="bg-gradient-to-r from-purple-50 to-blue-50 rounded p-2 mb-2">
-            <div className="flex items-center gap-1 mb-1">
-              <svg className="w-3 h-3 text-purple-600" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
-              </svg>
-              <span className="text-xs font-medium text-purple-700">AI Analysis</span>
-            </div>
-            <p className="text-xs text-purple-600">{reasoning}</p>
-          </div>
-          
-          {/* Enhanced Metrics for Budget Optimization */}
-          {queryType === 'budget_optimization' && (
-            <div className="bg-green-50 rounded p-2 mb-2">
-              <div className="flex items-center gap-1 mb-1">
-                <span className="text-xs font-medium text-green-700">💰 Value Analysis</span>
-              </div>
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div>
-                  <span className="text-green-600">Cost per 1K followers:</span>
-                  <div className="font-medium text-green-800">₹{calculateCostPerFollower()}</div>
-                </div>
-                {costEffectivenessScore && (
-                  <div>
-                    <span className="text-green-600">Value Score:</span>
-                    <div className="font-medium text-green-800">{costEffectivenessScore}/100</div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Reach Potential for Reach Maximization */}
-          {queryType === 'reach_maximization' && reachPotential && (
-            <div className="bg-blue-50 rounded p-2 mb-2">
-              <div className="flex items-center gap-1 mb-1">
-                <span className="text-xs font-medium text-blue-700">📈 Reach Analysis</span>
-              </div>
-              <p className="text-xs text-blue-600">{reachPotential}</p>
-            </div>
-          )}
-          
-          {showDetails && (
-            <div className="space-y-2 mt-2 pt-2 border-t border-gray-100">
-              {/* Strengths */}
-              <div>
-                <h5 className="text-xs font-medium text-gray-700 mb-1">Strengths:</h5>
-                <ul className="text-xs text-gray-600 space-y-0.5 list-disc list-inside">
-                  {(strengths || []).map((strength, index) => (
-                    <li key={index}>{strength}</li>
-                  ))}
-                </ul>
-              </div>
-              
-              {/* Concerns */}
-              {concerns && concerns.length > 0 && (
-                <div className="bg-orange-50 rounded p-2 mt-2">
-                  <h5 className="text-xs font-medium text-orange-700 mb-1">Considerations:</h5>
-                  <ul className="text-xs text-orange-600 space-y-0.5 list-disc list-inside">
-                    {(concerns || []).map((concern, index) => (
-                      <li key={index}>{concern}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              
-              {/* Quick Stats */}
-              <div className="grid grid-cols-3 gap-2 text-xs pt-2 mt-2 border-t border-gray-100">
-                <div className="text-center bg-gray-50 rounded p-1">
-                  <div className="font-medium text-gray-900">{creator.metrics.engagementRate}%</div>
-                  <div className="text-gray-600">Engagement</div>
-                </div>
-                <div className="text-center bg-gray-50 rounded p-1">
-                  <div className="font-medium text-gray-900">{creator.rating}/5</div>
-                  <div className="text-gray-600">Rating</div>
-                </div>
-                <div className="text-center bg-gray-50 rounded p-1">
-                  <div className="font-medium text-gray-900">₹{creator.rates.post}</div>
-                  <div className="text-gray-600">Per Post</div>
-                </div>
-              </div>
-            </div>
-          )}
+          <p className="text-xs text-gray-600 mb-2">
+            {creator.bio}
+          </p>
+          <p className="text-xs text-gray-600 mb-2">
+            <strong>Relevance Score:</strong> {relevanceScore}%
+          </p>
+          <p className="text-xs text-gray-600 mb-2">
+            <strong>Reasoning:</strong> {reasoning}
+          </p>
+          <p className="text-xs text-gray-600 mb-2">
+            <strong>Strengths:</strong> {strengths.join(', ')}
+          </p>
+          <p className="text-xs text-gray-600 mb-2">
+            <strong>Concerns:</strong> {concerns.join(', ')}
+          </p>
+          <p className="text-xs text-gray-600 mb-2">
+            <strong>Recommendation Level:</strong> {getRecommendationBadge(recommendationLevel)}
+          </p>
+          <p className="text-xs text-gray-600 mb-2">
+            <strong>Cost Per Follower:</strong> ${calculateCostPerFollower()}
+          </p>
         </div>
+      </div>
+
+      {/* Assign to Campaign Button */}
+      <div className="mt-4 pt-3 border-t border-gray-200">
+        <button
+          onClick={() => onAssignCreator(creator)}
+          className="w-full flex items-center justify-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors"
+        >
+          <svg className="w-5 h-5 mr-2 -ml-1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
+          </svg>
+          Assign to Campaign
+        </button>
       </div>
     </div>
   );

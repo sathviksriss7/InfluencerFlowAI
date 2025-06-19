@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { type Creator } from '../types';
+import { type Creator, type Campaign } from '../types';
+import { useAuth } from '../contexts/AuthContext';
+import { toast } from 'react-toastify';
 
 export default function CreatorProfile() {
   const { id } = useParams<{ id: string }>();
@@ -9,6 +11,16 @@ export default function CreatorProfile() {
   const [creator, setCreator] = useState<Creator | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+
+  // State for assignment modal
+  const [showAssignModal, setShowAssignModal] = useState(false);
+  // selectedCreatorForAssignment will be set from the main 'creator' state
+  const [assignableCampaigns, setAssignableCampaigns] = useState<Campaign[]>([]);
+  const [selectedCampaignIdForAssignment, setSelectedCampaignIdForAssignment] = useState<string | ''>('');
+  const [isFetchingCampaigns, setIsFetchingCampaigns] = useState(false);
+  const [isAssigningCreator, setIsAssigningCreator] = useState(false);
+
+  const { session } = useAuth(); // Get session for API calls
 
   useEffect(() => {
     const fetchCreatorDetails = async () => {
@@ -48,6 +60,94 @@ export default function CreatorProfile() {
 
     fetchCreatorDetails();
   }, [id]);
+
+  const fetchAssignableCampaigns = async () => {
+    if (!session) {
+      toast.error('You must be logged in to fetch campaigns.');
+      return;
+    }
+    setIsFetchingCampaigns(true);
+    try {
+      const response = await fetch(`${import.meta.env.VITE_BACKEND_API_URL}/api/campaigns`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to fetch campaigns' }));
+        throw new Error(errorData.error || errorData.message || `HTTP error! status: ${response.status}`);
+      }
+      const data = await response.json();
+      setAssignableCampaigns(data.campaigns || []);
+      if (!data.campaigns || data.campaigns.length === 0) {
+        toast.info('No campaigns found to assign to.');
+      }
+    } catch (error: any) {
+      console.error('Error fetching assignable campaigns:', error);
+      toast.error(`Error fetching campaigns: ${error.message}`);
+      setAssignableCampaigns([]);
+    } finally {
+      setIsFetchingCampaigns(false);
+    }
+  };
+
+  const handleOpenAssignModal = () => {
+    if (!creator) {
+        toast.error('Creator data not loaded yet.');
+        return;
+    }
+    // setSelectedCreatorForAssignment is not needed here as we use 'creator' directly
+    setSelectedCampaignIdForAssignment(''); // Reset selected campaign
+    setShowAssignModal(true);
+    fetchAssignableCampaigns(); // Fetch campaigns when modal is opened
+  };
+
+  const handleCloseAssignModal = () => {
+    setShowAssignModal(false);
+    setAssignableCampaigns([]);
+    setSelectedCampaignIdForAssignment('');
+  };
+
+  const handleAssignCreator = async () => {
+    if (!session || !creator || !selectedCampaignIdForAssignment) {
+      toast.error('Missing information to assign creator.');
+      return;
+    }
+    setIsAssigningCreator(true);
+    try {
+      const payload = {
+        campaign_id: selectedCampaignIdForAssignment,
+        creator_id: creator.id,
+        creator_name: creator.name,
+        creator_avatar: creator.avatar,
+        creator_platform: creator.platform,
+      };
+
+      const response = await fetch(`${import.meta.env.VITE_BACKEND_API_URL}/api/outreaches`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const responseData = await response.json();
+
+      if (!response.ok) {
+        throw new Error(responseData.error || 'Failed to assign creator to campaign.');
+      }
+
+      toast.success(`${creator.name} assigned to campaign successfully!`);
+      handleCloseAssignModal();
+    } catch (error: any) {
+      console.error('Error assigning creator:', error);
+      toast.error(`Error assigning creator: ${error.message}`);
+    } finally {
+      setIsAssigningCreator(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -179,13 +279,20 @@ export default function CreatorProfile() {
               <span className="text-gray-600">{creator.responseTime ?? 'N/A'}</span>
             </div>
           </div>
-          <div className="flex gap-3">
-            <button className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg transition-colors">
+          <div className="flex flex-col gap-3">
+            <button 
+              onClick={handleOpenAssignModal}
+              className="bg-green-500 hover:bg-green-600 text-white font-semibold px-6 py-3 rounded-lg transition-colors text-sm w-full"
+              disabled={isFetchingCampaigns || isAssigningCreator}
+            >
+              Assign to Campaign
+            </button>
+            {/* <button className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg transition-colors w-full">
               Contact Creator
-            </button>
-            <button className="border border-gray-300 hover:bg-gray-50 text-gray-700 px-6 py-3 rounded-lg transition-colors">
+            </button> */}
+            {/* <button className="border border-gray-300 hover:bg-gray-50 text-gray-700 px-6 py-3 rounded-lg transition-colors w-full">
               Save Profile
-            </button>
+            </button> */}
           </div>
         </div>
       </div>
@@ -373,6 +480,58 @@ export default function CreatorProfile() {
           )}
         </div>
       </div>
+
+      {/* Assignment Modal - Placed at the end of the main div */}
+      {showAssignModal && creator && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md space-y-4">
+            <h2 className="text-xl font-semibold text-gray-900">
+              Assign <span className="text-blue-600">{creator.name}</span> to Campaign
+            </h2>
+            
+            <div>
+              <label htmlFor="campaignSelectProfile" className="block text-sm font-medium text-gray-700 mb-1">
+                Select Campaign
+              </label>
+              <select
+                id="campaignSelectProfile"
+                value={selectedCampaignIdForAssignment}
+                onChange={(e) => setSelectedCampaignIdForAssignment(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                disabled={isFetchingCampaigns || assignableCampaigns.length === 0}
+              >
+                <option value="" disabled>{isFetchingCampaigns ? 'Loading campaigns...' : 'Select a campaign'}</option>
+                {assignableCampaigns.map((campaign) => (
+                  <option key={campaign.id} value={campaign.id}>
+                    {campaign.title} (ID: {campaign.id.substring(0,8)})
+                  </option>
+                ))}
+              </select>
+              {isFetchingCampaigns && <p className='text-xs text-gray-500 mt-1'>Fetching campaigns...</p>}
+              {!isFetchingCampaigns && assignableCampaigns.length === 0 && !isFetchingCampaigns && <p className='text-xs text-red-500 mt-1'>No campaigns available to assign.</p>}
+            </div>
+
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={handleCloseAssignModal}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                disabled={isAssigningCreator}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleAssignCreator}
+                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors disabled:opacity-50"
+                disabled={!selectedCampaignIdForAssignment || isAssigningCreator || isFetchingCampaigns}
+              >
+                {isAssigningCreator ? 'Assigning...' : 'Confirm Assignment'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 } 

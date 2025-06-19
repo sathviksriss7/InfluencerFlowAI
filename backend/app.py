@@ -197,7 +197,7 @@ def build_document_extraction_prompt(text_content: str) -> str:
     json_structure_example = {
         "brand_name": "string (e.g., 'EcoFresh Juices') or null",
         "product_service_name": "string (e.g., 'Organic Cold-Pressed Juice Subscription'). If multiple distinct products or services are listed, provide them as a comma-separated string (e.g., 'Product A, Product B, Service X'). or null",
-        "industry": ["list of strings (e.g., [\"Technology\", \"Fashion\"])", "or empty list []"],
+        "industry": "string (e.g., 'Technology', 'Fashion') or null", # Added for campaign's primary industry
         "campaign_objectives": ["list of strings (e.g., [\"Increase brand awareness\", \"Drive trial subscriptions\"])", "or empty list []"],
         "target_audience_description": "string (detailed description of the ideal customer, demographics, interests) or null",
         "key_message_points": ["list of strings (main selling points or messages to convey) or empty list []"],
@@ -745,9 +745,10 @@ def handle_generate_outreach_message():
 def build_campaign_generation_prompt(requirements_data):
     # Extracting data with defaults to prevent KeyErrors
     company_name = requirements_data.get('companyName', 'the client')
-    # MODIFIED: Handle industry as a list, join for the prompt or use a default
     industry_list = requirements_data.get('industry', [])
-    industry_str = ', '.join(industry_list) if industry_list else '[General Industry]'
+    # For the prompt context, using the first industry from the list if available.
+    # The LLM will be asked to determine the primary campaign industry for the JSON output.
+    primary_industry_for_context = industry_list[0] if industry_list else '[General Industry]'
     product_service = requirements_data.get('productService', '[Product/Service]')
     business_goals_list = requirements_data.get('businessGoals', [])
     business_goals_str = ", ".join(business_goals_list) if business_goals_list else '[Business Goals]'
@@ -788,8 +789,8 @@ def build_campaign_generation_prompt(requirements_data):
 
 Business Requirements:
 Company Name: {company_name}
-Industry: {industry_str} # MODIFIED: Use industry_str
-Product/Service: {product_service} # MODIFIED: Use product_service
+Primary Industry Context: {primary_industry_for_context} # This is context from requirements
+Product/Service: {product_service}
 Campaign Objective: {campaign_objective_str_for_prompt}
 Campaign's Target Audience (Viewers): {campaign_audience_desc} # MODIFIED: New field and label
 Target Influencer Profile (Creators): {target_influencer_desc} # MODIFIED: New field and label
@@ -811,25 +812,26 @@ ADHERE STRICTLY TO THE JSON FORMAT AND ALL SYNTAX RULES.
 JSON Structure and Rules:
 1.  **`title` (String)**: Catchy and descriptive. Must be a single string in double quotes (e.g., "My Awesome Campaign").
 2.  **`brand` (String)**: Brand name for the campaign (use "{company_name}"). Must be a single string in double quotes.
-3.  **`description` (String)**: Short, compelling overview (2-3 sentences). Must be a single string in double quotes.
-4.  **`brief` (String)**: Detailed brief (3-5 sentences) expanding on the objective and target audience. Must be a single string in double quotes. Do NOT use arrays or lists for this field.
-5.  **`platforms` (Array of Strings)**: Recommended platforms. Must be a JSON array of strings (e.g., ["Instagram", "YouTube", "TikTok"]). Each string in the array must be in double quotes.
-6.  **`minFollowers` (Integer)**: Suggested minimum follower count for influencers (e.g., 5000).
-7.  **`niches` (Array of Strings)**: Target influencer niches. Must be a JSON array of strings (e.g., ["Technology", "Finance", "AI"]).
-8.  **`locations` (Array of Strings)**: Target geographic locations for influencers. Must be a JSON array of strings (e.g., ["USA", "Global"]).
-9.  **`deliverables` (Array of Strings)**: Specific content deliverables. Must be a JSON array of strings (e.g., ["1 Instagram Post", "2 Stories"]).
-10. **`budgetMin` (Integer)**: Estimated minimum budget for the campaign (USD) (e.g., 5000).
-11. **`budgetMax` (Integer)**: Estimated maximum budget for the campaign (USD) (e.g., 15000).
-12. **`startDate` (String)**: "YYYY-MM-DD" format (e.g., "2024-08-01"). Must be a single string in double quotes.
-13. **`endDate` (String)**: "YYYY-MM-DD" format (e.g., "2024-09-30"). Must be a single string in double quotes.
-14. **`applicationDeadline` (String)**: "YYYY-MM-DD" format (e.g., "2024-07-15"). Must be a single string in double quotes.
-15. **`aiInsights` (Object)**: Detailed AI-driven analysis. This MUST be a JSON object containing the following keys:
+3.  **`industry` (String or Null)**: The primary industry for THIS SPECIFIC CAMPAIGN (e.g., "Technology", "Fashion", "Gaming"). This might be derived from the business requirements but should be a single descriptor for the campaign. If not clearly identifiable or applicable, use null.
+4.  **`description` (String)**: Short, compelling overview (2-3 sentences). Must be a single string in double quotes.
+5.  **`brief` (String)**: Detailed brief (3-5 sentences) expanding on the objective and target audience. Must be a single string in double quotes. Do NOT use arrays or lists for this field.
+6.  **`platforms` (Array of Strings)**: Recommended platforms. Must be a JSON array of strings (e.g., ["Instagram", "YouTube", "TikTok"]). Each string in the array must be in double quotes.
+7.  **`minFollowers` (Integer)**: Suggested minimum follower count for influencers (e.g., 5000).
+8.  **`niches` (Array of Strings)**: Target influencer niches. Must be a JSON array of strings (e.g., ["Technology", "Finance", "AI"]).
+9.  **`locations` (Array of Strings)**: Target geographic locations for influencers. Must be a JSON array of strings (e.g., ["USA", "Global"]).
+10. **`deliverables` (Array of Strings)**: Specific content deliverables. Must be a JSON array of strings (e.g., ["1 Instagram Post", "2 Stories"]).
+11. **`budgetMin` (Integer)**: Estimated minimum budget for the campaign (USD) (e.g., 5000).
+12. **`budgetMax` (Integer)**: Estimated maximum budget for the campaign (USD) (e.g., 15000).
+13. **`startDate` (String)**: "YYYY-MM-DD" format (e.g., "2024-08-01"). Must be a single string in double quotes.
+14. **`endDate` (String)**: "YYYY-MM-DD" format (e.g., "2024-09-30"). Must be a single string in double quotes.
+15. **`applicationDeadline` (String)**: "YYYY-MM-DD" format (e.g., "2024-07-15"). Must be a single string in double quotes.
+16. **`aiInsights` (Object)**: Detailed AI-driven analysis. This MUST be a JSON object containing the following keys:
     *   `strategy` (String): Overall strategic approach. Must be a single string in double quotes.
     *   `reasoning` (String): Justification for choices. Must be a single string in double quotes.
     *   `successFactors` (Array of Strings): Key elements for success. Must be a JSON array of strings.
     *   `potentialChallenges` (Array of Strings): Foreseeable obstacles. Must be a JSON array of strings.
     *   `optimizationSuggestions` (Array of Strings): Tips for improvement. Must be a JSON array of strings.
-16. **`confidence` (Float)**: Your confidence in this campaign plan (0.0 to 1.0, e.g., 0.9).
+17. **`confidence` (Float)**: Your confidence in this campaign plan (0.0 to 1.0, e.g., 0.9).
 
 CRITICAL JSON SYNTAX REMINDERS:
 - Every key MUST be in double quotes (e.g., "title").
@@ -876,51 +878,39 @@ def generate_fallback_campaign_py(requirements_data):
     print("🤖 Campaign Agent (Backend): Generating campaign using OFFLINE algorithmic strategy...")
     company_name = requirements_data.get('companyName', '[Company]')
     
+    # Determine campaign industry from requirements_data.industry
+    req_industry_val = requirements_data.get('industry')
+    campaign_industry = 'General' # Default
+    if isinstance(req_industry_val, list) and req_industry_val:
+        campaign_industry = str(req_industry_val[0]) # Take the first item if it's a list
+    elif isinstance(req_industry_val, str) and req_industry_val:
+        campaign_industry = req_industry_val # Use as is if it's a string
+    
     campaign_objective_input = requirements_data.get('campaignObjective') 
-
-    campaign_objective_short_for_title = "Campaign" # Default for title
-    campaign_objective_str_for_description = "achieve business objectives" # Default for description
-
-    if isinstance(campaign_objective_input, list) and campaign_objective_input: # If it's a non-empty list
-        campaign_objective_short_for_title = campaign_objective_input[0] # Use the first objective string
+    campaign_objective_short_for_title = "Campaign"
+    campaign_objective_str_for_description = "achieve business objectives"
+    if isinstance(campaign_objective_input, list) and campaign_objective_input:
+        campaign_objective_short_for_title = campaign_objective_input[0]
         campaign_objective_str_for_description = ", ".join(campaign_objective_input)
-    elif isinstance(campaign_objective_input, str) and campaign_objective_input: # If it's a non-empty string
+    elif isinstance(campaign_objective_input, str) and campaign_objective_input:
         campaign_objective_short_for_title = campaign_objective_input
         campaign_objective_str_for_description = campaign_objective_input
-    # If campaign_objective_input is None, empty list, empty string, or other type, the defaults will be used.
     
-    industry_value = requirements_data.get('industry', 'General') # This can be a list or a string
     product_service = requirements_data.get('productService', '[Product/Service]')
-    
-    # Fetch new audience descriptions
     campaign_audience_desc = requirements_data.get('campaignAudienceDescription', '[Campaign Target Audience - Viewers]')
     target_influencer_desc = requirements_data.get('targetInfluencerDescription', '[Target Influencer Profile - Creators]')
-
     budget_min = int(requirements_data.get('budgetRange', {}).get('min', 10000) * 0.8)
     budget_max = int(requirements_data.get('budgetRange', {}).get('max', 50000) * 0.9)
-
-    # Simplified date logic for fallback
     from datetime import datetime, timedelta
     start_date_obj = datetime.now() + timedelta(days=7)
     end_date_obj = start_date_obj + timedelta(days=30)
     app_deadline_obj = start_date_obj - timedelta(days=3)
-
-    # Simplified platform/niche selection for fallback
     platforms = requirements_data.get('preferredPlatforms', ['instagram', 'youtube'])[:2]
     
-    first_industry_niche = 'general' # Default niche
-    if isinstance(industry_value, list) and industry_value:
-        # If industry_value is a non-empty list, take the first item, ensure it's a string, then lowercase
-        first_industry_niche = str(industry_value[0]).lower()
-    elif isinstance(industry_value, str):
-        # If industry_value is a string, lowercase it
-        first_industry_niche = industry_value.lower()
-    # If industry_value is an empty list or another type, 'general' (default) will be used.
-
-    # Create niches list, ensuring 'lifestyle' is present and avoiding duplicates
+    # Use the determined campaign_industry for the niche or a general one
+    first_industry_niche = campaign_industry.lower() if campaign_industry != 'General' else 'general'
     niches = list(set([first_industry_niche, 'lifestyle']))
 
-    # Updated description and brief
     final_campaign_description = (
         f"Algorithmic fallback campaign to {campaign_objective_str_for_description} for {product_service}. "
         f"Targeting viewers described as: {campaign_audience_desc}. "
@@ -2914,33 +2904,29 @@ def list_campaigns():
         return jsonify({"success": False, "error": "User context or token not available."}), 401
         
     current_user_id = request.current_user.id
-    raw_jwt_token = request.raw_jwt # Get the raw token from the request object populated by @token_required
+    raw_jwt_token = request.raw_jwt
     
     print(f"ℹ️ Fetching campaigns for user_id: {current_user_id}. JWT is {'present' if raw_jwt_token else 'MISSING'}.")
 
-    # Store the current headers of the PostgREST client session
     original_postgrest_headers = supabase_client.postgrest.session.headers.copy()
 
     try:
         if raw_jwt_token:
             print(f"💾 DEBUG: list_campaigns - Temporarily setting PostgREST auth to user's JWT. Snippet: {raw_jwt_token[:20]}...")
-            supabase_client.postgrest.auth(raw_jwt_token) # Set current request to use user's JWT
+            supabase_client.postgrest.auth(raw_jwt_token)
         else:
-            # This case should ideally not happen if @token_required is working and RLS needs auth.uid()
             print("⚠️ WARNING: list_campaigns - No raw_jwt_token available. RLS policies using auth.uid() may not work as expected.")
 
-        campaigns_response = supabase_client.table('campaigns') \
-                                .select('id, title, brand, description, status, budget_min, budget_max, application_deadline, start_date, end_date, platforms, niches, deliverables, min_followers, locations, ai_insights, user_id, created_at, creation_method') \
-                                .eq('user_id', current_user_id) \
-                                .order('created_at', desc=True) \
-                                .execute()
+        campaigns_response = (supabase_client.table('campaigns')
+                                .select('*')  # MODIFIED to select all fields
+                                .eq('user_id', current_user_id)
+                                .order('created_at', desc=True)
+                                .execute())
 
-        # ADDED DEBUGGING: Print the raw response from Supabase
         print(f"💾 DEBUG: Raw Supabase response in list_campaigns: {campaigns_response}")
-        # You can also log specific parts like campaigns_response.data if you want to inspect it directly
         if hasattr(campaigns_response, 'data'):
             print(f"💾 DEBUG: campaigns_response.data in list_campaigns: {campaigns_response.data}")
-        if hasattr(campaigns_response, 'error') and campaigns_response.error: # Check if error is not None
+        if hasattr(campaigns_response, 'error') and campaigns_response.error:
             print(f"💾 DEBUG: campaigns_response.error in list_campaigns: {campaigns_response.error}")
 
         fetched_campaigns = []
@@ -2949,46 +2935,15 @@ def list_campaigns():
         
         if not fetched_campaigns:
             print(f"ℹ️ No campaigns found for user {current_user_id} or campaigns_response.data was empty/None.")
-            # It's important to return success:true here as per frontend expectation for empty list
             return jsonify({"success": True, "campaigns": []})
 
-        # Transform data to match frontend's expected nested structure
-        transformed_campaigns = []
-        for campaign_row in fetched_campaigns:
-            transformed = {
-                "id": campaign_row.get('id'),
-                "title": campaign_row.get('title'),
-                "brand": campaign_row.get('brand'),
-                "description": campaign_row.get('description'),
-                "status": campaign_row.get('status'),
-                "creation_method": campaign_row.get('creation_method'), # Added creation_method
-                "budget": {
-                    "min": campaign_row.get('budget_min'),
-                    "max": campaign_row.get('budget_max')
-                },
-                "timeline": {
-                    "applicationDeadline": campaign_row.get('application_deadline'),
-                    "startDate": campaign_row.get('start_date'),
-                    "endDate": campaign_row.get('end_date')
-                },
-                "requirements": {
-                    "platforms": campaign_row.get('platforms', []), 
-                    "minFollowers": campaign_row.get('min_followers'),
-                },
-                "platforms": campaign_row.get('platforms', []), 
-                "niches": campaign_row.get('niches', []),
-                "deliverables": campaign_row.get('deliverables', []),
-                "locations": campaign_row.get('locations', []),
-                "min_followers": campaign_row.get('min_followers'), 
-                "ai_insights": campaign_row.get('ai_insights'),
-                "user_id": campaign_row.get('user_id'),
-                "created_at": campaign_row.get('created_at'),
-                "applicants": campaign_row.get('applicants', 0), 
-                "selected": campaign_row.get('selected', 0)    
-            }
-            transformed_campaigns.append(transformed)
+        # MODIFIED: Use transform_campaign_for_frontend for each campaign
+        transformed_campaigns = [transform_campaign_for_frontend(campaign_row) for campaign_row in fetched_campaigns]
         
-        print(f"✅ Fetched and transformed {len(transformed_campaigns)} campaigns for user {current_user_id}. Now including creation_method.")
+        # Filter out None results if transform_campaign_for_frontend can return None (e.g., for invalid data)
+        transformed_campaigns = [c for c in transformed_campaigns if c is not None]
+
+        print(f"✅ Fetched and transformed {len(transformed_campaigns)} campaigns for user {current_user_id}.")
         return jsonify({"success": True, "campaigns": transformed_campaigns})
 
     except Exception as e:
@@ -2998,7 +2953,6 @@ def list_campaigns():
         traceback.print_exc()
         return jsonify({"success": False, "error": error_message}), 500
     finally:
-        # CRITICAL: Restore the original headers to the PostgREST client
         print("💾 DEBUG: list_campaigns - Restoring original PostgREST client session headers.")
         supabase_client.postgrest.session.headers = original_postgrest_headers
 
@@ -3016,10 +2970,9 @@ def get_campaign_by_id(campaign_id):
         
     current_user_id = request.current_user.id
     raw_jwt_token = request.raw_jwt
+    original_postgrest_headers = supabase_client.postgrest.session.headers.copy()
 
     print(f"ℹ️ Fetching campaign with id: {campaign_id} for user_id: {current_user_id}. JWT is {'present' if raw_jwt_token else 'MISSING'}.")
-
-    original_postgrest_headers = supabase_client.postgrest.session.headers.copy()
 
     try:
         if raw_jwt_token:
@@ -3028,21 +2981,16 @@ def get_campaign_by_id(campaign_id):
         else:
             print("⚠️ WARNING: get_campaign_by_id - No raw_jwt_token available. RLS policies using auth.uid() may not work as expected.")
 
-        # CORRECTED: Using parentheses for implicit line continuation for the Supabase query
-        # This should resolve the SyntaxError: unexpected character after line continuation character
+        # Select all fields needed by transform_campaign_for_frontend
         campaign_response = (supabase_client.table('campaigns')
-                                .select('id, title, brand, description, brief, status, budget_min, budget_max, application_deadline, start_date, end_date, platforms, niches, deliverables, min_followers, locations, ai_insights, user_id, created_at')
+                                .select('*, budget_min, budget_max, application_deadline, start_date, end_date, min_followers') # Use '*', ensure snake_case for specific fields if needed by transform
                                 .eq('id', campaign_id)
                                 .eq('user_id', current_user_id)
                                 .maybe_single()
                                 .execute())
 
         print(f"💾 DEBUG: Raw Supabase response in get_campaign_by_id: {campaign_response}")
-        if hasattr(campaign_response, 'data') and campaign_response.data:
-            print(f"💾 DEBUG: campaign_response.data in get_campaign_by_id: {campaign_response.data}")
-        if hasattr(campaign_response, 'error') and campaign_response.error:
-            print(f"💾 DEBUG: campaign_response.error in get_campaign_by_id: {campaign_response.error}")
-
+        # ... (other debug logs if needed) ...
 
         campaign_row = None
         if hasattr(campaign_response, 'data') and campaign_response.data:
@@ -3052,38 +3000,8 @@ def get_campaign_by_id(campaign_id):
             print(f"ℹ️ Campaign with id {campaign_id} not found for user {current_user_id} or response data was empty.")
             return jsonify({"success": False, "error": "Campaign not found or not authorized."}), 404
 
-        # Transform data to match the detailed nested structure expected by the frontend
-        transformed_campaign = {
-            "id": campaign_row.get('id'),
-            "title": campaign_row.get('title'),
-            "brand": campaign_row.get('brand'),
-            "description": campaign_row.get('description'),
-            "brief": campaign_row.get('brief'), 
-            "status": campaign_row.get('status'),
-            "budget": {
-                "min": campaign_row.get('budget_min'),
-                "max": campaign_row.get('budget_max')
-            },
-            "timeline": {
-                "applicationDeadline": campaign_row.get('application_deadline'),
-                "startDate": campaign_row.get('start_date'),
-                "endDate": campaign_row.get('end_date')
-            },
-            "requirements": { 
-                "platforms": campaign_row.get('platforms', []),
-                "minFollowers": campaign_row.get('min_followers'),
-                "niches": campaign_row.get('niches', []), 
-                "locations": campaign_row.get('locations', []), 
-                "deliverables": campaign_row.get('deliverables', []) 
-            },
-            # Storing ai_insights directly as it's already an object
-            "aiInsights": campaign_row.get('ai_insights'), 
-            "userId": campaign_row.get('user_id'), 
-            "createdAt": campaign_row.get('created_at'),
-            # These might not be directly on the campaign row but could be calculated or joined in the future
-            "applicants": campaign_row.get('applicants', 0), 
-            "selected": campaign_row.get('selected', 0)    
-        }
+        # Use transform_campaign_for_frontend for consistent output structure
+        transformed_campaign = transform_campaign_for_frontend(campaign_row)
         
         print(f"✅ Fetched and transformed campaign with id {campaign_id} for user {current_user_id}.")
         return jsonify({"success": True, "campaign": transformed_campaign})
@@ -3106,153 +3024,112 @@ def update_campaign_by_id(campaign_id):
         return jsonify({"success": False, "error": "Supabase client not initialized."}), 500
 
     current_user_id = request.current_user.id
+    raw_jwt_token = request.raw_jwt 
     data = request.json
     if not data:
         return jsonify({"success": False, "error": "No data provided for update."}), 400
 
-    # Fields that can be updated by the user for a 'human' campaign
-    allowed_fields = [
-        "title", "brand", "description", "brief", "status",
-        "budget_min", "budget_max", 
-        "application_deadline", "start_date", "end_date",
-        "platforms", "min_followers", "niches", "locations", "deliverables",
-        # Original brief fields (though UI might not allow editing, API should handle if sent)
-        "company_name", "product_service_name", "campaign_objective", 
-        "target_audience", "key_message"
-    ]
-    
-    # AI campaigns have restricted status updates
     allowed_ai_statuses = ['active', 'completed', 'cancelled']
+    original_postgrest_headers = supabase_client.postgrest.session.headers.copy()
 
     try:
-        # First, fetch the existing campaign to check its creation_method and owner
-        # Use the user's JWT for RLS by default by calling auth() on the client
-        # Store original headers
-        original_postgrest_headers = supabase_client.postgrest.session.headers.copy()
-        supabase_client.postgrest.auth(request.raw_jwt)
-
-        existing_campaign_response = supabase_client.table('campaigns')\
-            .select('id, user_id, creation_method, status')\
-            .eq('id', campaign_id)\
-            .maybe_single()\
-            .execute()
-
-        # Restore original headers
-        supabase_client.postgrest.session.headers = original_postgrest_headers
+        supabase_client.postgrest.auth(raw_jwt_token)
+        existing_campaign_response = (supabase_client.table('campaigns')
+                                      .select('id, user_id, creation_method, status, industry, budget_min, budget_max, application_deadline, start_date, end_date, platforms, min_followers, niches, locations, deliverables, company_name, product_service_name, campaign_objective, target_audience, key_message')
+                                      .eq('id', campaign_id)
+                                      .maybe_single()
+                                      .execute())
+        supabase_client.postgrest.session.headers = original_postgrest_headers 
 
         if not existing_campaign_response.data:
             return jsonify({"success": False, "error": "Campaign not found."}), 404
         
         existing_campaign = existing_campaign_response.data
 
-        # Authorization Check: Ensure the user owns this campaign
-        # This check might be redundant if RLS is fully effective, but good as a safeguard.
         if str(existing_campaign.get('user_id')) != str(current_user_id):
-            # If RLS didn't prevent access, this ensures non-owners cannot update.
-            # This could happen if RLS is misconfigured or if a service key bypasses user-specific RLS for the select but not for update.
             print(f"⚠️ Authorization mismatch: User {current_user_id} tried to update campaign {campaign_id} owned by {existing_campaign.get('user_id')}.")
             return jsonify({"success": False, "error": "You are not authorized to update this campaign."}), 403
 
         update_payload = {}
-        nested_budget = {}
-        nested_timeline = {}
-        nested_requirements = {}
 
-        # Handle status update restrictions for AI campaigns
         if existing_campaign.get('creation_method') == 'ai':
             if 'status' in data and data['status'] not in allowed_ai_statuses:
                 return jsonify({
                     "success": False, 
                     "error": f"AI-generated campaigns can only have their status set to: {', '.join(allowed_ai_statuses)}."
                 }), 400
-            # For AI campaigns, only allow 'status' and potentially a few other specific fields if necessary in the future.
-            # For now, if it's an AI campaign, we're primarily concerned with status changes (e.g., cancellation).
-            # If other fields are sent for an AI campaign, they will be ignored unless explicitly handled here.
             if 'status' in data:
                 update_payload['status'] = data['status']
-            # Add any other fields AI campaigns are allowed to update here.
-            # For now, if only 'status' is in data, other fields won't be processed for AI.
-
-        else: # For 'human' campaigns, process all allowed fields
-            for field in allowed_fields:
-                if field in data:
-                    if field in ["budget_min", "budget_max"]:
-                        nested_budget[field.split('_')[1]] = data[field] if data[field] != '' else None
-                    elif field in ["application_deadline", "start_date", "end_date"]:
-                        # Validate and format date strings if they are not empty
-                        validated_date = validate_date_string(data[field]) if data[field] else None
-                        nested_timeline[field] = validated_date
-                    elif field in ["platforms", "min_followers", "niches", "locations", "deliverables"]:
-                        if field == "min_followers":
-                            nested_requirements[field] = data[field] if data[field] != '' else None
-                        else: # assuming others are arrays or direct values
-                            nested_requirements[field] = data[field]
-                    else: # Direct top-level fields
-                        update_payload[field] = data[field]
-        
-        # Populate the main payload with nested structures if they have data
-        if nested_budget:
-            # Ensure existing budget fields are preserved if not all are updated
-            # This requires fetching the current budget if only partial update is sent
-            current_budget = existing_campaign.get('budget', {}) if isinstance(existing_campaign.get('budget'), dict) else {}
-            update_payload['budget'] = {**current_budget, **nested_budget}
-
-        if nested_timeline:
-            current_timeline = existing_campaign.get('timeline', {}) if isinstance(existing_campaign.get('timeline'), dict) else {}
-            update_payload['timeline'] = {**current_timeline, **nested_timeline}
+        else: 
+            direct_fields = ["title", "brand", "industry", "description", "brief", "status", 
+                             "company_name", "product_service_name", "campaign_objective", 
+                             "target_audience", "key_message"]
+            for key in direct_fields:
+                if key in data:
+                    update_payload[key] = data[key]
             
-        if nested_requirements:
-            current_requirements = existing_campaign.get('requirements', {}) if isinstance(existing_campaign.get('requirements'), dict) else {}
-            update_payload['requirements'] = {**current_requirements, **nested_requirements}
+            if 'budget' in data and isinstance(data['budget'], dict):
+                budget_data = data['budget']
+                if 'min' in budget_data:
+                    update_payload['budget_min'] = budget_data['min']
+                if 'max' in budget_data:
+                    update_payload['budget_max'] = budget_data['max']
 
+            if 'timeline' in data and isinstance(data['timeline'], dict):
+                timeline_data = data['timeline']
+                if 'applicationDeadline' in timeline_data:
+                    update_payload['application_deadline'] = validate_date_string(timeline_data['applicationDeadline'])
+                if 'startDate' in timeline_data:
+                    update_payload['start_date'] = validate_date_string(timeline_data['startDate'])
+                if 'endDate' in timeline_data:
+                    update_payload['end_date'] = validate_date_string(timeline_data['endDate'])
 
-        if not update_payload: # If only non-allowed fields were sent for AI, or no valid fields for human
-            # For AI campaigns, if only 'status' was sent and it was valid, update_payload would have 'status'.
-            # If an AI campaign update request has no 'status' or other AI-allowed fields, this message is appropriate.
-            # If a human campaign update request has no recognized fields, this is also appropriate.
-            return jsonify({"success": False, "error": "No valid fields provided for update or operation not permitted for AI campaign."}), 400
+            if 'requirements' in data and isinstance(data['requirements'], dict):
+                req_data = data['requirements']
+                if 'platforms' in req_data:
+                    update_payload['platforms'] = req_data['platforms']
+                if 'minFollowers' in req_data: 
+                    update_payload['min_followers'] = req_data['minFollowers'] 
+                if 'niches' in req_data:
+                    update_payload['niches'] = req_data['niches']
+                if 'locations' in req_data:
+                    update_payload['locations'] = req_data['locations']
+                if 'deliverables' in req_data:
+                    update_payload['deliverables'] = req_data['deliverables']
+
+        if not update_payload:
+            return jsonify({"success": False, "error": "No valid fields provided for update or operation not permitted for this campaign type."}), 400
 
         update_payload["updated_at"] = datetime.now(timezone.utc).isoformat()
         
         print(f"💾 Updating campaign ID {campaign_id} for user {current_user_id} with payload: {json.dumps(update_payload, indent=2, default=str)}")
 
-        # Use the user's JWT for RLS on the update operation
-        original_postgrest_headers_update = supabase_client.postgrest.session.headers.copy()
-        supabase_client.postgrest.auth(request.raw_jwt)
+        supabase_client.postgrest.auth(raw_jwt_token) 
+        update_response = (supabase_client.table('campaigns')
+                           .update(update_payload)
+                           .eq('id', campaign_id)
+                           .eq('user_id', current_user_id) 
+                           .execute())
+        supabase_client.postgrest.session.headers = original_postgrest_headers
 
-        update_response = supabase_client.table('campaigns')\
-            .update(update_payload)\
-            .eq('id', campaign_id)\
-            .eq('user_id', current_user_id)\
-            .execute()
-
-        print(f"💾 Update response: {update_response}")
-        
-        # Restore original headers for the client
-        supabase_client.postgrest.session.headers = original_postgrest_headers_update
-
-        if update_response.data:
-            # Fetch the updated campaign to return the full object with all fields
-            # Use user's JWT again for this fetch
-            original_postgrest_headers_fetch = supabase_client.postgrest.session.headers.copy()
-            supabase_client.postgrest.auth(request.raw_jwt)
-            
-            updated_campaign_response = supabase_client.table('campaigns')\
-                .select('*')\
-                .eq('id', campaign_id)\
-                .single()\
-                .execute()
-            
-            supabase_client.postgrest.session.headers = original_postgrest_headers_fetch
+        if update_response.data: 
+            supabase_client.postgrest.auth(raw_jwt_token) 
+            updated_campaign_response = (supabase_client.table('campaigns')
+                                         .select('*')
+                                         .eq('id', campaign_id)
+                                         .single()
+                                         .execute())
+            supabase_client.postgrest.session.headers = original_postgrest_headers
 
             if updated_campaign_response.data:
-                return jsonify({"success": True, "campaign": updated_campaign_response.data, "message": "Campaign updated successfully."})
+                transformed_data = transform_campaign_for_frontend(updated_campaign_response.data)
+                return jsonify({"success": True, "campaign": transformed_data, "message": "Campaign updated successfully."})
             else:
-                # This case should ideally not happen if update was successful
                 print(f"⚠️ Update reported success for campaign {campaign_id}, but failed to re-fetch. Update response: {update_response}")
-                return jsonify({"success": True, "campaign": update_payload, "message": "Campaign updated, but full re-fetch failed. Returning partial data."})
-
-        else: # Handle errors from Supabase update
+                temp_merged_data = {**existing_campaign, **update_payload} 
+                transformed_partial = transform_campaign_for_frontend(temp_merged_data)
+                return jsonify({"success": True, "campaign": transformed_partial, "message": "Campaign updated, but re-fetch for full data failed. Displaying best available data."})
+        else: 
             error_message = "Failed to update campaign."
             if hasattr(update_response, 'error') and update_response.error:
                 error_details = getattr(update_response.error, 'message', str(update_response.error))
@@ -3269,160 +3146,30 @@ def update_campaign_by_id(campaign_id):
         print(f"❌ Unexpected error in update_campaign_by_id for campaign {campaign_id}: {error_message}")
         import traceback
         traceback.print_exc()
-        # Ensure client headers are restored even if an unexpected error occurs
-        if 'original_postgrest_headers' in locals() and hasattr(supabase_client, 'postgrest'):
+        if hasattr(supabase_client, 'postgrest'): 
              supabase_client.postgrest.session.headers = original_postgrest_headers
-        elif 'original_postgrest_headers_update' in locals() and hasattr(supabase_client, 'postgrest'):
-             supabase_client.postgrest.session.headers = original_postgrest_headers_update
-
         return jsonify({"success": False, "error": error_message}), 500
-
-@app.route('/api/campaigns', methods=['POST'])
-@token_required
-def create_new_campaign():
-    user_id = request.current_user.id
-    raw_jwt_token = request.raw_jwt
-    data = request.get_json()
-
-    if not data:
-        return jsonify({"success": False, "error": "No data provided"}), 400
-
-    db_insert_payload = {
-        "user_id": str(user_id),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-        "creation_method": "human" # Mark as human created
-    }
-
-    # Direct mappings from payload
-    for key in ['title', 'brand', 'description', 'brief', 'status']:
-        if key in data and data[key] is not None:
-            db_insert_payload[key] = data[key]
-        elif key == 'status' and 'status' not in data : # Default status if not provided at all
-             db_insert_payload[key] = 'draft' # Human campaigns can be draft
-        # If key is in data but value is None, it will be inserted as NULL if db_insert_payload[key] = None
-
-    # Nested: budget
-    budget_data = data.get('budget')
-    if budget_data and isinstance(budget_data, dict):
-        if 'min' in budget_data and budget_data['min'] is not None:
-            db_insert_payload['budget_min'] = budget_data['min']
-        if 'max' in budget_data and budget_data['max'] is not None:
-            db_insert_payload['budget_max'] = budget_data['max']
-
-    # Nested: timeline
-    timeline_data = data.get('timeline')
-    if timeline_data and isinstance(timeline_data, dict):
-        for key, db_key in [('applicationDeadline', 'application_deadline'),
-                             ('startDate', 'start_date'),
-                             ('endDate', 'end_date')]:
-            if key in timeline_data and timeline_data[key]:
-                # validate_date_string should return None if invalid, which is fine for DB
-                db_insert_payload[db_key] = validate_date_string(timeline_data[key])
-
-    # Nested: requirements
-    requirements_data = data.get('requirements')
-    if requirements_data and isinstance(requirements_data, dict):
-        for key, db_key in [('platforms', 'platforms'),
-                             ('minFollowers', 'min_followers'),
-                             ('niches', 'niches'),
-                             ('locations', 'locations'),
-                             ('deliverables', 'deliverables')]:
-            if key in requirements_data and requirements_data[key] is not None:
-                 db_insert_payload[db_key] = requirements_data[key]
-    
-    # Optional fields from AI generation (company_name, etc.) are not expected from this form
-    # They will be NULL if not in db_insert_payload and columns are nullable.
-
-    if not supabase_client or not hasattr(supabase_client, 'postgrest'):
-        return jsonify({"success": False, "error": "Supabase client not configured"}), 500
-
-    original_postgrest_headers = supabase_client.postgrest.session.headers.copy()
-    try:
-        if raw_jwt_token:
-            supabase_client.postgrest.auth(raw_jwt_token)
-        
-        insert_response = supabase_client.table('campaigns').insert(db_insert_payload).execute()
-
-        if hasattr(insert_response, 'data') and insert_response.data:
-            created_campaign_raw = insert_response.data[0]
-            
-            # Simple transform for the response, similar to list_campaigns
-            transformed_campaign = {
-                "id": created_campaign_raw.get("id"),
-                "title": created_campaign_raw.get("title"),
-                "brand": created_campaign_raw.get("brand"),
-                "description": created_campaign_raw.get("description"),
-                "brief": created_campaign_raw.get("brief"),
-                "status": created_campaign_raw.get("status"),
-                "creation_method": created_campaign_raw.get("creation_method"), # Include creation_method
-                "budget": {
-                    "min": created_campaign_raw.get("budget_min"),
-                    "max": created_campaign_raw.get("budget_max")
-                },
-                "timeline": {
-                    "applicationDeadline": created_campaign_raw.get("application_deadline"),
-                    "startDate": created_campaign_raw.get("start_date"),
-                    "endDate": created_campaign_raw.get("end_date")
-                },
-                "requirements": {
-                    "platforms": created_campaign_raw.get("platforms"),
-                    "minFollowers": created_campaign_raw.get("min_followers"),
-                    "niches": created_campaign_raw.get("niches"),
-                    "locations": created_campaign_raw.get("locations"),
-                    "deliverables": created_campaign_raw.get("deliverables")
-                },
-                "aiInsights": created_campaign_raw.get("ai_insights"),
-                "userId": created_campaign_raw.get("user_id"),
-                "createdAt": created_campaign_raw.get("created_at"),
-                "updatedAt": created_campaign_raw.get("updated_at")
-                # company_name etc. will be included if they are in created_campaign_raw and columns exist
-            }
-            # Add any other top-level fields from the raw campaign if they exist (like company_name, etc.)
-            for key in ['company_name', 'product_service_name', 'campaign_objective', 'target_audience', 'key_message']:
-                if created_campaign_raw.get(key) is not None:
-                    transformed_campaign[key] = created_campaign_raw.get(key)
-
-            return jsonify({"success": True, "campaign": transformed_campaign}), 201
-        else:
-            error_msg = "Failed to create campaign in database."
-            if hasattr(insert_response, 'error') and insert_response.error:
-                 error_details = getattr(insert_response.error, 'message', str(insert_response.error))
-                 error_msg += f" Details: {error_details}"
-            elif hasattr(insert_response, 'status_code'): # Check for other HTTP errors from Supabase
-                error_msg += f" Status: {insert_response.status_code}. Response: {str(insert_response)[:200]}"
-
-            print(f"❌ Supabase insert error: {error_msg}. Raw Response: {insert_response}")
-            return jsonify({"success": False, "error": error_msg}), 500
-            
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({"success": False, "error": f"An unexpected error occurred: {str(e)}"}), 500
-    finally:
-        if supabase_client and hasattr(supabase_client, 'postgrest'):
-             supabase_client.postgrest.session.headers = original_postgrest_headers
 
 def transform_campaign_for_frontend(campaign_data):
     """Transforms a single campaign record from Supabase to a frontend-friendly format."""
     if not campaign_data:
         return None
 
-    # Ensure dates are strings or None
     application_deadline = campaign_data.get('application_deadline')
     start_date = campaign_data.get('start_date')
     end_date = campaign_data.get('end_date')
     created_at = campaign_data.get('created_at')
-    updated_at = campaign_data.get('updated_at') # Assuming this field might exist
+    updated_at = campaign_data.get('updated_at')
 
     return {
         "id": campaign_data.get('id'),
         "title": campaign_data.get('title'),
         "brand": campaign_data.get('brand'),
+        "industry": campaign_data.get('industry'), # ADDED
         "status": campaign_data.get('status'),
         "description": campaign_data.get('description'),
-        "brief": campaign_data.get('brief'), # Added brief
-        "creation_method": campaign_data.get('creation_method'), # Added creation_method
+        "brief": campaign_data.get('brief'),
+        "creation_method": campaign_data.get('creation_method'),
         "budget": {
             "min": campaign_data.get('budget_min'),
             "max": campaign_data.get('budget_max')
@@ -3432,26 +3179,24 @@ def transform_campaign_for_frontend(campaign_data):
             "startDate": start_date if start_date else None,
             "endDate": end_date if end_date else None
         },
-        "requirements": { # Assuming these map directly for now
-            "platforms": campaign_data.get('platforms', []), # Default to empty list if None
+        "requirements": {
+            "platforms": campaign_data.get('platforms', []),
             "minFollowers": campaign_data.get('min_followers'),
-            "niches": campaign_data.get('niches', []), # Default to empty list if None
-            "locations": campaign_data.get('locations', []), # Default to empty list if None
-            "deliverables": campaign_data.get('deliverables', []) # Default to empty list if None
+            "niches": campaign_data.get('niches', []),
+            "locations": campaign_data.get('locations', []),
+            "deliverables": campaign_data.get('deliverables', [])
         },
-        # Include original brief fields from the database if they exist
         "company_name": campaign_data.get('company_name'),
         "product_service_name": campaign_data.get('product_service_name'),
         "campaign_objective": campaign_data.get('campaign_objective'),
-        "target_audience": campaign_data.get('target_audience'),
+        "target_audience": campaign_data.get('target_audience'), # Assuming this was meant to be target_audience_description or similar
         "key_message": campaign_data.get('key_message'),
-        
-        "ai_insights": campaign_data.get('ai_insights'), # Make sure this is included
-        "user_id": campaign_data.get('user_id'), # Include user_id
-        "created_at": created_at if created_at else None, # Include created_at
-        "updated_at": updated_at if updated_at else None, # Include updated_at
-        "applicants": campaign_data.get('applicants', 0), # Placeholder, assuming you might add this
-        "selected": campaign_data.get('selected', 0)     # Placeholder
+        "ai_insights": campaign_data.get('ai_insights'),
+        "user_id": campaign_data.get('user_id'),
+        "created_at": created_at if created_at else None,
+        "updated_at": updated_at if updated_at else None,
+        "applicants": campaign_data.get('applicants', 0),
+        "selected": campaign_data.get('selected', 0)
     }
 
 def get_common_creator_niche_examples():
@@ -3918,6 +3663,154 @@ def add_supabase_conversation_message(outreach_id: str, content: str, sender: st
     except Exception as e:
         print(f"❌ Exception in add_supabase_conversation_message for outreach {outreach_id}: {e}")
         return None
+
+# NEW ENDPOINT for creating an outreach record from AI assignment
+@app.route('/api/outreaches', methods=['POST'])
+@token_required
+def create_outreach_assignment():
+    try:
+        current_user_id = request.current_user.id
+        data = request.get_json()
+
+        campaign_id = data.get('campaign_id')
+        creator_id = data.get('creator_id') # This is LLMCreatorAnalysis.creator.id from frontend
+        creator_name = data.get('creator_name')
+        creator_avatar = data.get('creator_avatar', None)
+        creator_platform = data.get('creator_platform', None)
+        # Frontend sends 'phone_number', table has 'creator_phone_number'
+        creator_phone_number = data.get('creator_phone_number', None) 
+        
+        initial_status = 'identified'
+
+        if not all([campaign_id, creator_id, creator_name]):
+            app.logger.warning(f"Missing required fields for outreach creation: campaign_id={campaign_id}, creator_id={creator_id}, creator_name={creator_name}")
+            return jsonify({"success": False, "error": "Missing required fields (campaign_id, creator_id, creator_name)"}), 400
+
+        outreach_record = {
+            "user_id": current_user_id,
+            "campaign_id": campaign_id,
+            "creator_id": creator_id,
+            "creator_name": creator_name,
+            "creator_avatar": creator_avatar,
+            "creator_platform": creator_platform,
+            "creator_phone_number": creator_phone_number, # Ensure this matches table column
+            "status": initial_status,
+            # Other fields like subject, body, etc., will be null by default or set later
+        }
+        
+        app.logger.info(f"Attempting to insert outreach record: {outreach_record} by user {current_user_id}")
+
+        if not supabase_admin_client:
+            app.logger.error("Supabase admin client not initialized. Cannot create outreach.")
+            return jsonify({"success": False, "error": "Backend configuration error (supabase admin client)."}), 500
+            
+        insert_response = supabase_admin_client.table('outreaches').insert(outreach_record).execute()
+        
+        app.logger.debug(f"Supabase insert response for outreach: {insert_response}")
+
+        if hasattr(insert_response, 'data') and insert_response.data and len(insert_response.data) > 0:
+            app.logger.info(f"Successfully created outreach ID: {insert_response.data[0].get('id')} for creator {creator_id} and campaign {campaign_id}")
+            return jsonify({"success": True, "message": "Creator assigned and outreach record created.", "outreach": insert_response.data[0]}), 201
+        
+        # More detailed error logging based on actual Supabase Python client behavior
+        error_message = "Failed to create outreach record."
+        if hasattr(insert_response, 'error') and insert_response.error:
+            error_message = getattr(insert_response.error, 'message', str(insert_response.error))
+            app.logger.error(f"Supabase error during outreach insert: Code: {getattr(insert_response.error, 'code', 'N/A')}, Message: {error_message}")
+        elif not (hasattr(insert_response, 'data') and insert_response.data):
+             app.logger.error(f"Supabase returned no data and no error for outreach insert: {insert_response}")
+             error_message = "Supabase returned no data and no explicit error."
+        else: # Should not happen if data is present
+            app.logger.error(f"Unexpected Supabase response structure for outreach insert: {insert_response}")
+            error_message = "Unexpected response from database."
+
+        return jsonify({"success": False, "error": error_message}), 500
+
+    except Exception as e:
+        app.logger.error(f"Exception in /api/outreaches POST: {str(e)}", exc_info=True)
+        return jsonify({"success": False, "error": f"An unexpected error occurred: {str(e)}"}), 500
+
+# END OF NEW ENDPOINT
+
+@app.route('/api/campaigns', methods=['POST'])
+@token_required
+def create_new_campaign():
+    user_id = request.current_user.id
+    raw_jwt_token = request.raw_jwt
+    data = request.get_json()
+
+    if not data:
+        return jsonify({"success": False, "error": "No data provided"}), 400
+
+    db_insert_payload = {
+        "user_id": str(user_id),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "creation_method": "human" 
+    }
+
+    for key in ['title', 'brand', 'industry', 'description', 'brief', 'status']:
+        if key in data and data[key] is not None:
+            db_insert_payload[key] = data[key]
+        elif key == 'status' and 'status' not in data : 
+             db_insert_payload[key] = 'draft' 
+
+    budget_data = data.get('budget')
+    if budget_data and isinstance(budget_data, dict):
+        if 'min' in budget_data and budget_data['min'] is not None:
+            db_insert_payload['budget_min'] = budget_data['min']
+        if 'max' in budget_data and budget_data['max'] is not None:
+            db_insert_payload['budget_max'] = budget_data['max']
+
+    timeline_data = data.get('timeline')
+    if timeline_data and isinstance(timeline_data, dict):
+        for key, db_key in [('applicationDeadline', 'application_deadline'),
+                             ('startDate', 'start_date'),
+                             ('endDate', 'end_date')]:
+            if key in timeline_data and timeline_data[key]:
+                db_insert_payload[db_key] = validate_date_string(timeline_data[key])
+
+    requirements_data = data.get('requirements')
+    if requirements_data and isinstance(requirements_data, dict):
+        for key, db_key in [('platforms', 'platforms'),
+                             ('minFollowers', 'min_followers'),
+                             ('niches', 'niches'),
+                             ('locations', 'locations'),
+                             ('deliverables', 'deliverables')]:
+            if key in requirements_data and requirements_data[key] is not None:
+                 db_insert_payload[db_key] = requirements_data[key]
+    
+    if not supabase_client or not hasattr(supabase_client, 'postgrest'):
+        return jsonify({"success": False, "error": "Supabase client not configured"}), 500
+
+    original_postgrest_headers = supabase_client.postgrest.session.headers.copy()
+    try:
+        if raw_jwt_token:
+            supabase_client.postgrest.auth(raw_jwt_token)
+        
+        insert_response = supabase_client.table('campaigns').insert(db_insert_payload).execute()
+
+        if hasattr(insert_response, 'data') and insert_response.data:
+            created_campaign_raw = insert_response.data[0]
+            transformed_campaign = transform_campaign_for_frontend(created_campaign_raw) # Use the helper
+            return jsonify({"success": True, "campaign": transformed_campaign}), 201
+        else:
+            error_msg = "Failed to create campaign in database."
+            if hasattr(insert_response, 'error') and insert_response.error:
+                 error_details = getattr(insert_response.error, 'message', str(insert_response.error))
+                 error_msg += f" Details: {error_details}"
+            elif hasattr(insert_response, 'status_code'): 
+                error_msg += f" Status: {insert_response.status_code}. Response: {str(insert_response)[:200]}"
+            print(f"❌ Supabase insert error: {error_msg}. Raw Response: {insert_response}")
+            return jsonify({"success": False, "error": error_msg}), 500
+            
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": f"An unexpected error occurred: {str(e)}"}), 500
+    finally:
+        if supabase_client and hasattr(supabase_client, 'postgrest'):
+             supabase_client.postgrest.session.headers = original_postgrest_headers
 
 if __name__ == '__main__':
     app.run(debug=True, port=int(os.getenv('PORT', 5001))) # Use PORT from env if available

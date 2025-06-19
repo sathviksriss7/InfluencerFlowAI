@@ -35,6 +35,7 @@ interface CampaignFormData {
   id?: string; // ID will be present when editing
   title: string;
   brand: string;
+  industry?: string; // Added industry field
   description: string;
   brief: string;
   status: 'draft' | 'active' | 'in_review' | 'completed' | 'cancelled'; // Consistent with other types
@@ -71,6 +72,7 @@ interface CampaignFormData {
 interface FormErrors {
   title?: string;
   brand?: string;
+  industry?: string; // Added industry field for potential errors
   description?: string;
   brief?: string;
   // Add other fields as needed
@@ -141,6 +143,7 @@ const CampaignEditPage: React.FC = () => {
               // Ensure all fields from CampaignFormData are present, defaulting if necessary
               title: fetched.title || '',
               brand: fetched.brand || '',
+              industry: fetched.industry || '',
               description: fetched.description || '',
               brief: fetched.brief || '',
               status: fetched.status || 'draft',
@@ -316,88 +319,93 @@ const CampaignEditPage: React.FC = () => {
         // isValid = false; // Decide if this should block submission or just be a warning
     }
 
-
     setFormErrors(currentFormErrors);
     return isValid;
   };
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    // setFormErrors({}); // Cleared by validateForm or at the start of handleChange for individual fields
-
-    if (!campaign || !campaignId || !session?.access_token) {
-      const errorMsg = "Form data, campaign ID, or authentication token is missing. Cannot submit.";
-      setError(errorMsg);
-      toast.error(errorMsg);
+    if (!validateForm() || !campaign) {
+      toast.error('Please correct the errors in the form.');
       return;
     }
 
-    if (!validateForm()) {
-      toast.error('Please correct the errors in the form.');
-      setIsSubmitting(false);
+    if (isAiCampaignReadOnly) {
+      toast.info("AI-generated campaigns have limited editability through this form.");
+      return;
+    }
+
+    if (!session?.access_token) {
+      toast.error("Authentication required to update campaigns.");
+      return;
+    }
+    if (authLoading) {
+      toast.warn("Authentication is still loading, please wait.");
       return;
     }
 
     setIsSubmitting(true);
-    setError(null); // Clear general API errors before new submission
+    setError(null); // Clear previous submission errors
 
-    // Prepare payload, ensuring numbers are numbers, nulls are nulls
+    // Construct the payload, ensuring all fields match backend expectations
+    // This might involve transforming dates or other values if necessary
     const payload = {
-        ...campaign,
-        budget: {
-            min: campaign.budget.min === null ? null : Number(campaign.budget.min),
-            max: campaign.budget.max === null ? null : Number(campaign.budget.max),
-        },
-        requirements: {
-            ...campaign.requirements,
-            minFollowers: campaign.requirements.minFollowers === null ? null : Number(campaign.requirements.minFollowers),
-        }
+      title: campaign.title,
+      brand: campaign.brand,
+      industry: campaign.industry || null, // Include industry, send null if empty
+      description: campaign.description,
+      brief: campaign.brief,
+      status: campaign.status,
+      budget: {
+        min: campaign.budget.min,
+        max: campaign.budget.max,
+      },
+      timeline: {
+        application_deadline: campaign.timeline.applicationDeadline || null,
+        start_date: campaign.timeline.startDate || null,
+        end_date: campaign.timeline.endDate || null,
+      },
+      requirements: {
+        platforms: campaign.requirements.platforms,
+        min_followers: campaign.requirements.minFollowers,
+        niches: campaign.requirements.niches,
+        locations: campaign.requirements.locations,
+        deliverables: campaign.requirements.deliverables,
+      },
+      // Include other fields that are editable and expected by the backend
+      // For example, if companyName, productService etc. are editable:
+      // companyName: campaign.companyName,
+      // productService: campaign.productService,
     };
-    
-    // Remove id from payload if it exists, as it's in the URL
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { id, ...payloadWithoutId } = payload;
 
+    const backendBaseUrl = import.meta.env.VITE_BACKEND_API_URL;
+    const apiUrl = `${backendBaseUrl}/api/campaigns/${campaignId}`;
 
     try {
-      const backendBaseUrl = import.meta.env.VITE_BACKEND_API_URL;
-      if (!backendBaseUrl) {
-        setError("Backend API URL is not configured. Please contact support.");
-        setIsSubmitting(false);
-        return;
-      }
-      const apiUrl = `${backendBaseUrl}/api/campaigns/${campaignId}`;
-      console.log("Attempting to update campaign (PUT request) to:", apiUrl); // DEBUG
-
       const response = await fetch(apiUrl, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify(payloadWithoutId),
+        body: JSON.stringify(payload),
       });
 
       const result = await response.json();
 
       if (!response.ok || !result.success) {
-        const errorMsg = result.error || 'Failed to update campaign.';
-        throw new Error(errorMsg);
+        throw new Error(result.error || 'Failed to update campaign. Please try again.');
       }
 
       toast.success('Campaign updated successfully!');
-      // Navigate to the detail page after update, passing the updated campaign data
-      if (result.campaign) {
-        navigate(`/campaigns/${campaignId}`, { state: { campaign: result.campaign } });
-      } else {
-        // Fallback if result.campaign is not available for some reason
-        navigate(`/campaigns/${campaignId}`);
-      }
-    } catch (err) {
+      // Optionally, refresh data or navigate
+      // navigate(`/campaigns/${campaignId}`); // Or navigate back to campaigns list
+      // For now, let's assume user stays on page and sees success
+      // To see immediate changes if not navigating, you might need to re-fetch the campaign data here
+    } catch (err: any) {
       console.error("Error updating campaign:", err);
-      const errorMsg = err instanceof Error ? err.message : 'An unknown error occurred.';
-      setError(errorMsg);
-      toast.error(errorMsg);
+      setError(err.message);
+      toast.error(err.message);
     } finally {
       setIsSubmitting(false);
     }
@@ -466,6 +474,20 @@ const CampaignEditPage: React.FC = () => {
               className={`mt-1 block w-full px-3 py-2 border ${formErrors.brand ? 'border-red-500' : 'border-gray-300'} rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm ${isAiCampaignReadOnly ? 'bg-gray-100 cursor-not-allowed' : ''}`}
             />
              {formErrors.brand && <p className="mt-1 text-xs text-red-600">{formErrors.brand}</p>}
+          </div>
+
+          <div>
+            <label htmlFor="industry" className="block text-sm font-medium text-gray-700 mb-1">Brand Industry</label>
+            <input 
+              type="text" 
+              name="industry" 
+              id="industry" 
+              value={campaign.industry || ''}
+              onChange={handleChange}
+              disabled={isAiCampaignReadOnly}
+              className={`mt-1 block w-full px-3 py-2 border ${formErrors.industry ? 'border-red-500' : 'border-gray-300'} rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm ${isAiCampaignReadOnly ? 'bg-gray-100 cursor-not-allowed' : ''}`}
+            />
+             {formErrors.industry && <p className="mt-1 text-xs text-red-600">{formErrors.industry}</p>}
           </div>
 
           <div>

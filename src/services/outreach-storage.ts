@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase'; // Import Supabase client
+import { toast } from 'react-toastify'; // ADDED: Import toast
 // import { type Creator } from '../types'; // Currently unused but may be needed later
 
 // --- Metadata Interface Definitions ---
@@ -831,6 +832,125 @@ class OutreachStorageService {
     } catch (e) {
       console.error(`[OutreachStorageService] Exception updating outreach ${outreachId} primary artifacts:`, e);
       return false;
+    }
+  }
+
+  /**
+   * Update details of an existing outreach record in Supabase.
+   */
+  async updateOutreachDetails(
+    outreachId: string,
+    updates: Partial<Pick<StoredOutreach, 'subject' | 'body' | 'confidence' | 'reasoning' | 'keyPoints' | 'nextSteps' | 'brandName' | 'campaignContext' | 'notes' | 'currentOffer'>> & { status: StoredOutreach['status'] }
+  ): Promise<StoredOutreach | null> {
+    if (!outreachId) {
+      console.error("❌ Attempted to update outreach without an ID.");
+      toast.error("Outreach ID is missing, cannot update.");
+      return null;
+    }
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        console.error("❌ User not authenticated for updating outreach.");
+        toast.error("Authentication required to update outreach.");
+        throw new Error("User not authenticated");
+      }
+
+      // Map camelCase fields from 'updates' to snake_case for the database
+      const dbUpdatePayload: any = {
+        subject: updates.subject,
+        body: updates.body,
+        status: updates.status,
+        confidence: updates.confidence,
+        reasoning: updates.reasoning,
+        notes: updates.notes,
+        current_offer: updates.currentOffer, // Supabase expects snake_case
+        key_points: updates.keyPoints,       // Supabase expects snake_case
+        next_steps: updates.nextSteps,       // Supabase expects snake_case
+        brand_name: updates.brandName,       // Supabase expects snake_case
+        campaign_context: updates.campaignContext, // Supabase expects snake_case
+        last_contact: new Date().toISOString(),
+      };
+
+      // Remove undefined fields from payload to avoid overwriting with null in Supabase
+      Object.keys(dbUpdatePayload).forEach(key => {
+        if (dbUpdatePayload[key] === undefined) {
+          delete dbUpdatePayload[key];
+        }
+      });
+      
+      if (Object.keys(dbUpdatePayload).length === 0) {
+          console.warn("⚠️ No fields to update for outreach ID:", outreachId);
+          // Optionally fetch and return the current record if no actual update is made
+          // For now, returning null or potentially the existing record if fetched.
+          // Let's assume an update always implies some change and proceed.
+          // If only last_contact is to be updated, dbUpdatePayload will not be empty.
+      }
+
+
+      const { data: updatedRecord, error } = await supabase
+        .from('outreaches')
+        .update(dbUpdatePayload)
+        .eq('id', outreachId)
+        .select()
+        .single();
+
+      if (error) {
+        console.error(`❌ Error updating outreach ID ${outreachId} in Supabase:`, error);
+        toast.error(`Failed to update outreach: ${error.message}`);
+        throw error;
+      }
+      
+      if (!updatedRecord) {
+        console.warn(`⚠️ No data returned after updating outreach ID ${outreachId}, but no error.`);
+        toast.warn("Outreach update seemed successful but no data was returned.");
+        return null; // Or handle as a specific case, e.g., re-fetch
+      }
+      
+      console.log('✅ Outreach updated successfully in Supabase, ID:', updatedRecord.id);
+
+      // Map snake_case fields from DB record back to camelCase for StoredOutreach type
+      const result: StoredOutreach = {
+        ...updatedRecord,
+        creatorId: updatedRecord.creator_id,
+        creatorName: updatedRecord.creator_name,
+        creatorAvatar: updatedRecord.creator_avatar,
+        creatorPlatform: updatedRecord.creator_platform,
+        creatorPhoneNumber: updatedRecord.creator_phone_number,
+        keyPoints: updatedRecord.key_points || [], // Ensure array for empty
+        nextSteps: updatedRecord.next_steps || [], // Ensure array for empty
+        brandName: updatedRecord.brand_name,
+        campaignContext: updatedRecord.campaign_context,
+        currentOffer: updatedRecord.current_offer,
+        // Assuming conversationHistory, createdAt, etc., are handled appropriately if needed
+        // For an update, conversationHistory isn't directly modified here.
+        // Timestamps like createdAt are not changed. lastContact is updated.
+        // Ensure all StoredOutreach fields are present, using defaults or mapped values.
+        // The spread `...updatedRecord` handles fields with same names.
+        // We need to ensure all fields of StoredOutreach are covered.
+        // The most critical are those that differ in casing.
+        id: updatedRecord.id,
+        user_id: updatedRecord.user_id,
+        campaign_id: updatedRecord.campaign_id,
+        subject: updatedRecord.subject,
+        body: updatedRecord.body,
+        status: updatedRecord.status,
+        confidence: updatedRecord.confidence,
+        reasoning: updatedRecord.reasoning,
+        notes: updatedRecord.notes,
+        createdAt: new Date(updatedRecord.created_at), // Ensure Date object
+        lastContact: new Date(updatedRecord.last_contact), // Ensure Date object
+        conversationHistory: updatedRecord.conversation_history || [], // Assuming it might be fetched or handled elsewhere
+      };
+
+      return result;
+    } catch (err) {
+      console.error(`❌ Error in updateOutreachDetails service method for ID ${outreachId}:`, err);
+      // Ensure toast is imported in this file if not already
+      // import { toast } from 'react-toastify';
+      if (!(err instanceof Error && err.message.includes("User not authenticated"))) { // Avoid double toast for auth
+        toast.error("An unexpected error occurred while updating outreach details.");
+      }
+      return null;
     }
   }
 }

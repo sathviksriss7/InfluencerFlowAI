@@ -1,7 +1,11 @@
-import React from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { toast } from 'react-toastify';
+import { supabase } from '../lib/supabase';
+import { type StoredOutreach, type ConversationMessage } from '../services/outreach-storage';
+import { type Creator } from '../types';
+import AIOutreachManager from '../components/ai-outreach-manager';
 
 // Expanded CampaignDetail interface to match backend response
 interface CampaignDetail {
@@ -45,13 +49,74 @@ const CampaignDetailPage: React.FC = () => {
   const location = useLocation();
   const passedCampaign = location.state?.campaign as CampaignDetail | undefined;
 
-  const [campaign, setCampaign] = React.useState<CampaignDetail | null>(passedCampaign || null);
-  const [loading, setLoading] = React.useState(!passedCampaign);
-  const [error, setError] = React.useState<string | null>(null);
-  const [isCancelling, setIsCancelling] = React.useState(false);
+  const [campaign, setCampaign] = useState<CampaignDetail | null>(passedCampaign || null);
+  const [loading, setLoading] = useState(!passedCampaign);
+  const [error, setError] = useState<string | null>(null);
+  const [isCancelling, setIsCancelling] = useState(false);
   const { session, loading: authLoading } = useAuth();
 
-  React.useEffect(() => {
+  const [identifiedOutreaches, setIdentifiedOutreaches] = useState<StoredOutreach[]>([]);
+  const [loadingOutreaches, setLoadingOutreaches] = useState<boolean>(true);
+  const [outreachesError, setOutreachesError] = useState<string | null>(null);
+
+  const [showOutreachManagerModal, setShowOutreachManagerModal] = useState<boolean>(false);
+  const [selectedOutreachForPreparation, setSelectedOutreachForPreparation] = useState<StoredOutreach | null>(null);
+
+  const fetchIdentifiedOutreaches = useCallback(async (currentCampaignId: string) => {
+    if (!currentCampaignId) return;
+    setLoadingOutreaches(true);
+    setOutreachesError(null);
+    try {
+      const { data: rawData, error: sbError } = await supabase
+        .from('outreaches')
+        .select('*')
+        .eq('campaign_id', currentCampaignId)
+        .eq('status', 'identified')
+        .order('created_at', { ascending: false });
+
+      if (sbError) {
+        console.error("Error fetching identified outreaches:", sbError);
+        setOutreachesError(sbError.message);
+        setIdentifiedOutreaches([]);
+      } else if (rawData) {
+        const mappedData: StoredOutreach[] = rawData.map((item: any) => ({
+          id: item.id,
+          userId: item.user_id,
+          campaignId: item.campaign_id,
+          creatorId: item.creator_id,
+          creatorName: item.creator_name,
+          creatorAvatar: item.creator_avatar,
+          creatorPlatform: item.creator_platform,
+          creatorPhoneNumber: item.creator_phone_number,
+          subject: item.subject,
+          body: item.body,
+          status: item.status,
+          confidence: item.confidence,
+          reasoning: item.reasoning,
+          keyPoints: item.key_points || [],
+          nextSteps: item.next_steps || [],
+          brandName: item.brand_name,
+          campaignContext: item.campaign_context,
+          createdAt: new Date(item.created_at),
+          lastContact: new Date(item.last_contact),
+          currentOffer: item.current_offer,
+          notes: item.notes,
+          conversationHistory: (item.conversation_history || []) as ConversationMessage[], 
+        }));
+        setIdentifiedOutreaches(mappedData);
+      } else {
+        setIdentifiedOutreaches([]);
+      }
+    } catch (err) {
+        console.error("Unexpected error fetching identified outreaches:", err);
+        setOutreachesError(err instanceof Error ? err.message : "An unknown error occurred.");
+        setIdentifiedOutreaches([]);
+    } finally {
+        setLoadingOutreaches(false);
+    }
+  }, []);
+
+  useEffect(() => {
     if (!passedCampaign) {
       setLoading(true);
     }
@@ -63,67 +128,52 @@ const CampaignDetailPage: React.FC = () => {
 
     if (!session?.access_token) {
       setError("Authentication token not found. Please log in.");
-        setLoading(false);
-        return;
-      }
+      setLoading(false);
+      setLoadingOutreaches(false);
+      return;
+    }
       
     if (campaignId) {
       const accessToken = session.access_token;
-      
       const backendBaseUrl = import.meta.env.VITE_BACKEND_API_URL;
       if (!backendBaseUrl) {
         setError("Backend API URL is not configured. Please contact support.");
         setLoading(false);
+        setLoadingOutreaches(false);
         return;
       }
       const apiUrl = `${backendBaseUrl}/api/campaigns/${campaignId}`;
-      console.log("Attempting to fetch campaign details from:", apiUrl); // DEBUG
+      console.log("Attempting to fetch campaign details from:", apiUrl);
 
-      fetch(apiUrl, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json'
-        }
-      })
+      fetch(apiUrl, { headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' } })
         .then(response => {
           if (!response.ok) {
-            if (response.status === 401) {
-              throw new Error('Unauthorized. Please check your login session or token.');
-            }
-            if (response.status === 404) {
-              throw new Error('Campaign not found. It might have been deleted or the ID is incorrect.');
-            }
-            return response.json().then(errData => {
-                 throw new Error(errData.error || `Network response was not ok: ${response.statusText} (Status: ${response.status})`);
-            }).catch(() => {
-                 throw new Error(`Network response was not ok: ${response.statusText} (Status: ${response.status})`);
-            });
+            if (response.status === 401) throw new Error('Unauthorized. Please check your login session or token.');
+            if (response.status === 404) throw new Error('Campaign not found. It might have been deleted or the ID is incorrect.');
+            return response.json().then(errData => { throw new Error(errData.error || `Network error: ${response.statusText}`); });
           }
           return response.json();
         })
         .then(data => {
-          if (data.success && data.campaign) {
-            setCampaign(data.campaign);
-          } else {
-            if (!passedCampaign || (passedCampaign && passedCampaign.id !== data.campaign?.id)) {
-                 setError(data.error || "Failed to fetch campaign details: The API response was not successful or did not contain campaign data.");
-            }
+          if (data.success && data.campaign) setCampaign(data.campaign);
+          else if (!passedCampaign || (passedCampaign && passedCampaign.id !== data.campaign?.id)) {
+            setError(data.error || "Failed to fetch campaign details.");
           }
         })
-        .catch(err => {
-          console.error("Error fetching campaign details:", err);
-          if (!passedCampaign) {
-          setError(err.message);
-          }
+        .catch(err => { 
+            console.error("Error fetching campaign details:", err);
+            if (!passedCampaign) setError(err.message);
         })
-        .finally(() => {
-          setLoading(false);
-        });
+        .finally(() => setLoading(false));
+
+      fetchIdentifiedOutreaches(campaignId);
+
     } else {
       setError("Campaign ID not found in URL.");
       setLoading(false);
+      setLoadingOutreaches(false);
     }
-  }, [campaignId, session, authLoading, passedCampaign]);
+  }, [campaignId, session, authLoading, passedCampaign, fetchIdentifiedOutreaches]);
 
   if ((loading && !campaign) || (authLoading && !campaign) ) {
     return <div className="p-4 text-center text-gray-700">Loading campaign details...</div>;
@@ -203,6 +253,46 @@ const CampaignDetailPage: React.FC = () => {
     } catch (e) {
       return dateString; 
     }
+  };
+
+  const handlePrepareOutreach = (outreach: StoredOutreach) => {
+    console.log("Campaign state when preparing outreach:", campaign);
+    if (!campaign) {
+        toast.error("Campaign details are not loaded yet. Please wait and try again.");
+        return;
+    }
+    console.log("Prepare outreach for (StoredOutreach):", outreach);
+    setSelectedOutreachForPreparation(outreach);
+    setShowOutreachManagerModal(true);
+  };
+
+  const handleCloseOutreachManager = () => {
+    setShowOutreachManagerModal(false);
+    setSelectedOutreachForPreparation(null); // Clear selected outreach
+    if (campaign && campaign.id) {
+        fetchIdentifiedOutreaches(campaign.id); // Re-fetch to update the list
+    }
+  };
+
+  const mapStoredOutreachToCreator = (outreach: StoredOutreach): Creator => {
+    return {
+      id: outreach.creatorId,
+      name: outreach.creatorName,
+      username: outreach.creatorName,
+      platform: outreach.creatorPlatform as Creator['platform'] || 'instagram',
+      avatar: outreach.creatorAvatar || '',
+      niche: [],
+      location: '',
+      bio: '',
+      verified: false,
+      phone_number: outreach.creatorPhoneNumber || undefined,
+      email: undefined,
+      metrics: { followers: 0, avgViews: 0, engagementRate: 0, avgLikes: 0, avgComments: 0 },
+      rates: { post: 0 },
+      demographics: { ageRange: '', topCountries: [], genderSplit: { male: 0, female: 0, other: 0 } },
+      rating: 0,
+      responseTime: '',
+    };
   };
 
   return (
@@ -451,7 +541,92 @@ const CampaignDetailPage: React.FC = () => {
           </div>
         )}
 
+        {/* Identified Creators for Outreach Section */}
+        <div className="mt-8 pt-6 border-t border-gray-200">
+          <h3 className="text-xl font-semibold text-gray-800 mb-4">Identified Creators for Outreach</h3>
+          {loadingOutreaches && <p className="text-gray-600">Loading identified creators...</p>}
+          {outreachesError && <p className="text-red-600">Error loading outreaches: {outreachesError}</p>}
+          {!loadingOutreaches && identifiedOutreaches.length > 0 && (
+            <div className="space-y-4">
+              {identifiedOutreaches.map((outreach) => (
+                <div key={outreach.id} className="bg-gray-50 p-4 rounded-lg shadow-sm flex items-center justify-between">
+                  <div>
+                    <h4 className="font-medium text-gray-900">{outreach.creatorName || 'N/A'}</h4>
+                    <p className="text-sm text-gray-600">Platform: {outreach.creatorPlatform || 'N/A'}</p>
+                    <p className="text-sm text-gray-500">Status: <span className="font-semibold capitalize">{outreach.status}</span></p>
+                  </div>
+                  <button
+                    onClick={() => handlePrepareOutreach(outreach)}
+                    className="px-4 py-2 bg-purple-600 text-white text-sm font-medium rounded-md hover:bg-purple-700 transition-colors disabled:opacity-50"
+                    disabled={isCancelling}
+                  >
+                    {isCancelling && selectedOutreachForPreparation?.id === outreach.id ? 'Loading...' : 'Prepare Outreach'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {!loadingOutreaches && identifiedOutreaches.length === 0 && (
+            <div className="text-center py-6">
+              <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                <path vectorEffect="non-scaling-stroke" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+              </svg>
+              <h3 className="mt-2 text-sm font-medium text-gray-900">No Identified Creators</h3>
+              <p className="mt-1 text-sm text-gray-500">
+                No creators have been assigned for outreach to this campaign with 'identified' status yet.
+              </p>
+              <div className="mt-6">
+                <Link
+                  to="/creators"
+                  className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                >
+                  <svg className="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                      <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" />
+                  </svg>
+                  Find & Assign Creators
+                </Link>
+              </div>
+            </div>
+          )}
+        </div>
+
       </div>
+
+      {/* Modal for AIOutreachManager */}
+      {showOutreachManagerModal && selectedOutreachForPreparation && campaign && (
+        <div 
+          style={{ 
+            position: 'fixed', 
+            top: '0', 
+            left: '0', 
+            width: '100%', 
+            height: '100%', 
+            backgroundColor: 'rgba(0,0,0,0.75)',
+            zIndex: 1050, 
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '1rem' 
+          }}
+          onClick={handleCloseOutreachManager} 
+        >
+          <div 
+            className="bg-white p-0 rounded-lg shadow-xl max-w-4xl w-full" // p-0 because AIOutreachManager has its own padding
+            style={{ maxHeight: '90vh', overflow: 'hidden' }} // overflow hidden because AIOutreachManager handles its own scrolling
+            onClick={(e) => e.stopPropagation()} 
+          >
+            <AIOutreachManager
+                searchResults={[mapStoredOutreachToCreator(selectedOutreachForPreparation)]}
+                campaignId={campaign.id}
+                onClose={handleCloseOutreachManager}
+                existingOutreachIdToUpdate={selectedOutreachForPreparation.id}
+                initialBrandName={campaign.brand} // Pass campaign brand
+                initialCampaignBrief={campaign.brief} // Pass campaign brief
+                // initialBrandIndustry can be omitted to use default from AIOutreachManager
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 };

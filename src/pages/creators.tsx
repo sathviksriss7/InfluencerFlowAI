@@ -2,7 +2,9 @@ import { useState, useMemo, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import AICreatorSearchLLM from '../components/ai-creator-search-llm';
 import { supabase } from '../lib/supabase';
-import { type Creator } from '../types';
+import { type Creator, type Campaign } from '../types';
+import { useAuth } from '../contexts/AuthContext';
+import { toast } from 'react-toastify';
 
 export default function Creators() {
   const [searchMode, setSearchMode] = useState<'filter' | 'ai'>('filter');
@@ -16,6 +18,16 @@ export default function Creators() {
   const [allCreators, setAllCreators] = useState<Creator[]>([]);
   const [loadingCreators, setLoadingCreators] = useState(true);
   const [errorCreators, setErrorCreators] = useState<string | null>(null);
+
+  // State for assignment modal
+  const [showAssignModal, setShowAssignModal] = useState(false);
+  const [selectedCreatorForAssignment, setSelectedCreatorForAssignment] = useState<Creator | null>(null);
+  const [assignableCampaigns, setAssignableCampaigns] = useState<Campaign[]>([]);
+  const [selectedCampaignIdForAssignment, setSelectedCampaignIdForAssignment] = useState<string | ''>(''); // Initialize with empty string for select
+  const [isFetchingCampaigns, setIsFetchingCampaigns] = useState(false);
+  const [isAssigningCreator, setIsAssigningCreator] = useState(false);
+  
+  const { session } = useAuth();
 
   // Fetch creators from Supabase on component mount
   useEffect(() => {
@@ -155,6 +167,92 @@ export default function Creators() {
       return `${(followers / 1000).toFixed(0)}k`;
     }
     return followers.toString();
+  };
+
+  const fetchAssignableCampaigns = async () => {
+    if (!session) {
+      toast.error('You must be logged in to fetch campaigns.');
+      return;
+    }
+    setIsFetchingCampaigns(true);
+    try {
+      const response = await fetch(`${import.meta.env.VITE_BACKEND_API_URL}/api/campaigns`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: 'Failed to fetch campaigns' }));
+        throw new Error(errorData.error || errorData.message || `HTTP error! status: ${response.status}`);
+      }
+      const data = await response.json();
+      setAssignableCampaigns(data.campaigns || []); // Assuming backend returns { campaigns: [...] }
+      if (!data.campaigns || data.campaigns.length === 0) {
+        toast.info('No campaigns found to assign to.');
+      }
+    } catch (error: any) {
+      console.error('Error fetching assignable campaigns:', error);
+      toast.error(`Error fetching campaigns: ${error.message}`);
+      setAssignableCampaigns([]);
+    } finally {
+      setIsFetchingCampaigns(false);
+    }
+  };
+
+  const handleOpenAssignModal = (creator: Creator) => {
+    setSelectedCreatorForAssignment(creator);
+    setSelectedCampaignIdForAssignment(''); // Reset selected campaign
+    setShowAssignModal(true);
+    fetchAssignableCampaigns(); // Fetch campaigns when modal is opened
+  };
+
+  const handleCloseAssignModal = () => {
+    setShowAssignModal(false);
+    setSelectedCreatorForAssignment(null);
+    setAssignableCampaigns([]);
+    setSelectedCampaignIdForAssignment('');
+  };
+
+  const handleAssignCreator = async () => {
+    if (!session || !selectedCreatorForAssignment || !selectedCampaignIdForAssignment) {
+      toast.error('Missing information to assign creator.');
+      return;
+    }
+    setIsAssigningCreator(true);
+    try {
+      const payload = {
+        campaign_id: selectedCampaignIdForAssignment,
+        creator_id: selectedCreatorForAssignment.id,
+        creator_name: selectedCreatorForAssignment.name,
+        creator_avatar: selectedCreatorForAssignment.avatar,
+        creator_platform: selectedCreatorForAssignment.platform,
+      };
+
+      const response = await fetch(`${import.meta.env.VITE_BACKEND_API_URL}/api/outreaches`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const responseData = await response.json();
+
+      if (!response.ok) {
+        throw new Error(responseData.error || 'Failed to assign creator to campaign.');
+      }
+
+      toast.success(`${selectedCreatorForAssignment.name} assigned to campaign successfully!`);
+      handleCloseAssignModal();
+      // Optionally, refetch outreaches or update UI to reflect the assignment
+    } catch (error: any) {
+      console.error('Error assigning creator:', error);
+      toast.error(`Error assigning creator: ${error.message}`);
+    } finally {
+      setIsAssigningCreator(false);
+    }
   };
 
   return (
@@ -321,77 +419,89 @@ export default function Creators() {
               ) : filteredCreators.length > 0 ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                   {filteredCreators.map((creator) => (
-                    <Link
+                    <div
                       key={creator.id}
-                      to={`/creators/${creator.id}`}
-                      className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-lg transition-shadow"
+                      className="bg-white border border-gray-200 rounded-lg p-4 flex flex-col justify-between hover:shadow-lg transition-shadow relative"
                     >
-                      <div className="flex items-start gap-3">
-                        <img
-                          src={creator.avatar}
-                          alt={creator.name}
-                          className="w-12 h-12 rounded-full object-cover"
-                        />
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-1">
-                            <h3 className="font-semibold text-gray-900 truncate">{creator.name}</h3>
-                            {getVerificationIcon(creator.verified)}
-                          </div>
-                          <p className="text-sm text-gray-600 mb-2">{creator.username}</p>
-                          <div className="flex items-center gap-2 mb-2">
-                            {getPlatformIcon(creator.platform)}
-                            <span className="text-xs text-gray-500 capitalize">{creator.platform}</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="mt-3 space-y-2">
-                        <div className="flex flex-wrap gap-1">
-                          {creator.niche.slice(0, 2).map((tag) => (
-                            <span
-                              key={tag}
-                              className="inline-block px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full"
-                            >
-                              {tag}
-                            </span>
-                          ))}
-                          {creator.niche.length > 2 && (
-                            <span className="inline-block px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">
-                              +{creator.niche.length - 2}
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="grid grid-cols-3 gap-2 text-xs text-gray-600">
-                          <div>
-                            <span className="font-medium text-gray-900">{formatFollowers(creator.metrics?.followers || 0)}</span>
-                            <br />Followers
-                          </div>
-                          <div>
-                            <span className="font-medium text-gray-900">
-                              {(((creator.metrics as any)?.engagement_rate ?? creator.metrics?.engagementRate) || 0).toFixed(1)}%
-                            </span>
-                            <br />Engagement
-                          </div>
-                          <div>
-                            <span className="font-medium text-gray-900">{creator.rating ?? 'N/A'}/5</span>
-                            <br />Rating
-                          </div>
-                        </div>
-
-                        <div className="pt-2 border-t border-gray-100">
-                          <div className="flex justify-between items-center">
-                            <div className="text-center">
-                              <p className="font-semibold text-gray-900">₹{((creator.rates as any)?.post ?? (creator.rates as any)?.per_post) || 'N/A'}/post</p>
-                              <p className="text-xs text-gray-500">Starting rate</p>
+                      <button
+                        onClick={() => handleOpenAssignModal(creator)}
+                        className="absolute top-2 right-2 bg-blue-200 hover:bg-green-600 text-white font-bold w-6 h-6 rounded-full flex items-center justify-center text-sm transition-colors z-10"
+                        aria-label="Assign to campaign"
+                        disabled={isAssigningCreator || isFetchingCampaigns}
+                      >
+                        +
+                      </button>
+                      
+                      <div>
+                        <Link to={`/creators/${creator.id}`}>
+                          <div className="flex items-start gap-3">
+                            <img
+                              src={creator.avatar}
+                              alt={creator.name}
+                              className="w-12 h-12 rounded-full object-cover"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 mb-1">
+                                <h3 className="font-semibold text-gray-900 truncate">{creator.name}</h3>
+                                {getVerificationIcon(creator.verified)}
+                              </div>
+                              <p className="text-sm text-gray-600 mb-2">{creator.username}</p>
+                              <div className="flex items-center gap-2 mb-2">
+                                {getPlatformIcon(creator.platform)}
+                                <span className="text-xs text-gray-500 capitalize">{creator.platform}</span>
+                              </div>
                             </div>
-                            <span className="text-xs text-gray-500">
-                              {creator.location ?? 'N/A'}
-                            </span>
+                          </div>
+                        </Link>
+
+                        <div className="mt-3 space-y-2">
+                          <div className="flex flex-wrap gap-1">
+                            {creator.niche.slice(0, 2).map((tag) => (
+                              <span
+                                key={tag}
+                                className="inline-block px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full"
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                            {creator.niche.length > 2 && (
+                              <span className="inline-block px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">
+                                +{creator.niche.length - 2}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-2 text-xs text-gray-600">
+                            <div>
+                              <span className="font-medium text-gray-900">{formatFollowers(creator.metrics?.followers || 0)}</span>
+                              <br />Followers
+                            </div>
+                            <div>
+                              <span className="font-medium text-gray-900">
+                                {(((creator.metrics as any)?.engagement_rate ?? creator.metrics?.engagementRate) || 0).toFixed(1)}%
+                              </span>
+                              <br />Engagement
+                            </div>
+                            <div>
+                              <span className="font-medium text-gray-900">{creator.rating ?? 'N/A'}/5</span>
+                              <br />Rating
+                            </div>
+                          </div>
+
+                          <div className="pt-2 border-t border-gray-100">
+                            <div className="flex justify-between items-center">
+                              <div className="text-center">
+                                <p className="font-semibold text-gray-900">₹{((creator.rates as any)?.post ?? (creator.rates as any)?.per_post) || 'N/A'}/post</p>
+                                <p className="text-xs text-gray-500">Starting rate</p>
+                              </div>
+                              <span className="text-xs text-gray-500">
+                                {creator.location ?? 'N/A'}
+                              </span>
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </Link>
+                    </div>
                   ))}
                 </div>
               ) : (
@@ -432,6 +542,58 @@ export default function Creators() {
           )}
         </div>
       </div>
+
+      {/* Assignment Modal */}
+      {showAssignModal && selectedCreatorForAssignment && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md space-y-4">
+            <h2 className="text-xl font-semibold text-gray-900">
+              Assign <span className="text-blue-600">{selectedCreatorForAssignment.name}</span> to Campaign
+            </h2>
+            
+            <div>
+              <label htmlFor="campaignSelect" className="block text-sm font-medium text-gray-700 mb-1">
+                Select Campaign
+              </label>
+              <select
+                id="campaignSelect"
+                value={selectedCampaignIdForAssignment}
+                onChange={(e) => setSelectedCampaignIdForAssignment(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                disabled={isFetchingCampaigns || assignableCampaigns.length === 0}
+              >
+                <option value="" disabled>{isFetchingCampaigns ? 'Loading campaigns...' : 'Select a campaign'}</option>
+                {assignableCampaigns.map((campaign) => (
+                  <option key={campaign.id} value={campaign.id}>
+                    {campaign.title} (ID: {campaign.id.substring(0,8)})
+                  </option>
+                ))}
+              </select>
+              {isFetchingCampaigns && <p className='text-xs text-gray-500 mt-1'>Fetching campaigns...</p>}
+              {!isFetchingCampaigns && assignableCampaigns.length === 0 && <p className='text-xs text-red-500 mt-1'>No campaigns available to assign.</p>}
+            </div>
+
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={handleCloseAssignModal}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                disabled={isAssigningCreator}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleAssignCreator}
+                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors disabled:opacity-50"
+                disabled={!selectedCampaignIdForAssignment || isAssigningCreator || isFetchingCampaigns}
+              >
+                {isAssigningCreator ? 'Assigning...' : 'Confirm Assignment'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 } 

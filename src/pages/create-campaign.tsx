@@ -7,6 +7,7 @@ import { toast } from 'react-toastify';
 interface CampaignForm {
   title: string;
   brand: string;
+  industry?: string;
   description: string;
   brief: string;
   platforms: string[];
@@ -32,6 +33,7 @@ export default function CreateCampaign() {
   const [formData, setFormData] = useState<CampaignForm>({
     title: '',
     brand: '',
+    industry: '',
     description: '',
     brief: '',
     platforms: [],
@@ -130,6 +132,19 @@ export default function CreateCampaign() {
                 value={formData.brand}
                 onChange={(e) => updateForm('brand', e.target.value)}
                 placeholder="e.g., FitTech Pro"
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Brand Industry (Optional)
+              </label>
+              <input
+                type="text"
+                value={formData.industry}
+                onChange={(e) => updateForm('industry', e.target.value)}
+                placeholder="e.g., Technology, Fashion, Finance"
                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               />
             </div>
@@ -390,78 +405,76 @@ export default function CreateCampaign() {
   };
 
   const handleCampaignSubmit = async () => {
-    if (!session?.access_token) {
-      toast.error('Authentication required to create a campaign.');
-      setIsSubmitting(false);
+    if (!session) {
+      toast.error('You must be logged in to create a campaign.');
       return;
     }
-    if (authLoading) {
-      toast.warn('Authentication is still loading, please wait a moment.');
-      return;
-    }
-
     setIsSubmitting(true);
     setSubmitError(null);
 
-    // Transform formData to the structure expected by the backend
-    const payload = {
+    // Basic validation before submitting (can be enhanced)
+    if (!formData.title || !formData.brand || !formData.description) {
+      toast.error('Please fill in all required basic information (Title, Brand, Description).');
+      setCurrentStep(1);
+      setIsSubmitting(false);
+      return;
+    }
+    if (formData.platforms.length === 0 || formData.niches.length === 0) {
+      toast.error('Please select at least one platform and one niche.');
+      setCurrentStep(2);
+      setIsSubmitting(false);
+      return;
+    }
+    // Add more validation as needed for other steps
+
+    const campaignPayload = {
       title: formData.title,
       brand: formData.brand,
+      industry: formData.industry, // Ensure industry is included in the payload
       description: formData.description,
       brief: formData.brief,
-      status: 'draft', // Default status for new campaigns
+      requirements: {
+        platforms: formData.platforms,
+        min_followers: formData.minFollowers, // Assuming backend expects snake_case for nested fields
+        niches: formData.niches,
+        locations: formData.locations,
+      },
+      deliverables: formData.deliverables,
       budget: {
         min: formData.budgetMin,
         max: formData.budgetMax,
       },
       timeline: {
-        applicationDeadline: formData.applicationDeadline || null,
-        startDate: formData.startDate || null,
-        endDate: formData.endDate || null,
+        start_date: formData.startDate, // Assuming backend expects snake_case
+        end_date: formData.endDate, // Assuming backend expects snake_case
+        application_deadline: formData.applicationDeadline, // Assuming backend expects snake_case
       },
-      requirements: {
-        platforms: formData.platforms,
-        minFollowers: formData.minFollowers,
-        niches: formData.niches,
-        locations: formData.locations,
-        deliverables: formData.deliverables,
-      },
-      // Include any other fields your backend expects for creation
+      status: 'draft', // Default status for a new campaign
+      // Potentially add tags or other fields if your backend supports them for creation
     };
 
     try {
-      const backendBaseUrl = import.meta.env.VITE_BACKEND_API_URL;
-      if (!backendBaseUrl) {
-        toast.error("Backend API URL is not configured.");
-        setIsSubmitting(false);
-        return;
-      }
-      const apiUrl = `${backendBaseUrl}/api/campaigns`;
-      console.log("Attempting to create campaign (POST request) to:", apiUrl); // DEBUG
-
-      const response = await fetch(apiUrl, {
+      const response = await fetch(`${import.meta.env.VITE_BACKEND_API_URL}/api/campaigns`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(campaignPayload),
       });
 
-      const result = await response.json();
+      const responseData = await response.json();
 
-      if (!response.ok || !result.success) {
-        throw new Error(result.error || 'Failed to create campaign.');
+      if (!response.ok) {
+        throw new Error(responseData.error || `HTTP error! status: ${response.status}`);
       }
 
       toast.success('Campaign created successfully!');
-      navigate('/campaigns'); // Navigate to the campaigns list page
-
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'An unknown error occurred during submission.';
-      console.error('Error creating campaign:', err);
-      setSubmitError(errorMsg);
-      toast.error(errorMsg);
+      navigate(`/campaigns/${responseData.campaign.id}`); // Navigate to the new campaign's detail page
+    } catch (error: any) {
+      console.error("Failed to create campaign:", error);
+      setSubmitError(error.message || 'An unknown error occurred during submission.');
+      toast.error(`Failed to create campaign: ${error.message}`);
     } finally {
       setIsSubmitting(false);
     }

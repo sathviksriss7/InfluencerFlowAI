@@ -53,6 +53,7 @@ export interface Campaign {
   id: string;
   title: string;
   brand: string;
+  industry?: string;
   description: string;
   brief: string;
   budget: {

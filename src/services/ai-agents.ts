@@ -324,12 +324,26 @@ export interface BusinessRequirements {
 
 export interface GeneratedCampaign { // This is what CampaignBuildingAgent produces
   id: string; // ADDED: Campaign ID, expected from backend
-  title: string; brand: string; description: string; brief: string; platforms: string[];
-  minFollowers: number; niches: string[]; locations: string[]; deliverables: string[];
-  budgetMin: number; budgetMax: number; startDate: string; endDate: string; applicationDeadline: string;
+  title: string; 
+  brand: string; 
+  industry?: string; // Added industry field
+  description: string; 
+  brief: string; 
+  platforms: string[];
+  minFollowers: number; 
+  niches: string[]; 
+  locations: string[]; 
+  deliverables: string[];
+  budgetMin: number; 
+  budgetMax: number; 
+  startDate: string; 
+  endDate: string; 
+  applicationDeadline: string;
   campaign_objective?: string[] | undefined;
   aiInsights: { strategy: string; reasoning: string; successFactors: string[]; potentialChallenges: string[]; optimizationSuggestions: string[]; };
-  confidence: number; agentVersion: string; generatedAt: Date | string; // Allow string for data from backend, convert to Date in FE
+  confidence: number; 
+  agentVersion: string; 
+  generatedAt: Date | string; // Allow string for data from backend, convert to Date in FE
 }
 
 export interface CreatorMatch {
@@ -591,7 +605,6 @@ class CampaignBuildingAgent {
       ? requirements.industry.join(', ') 
       : 'General';
 
-    // MODIFIED: Use campaignObjective array directly or undefined
     const campaignObjectivesArray: string[] | undefined = requirements.campaignObjective && requirements.campaignObjective.length > 0
       ? requirements.campaignObjective
       : undefined;
@@ -651,9 +664,10 @@ class CampaignBuildingAgent {
      // ---- END: Heuristic for default platforms and niches in FALLBACK ----
 
     return {
-      id: `local-fallback-campaign-${Date.now()}`, // ADDED: ID for fallback campaign
+      id: `local-fallback-campaign-${Date.now()}`,
       title: `Exciting Campaign for ${requirements.companyName}`,
       brand: requirements.companyName,
+      industry: (requirements.industry && requirements.industry.length > 0) ? requirements.industry[0] : 'General', // Added industry field
       description: `A dynamic campaign focusing on ${requirements.productService} for the ${industryText} sector. We aim to ${requirements.businessGoals.join(', ')}. Target audience (viewers): ${requirements.campaignAudienceDescription}. Target influencers (creators): ${requirements.targetInfluencerDescription}.`,
       brief: `Campaign Objectives: ${campaignObjectiveTextForBrief}. Key Message: ${requirements.keyMessage || 'Experience the best!'}. Platforms: ${finalPlatforms.join(', ')}. Content: ${(requirements.contentTypes || []).join(', ')}. Special Notes: ${requirements.specialRequirements || 'None'}`,
       platforms: finalPlatforms,
