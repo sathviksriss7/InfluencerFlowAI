@@ -1,11 +1,73 @@
+import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { mockCreators } from '../mock-data/creators';
-import { mockCampaigns } from '../mock-data/campaigns';
-import { findCampaignsForCreator, getMatchQuality } from '../utils/matching';
+import { supabase } from '../lib/supabase';
+import { type Creator } from '../types';
 
 export default function CreatorProfile() {
   const { id } = useParams<{ id: string }>();
-  const creator = mockCreators.find(c => c.id === id);
+
+  const [creator, setCreator] = useState<Creator | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const fetchCreatorDetails = async () => {
+      if (!id) {
+        setError('No creator ID provided.');
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+      setError(null);
+      try {
+        const { data, error: fetchError } = await supabase
+          .from('creators')
+          .select('*')
+          .eq('id', id)
+          .single();
+
+        if (fetchError) {
+          console.error("Error fetching creator details from Supabase:", fetchError);
+          throw fetchError;
+        }
+        
+        if (data) {
+          setCreator(data as Creator);
+        } else {
+          setError('Creator not found in the database.');
+          setCreator(null);
+        }
+      } catch (err: any) {
+        console.error("Catch block error fetching creator:", err);
+        setError(err.message || "Failed to fetch creator details.");
+        setCreator(null);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchCreatorDetails();
+  }, [id]);
+
+  if (loading) {
+    return (
+      <div className="text-center py-12">
+        <h2 className="text-xl font-semibold text-gray-700">Loading Creator Profile...</h2>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="text-center py-12">
+        <h2 className="text-2xl font-bold text-red-700 mb-2">Error Loading Profile</h2>
+        <p className="text-gray-600 mb-4">{error}</p>
+        <Link to="/creators" className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">
+          Back to Creators
+        </Link>
+      </div>
+    );
+  }
 
   if (!creator) {
     return (
@@ -19,10 +81,8 @@ export default function CreatorProfile() {
     );
   }
 
-  // Get recommended campaigns for this creator
-  const recommendedCampaigns = findCampaignsForCreator(creator, mockCampaigns, 3, 50);
-
-  const formatNumber = (num: number) => {
+  const formatNumber = (num: number | undefined | null): string => {
+    if (num === undefined || num === null) return '0';
     if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
     if (num >= 1000) return `${(num / 1000).toFixed(0)}k`;
     return num.toString();
@@ -46,7 +106,6 @@ export default function CreatorProfile() {
 
   return (
     <div className="space-y-6">
-      {/* Back Button */}
       <Link 
         to="/creators" 
         className="inline-flex items-center text-blue-600 hover:text-blue-700 transition-colors"
@@ -57,7 +116,6 @@ export default function CreatorProfile() {
         Back to Creators
       </Link>
 
-      {/* Creator Header */}
       <div className="bg-white rounded-lg shadow p-6">
         <div className="flex items-start gap-6">
           <img
@@ -82,12 +140,33 @@ export default function CreatorProfile() {
               <span className="text-gray-600">{creator.location}</span>
             </div>
             <p className="text-gray-700 mb-4">{creator.bio}</p>
+
+            <div className="flex flex-wrap gap-x-6 gap-y-2 mb-4 text-sm text-gray-600">
+              {((creator as any).email || creator.email) && (
+                <div className="flex items-center gap-2">
+                  <svg className="w-4 h-4 text-gray-400" fill="currentColor" viewBox="0 0 20 20">
+                    <path d="M2.003 5.884L10 9.882l7.997-3.998A2 2 0 0016 4H4a2 2 0 00-1.997 1.884z" />
+                    <path d="M18 8.118l-8 4-8-4V14a2 2 0 002 2h12a2 2 0 002-2V8.118z" />
+                  </svg>
+                  <span>{(creator as any).email || creator.email}</span>
+                </div>
+              )}
+              {((creator as any).phone_number || creator.phone_number) && (
+                <div className="flex items-center gap-2">
+                  <svg className="w-4 h-4 text-gray-400" fill="currentColor" viewBox="0 0 20 20">
+                    <path d="M2 3a1 1 0 011-1h2.153a1 1 0 01.986.836l.74 4.435a1 1 0 01-.54 1.06l-1.548.773a11.037 11.037 0 006.105 6.105l.774-1.548a1 1 0 011.059-.54l4.435.74a1 1 0 01.836.986V17a1 1 0 01-1 1h-2C7.82 18 2 12.18 2 5V3z" />
+                  </svg>
+                  <span>{(creator as any).phone_number || creator.phone_number}</span>
+                </div>
+              )}
+            </div>
+
             <div className="flex items-center gap-2">
               <div className="flex">
                 {[...Array(5)].map((_, i) => (
                   <svg
                     key={i}
-                    className={`w-5 h-5 ${i < Math.floor(creator.rating) ? 'text-yellow-400' : 'text-gray-300'}`}
+                    className={`w-5 h-5 ${creator.rating && i < Math.floor(creator.rating) ? 'text-yellow-400' : 'text-gray-300'}`}
                     fill="currentColor"
                     viewBox="0 0 24 24"
                   >
@@ -95,9 +174,9 @@ export default function CreatorProfile() {
                   </svg>
                 ))}
               </div>
-              <span className="text-gray-600">{creator.rating}/5</span>
+              <span className="text-gray-600">{creator.rating ?? 'N/A'}/5</span>
               <span className="text-gray-400">•</span>
-              <span className="text-gray-600">{creator.responseTime}</span>
+              <span className="text-gray-600">{creator.responseTime ?? 'N/A'}</span>
             </div>
           </div>
           <div className="flex gap-3">
@@ -112,75 +191,75 @@ export default function CreatorProfile() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Metrics */}
         <div className="bg-white rounded-lg shadow p-6">
           <h2 className="text-xl font-semibold text-gray-900 mb-4">Performance Metrics</h2>
           <div className="grid grid-cols-2 gap-4">
             <div className="text-center p-4 bg-blue-50 rounded-lg">
-              <p className="text-2xl font-bold text-blue-600">{formatNumber(creator.metrics.followers)}</p>
+              <p className="text-2xl font-bold text-blue-600">{formatNumber(creator.metrics?.followers)}</p>
               <p className="text-sm text-gray-600">Followers</p>
             </div>
             <div className="text-center p-4 bg-green-50 rounded-lg">
-              <p className="text-2xl font-bold text-green-600">{creator.metrics.engagementRate}%</p>
+              <p className="text-2xl font-bold text-green-600">{(creator.metrics as any)?.engagement_rate ?? creator.metrics?.engagementRate ?? 'N/A'}%</p>
               <p className="text-sm text-gray-600">Engagement Rate</p>
             </div>
             <div className="text-center p-4 bg-purple-50 rounded-lg">
-              <p className="text-2xl font-bold text-purple-600">{formatNumber(creator.metrics.avgViews)}</p>
+              <p className="text-2xl font-bold text-purple-600">{formatNumber(creator.metrics?.avgViews)}</p>
               <p className="text-sm text-gray-600">Avg Views</p>
             </div>
             <div className="text-center p-4 bg-orange-50 rounded-lg">
-              <p className="text-2xl font-bold text-orange-600">{formatNumber(creator.metrics.avgLikes)}</p>
+              <p className="text-2xl font-bold text-orange-600">{formatNumber(creator.metrics?.avgLikes)}</p>
               <p className="text-sm text-gray-600">Avg Likes</p>
             </div>
           </div>
         </div>
 
-        {/* Pricing */}
         <div className="bg-white rounded-lg shadow p-6">
           <h2 className="text-xl font-semibold text-gray-900 mb-4">Pricing</h2>
           <div className="space-y-3">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 bg-gray-100 rounded-lg flex items-center justify-center">
-                <svg className="w-4 h-4 text-gray-600" fill="currentColor" viewBox="0 0 24 24"><path d="M19 7h-3V6a1 1 0 0 0-2 0v1h-4V6a1 1 0 0 0-2 0v1H5a1 1 0 0 0 0 2h2v2H5a1 1 0 0 0 0 2h2v6a1 1 0 0 0 2 0v-6h4v6a1 1 0 0 0 2 0v-6h2a1 1 0 0 0 0-2h-2V9h2a1 1 0 0 0 0-2zM10 9h4v2h-4V9z"/></svg>
+            {creator.rates.post !== undefined && creator.rates.post !== null && (
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 bg-gray-100 rounded-lg flex items-center justify-center">
+                  <svg className="w-4 h-4 text-gray-600" fill="currentColor" viewBox="0 0 24 24"><path d="M19 7h-3V6a1 1 0 0 0-2 0v1h-4V6a1 1 0 0 0-2 0v1H5a1 1 0 0 0 0 2h2v2H5a1 1 0 0 0 0 2h2v6a1 1 0 0 0 2 0v-6h4v6a1 1 0 0 0 2 0v-6h2a1 1 0 0 0 0-2h-2V9h2a1 1 0 0 0 0-2zM10 9h4v2h-4V9z"/></svg>
+                </div>
+                <div>
+                  <p className="text-sm text-gray-600">Post</p>
+                  <span className="text-lg font-semibold text-gray-900">₹{Number(creator.rates.post).toLocaleString()}</span>
+                </div>
               </div>
-              <div>
-                <p className="text-sm text-gray-600">Post</p>
-                <span className="text-lg font-semibold text-gray-900">₹{creator.rates.post.toLocaleString()}</span>
-              </div>
-            </div>
+            )}
 
-            {creator.rates.story && (
+            {creator.rates.story !== undefined && creator.rates.story !== null && (
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 bg-gray-100 rounded-lg flex items-center justify-center">
                   <svg className="w-4 h-4 text-gray-600" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
                 </div>
                 <div>
                   <p className="text-sm text-gray-600">Story</p>
-                  <span className="text-lg font-semibold text-gray-900">₹{creator.rates.story.toLocaleString()}</span>
+                  <span className="text-lg font-semibold text-gray-900">₹{Number(creator.rates.story).toLocaleString()}</span>
                 </div>
               </div>
             )}
 
-            {creator.rates.reel && (
+            {creator.rates.reel !== undefined && creator.rates.reel !== null && (
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 bg-gray-100 rounded-lg flex items-center justify-center">
                   <svg className="w-4 h-4 text-gray-600" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
                 </div>
                 <div>
                   <p className="text-sm text-gray-600">Reel</p>
-                  <span className="text-lg font-semibold text-gray-900">₹{creator.rates.reel.toLocaleString()}</span>
+                  <span className="text-lg font-semibold text-gray-900">₹{Number(creator.rates.reel).toLocaleString()}</span>
                 </div>
               </div>
             )}
 
-            {creator.rates.video && (
+            {creator.rates.video !== undefined && creator.rates.video !== null && (
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 bg-gray-100 rounded-lg flex items-center justify-center">
                   <svg className="w-4 h-4 text-gray-600" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
                 </div>
                 <div>
                   <p className="text-sm text-gray-600">Video</p>
-                  <span className="text-lg font-semibold text-gray-900">₹{creator.rates.video.toLocaleString()}</span>
+                  <span className="text-lg font-semibold text-gray-900">₹{Number(creator.rates.video).toLocaleString()}</span>
                 </div>
               </div>
             )}
@@ -189,165 +268,111 @@ export default function CreatorProfile() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Demographics */}
-        <div className="bg-white rounded-lg shadow p-6">
-          <h2 className="text-xl font-semibold text-gray-900 mb-4">Audience Demographics</h2>
-          <div className="space-y-4">
-            <div>
-              <p className="text-sm font-medium text-gray-700 mb-2">Age Range</p>
-              <p className="text-lg text-gray-900">{creator.demographics.ageRange}</p>
-            </div>
-            <div>
-              <p className="text-sm font-medium text-gray-700 mb-2">Top Countries</p>
-              <div className="flex flex-wrap gap-2">
-                {creator.demographics.topCountries.map((country, index) => (
-                  <span key={index} className="px-3 py-1 bg-blue-50 text-blue-700 rounded-md text-sm">
-                    {country}
-                  </span>
-                ))}
-              </div>
-            </div>
-            <div>
-              <p className="text-sm font-medium text-gray-700 mb-2">Gender Split</p>
-              <div className="space-y-2">
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-gray-600">Female</span>
-                  <div className="flex items-center gap-2">
-                    <div className="w-24 h-2 bg-gray-200 rounded-full">
-                      <div 
-                        className="h-2 bg-pink-500 rounded-full"
-                        style={{ width: `${creator.demographics.genderSplit.female}%` }}
-                      ></div>
-                    </div>
-                    <span className="text-sm font-medium">{creator.demographics.genderSplit.female}%</span>
+        {((creator as any).audience_demographics || creator.demographics) && (
+          <div className="bg-white rounded-lg shadow p-6">
+            <h2 className="text-xl font-semibold text-gray-900 mb-4">Audience Demographics</h2>
+            <div className="space-y-4">
+              {((creator as any).audience_demographics?.ageRange || creator.demographics?.ageRange) && (
+                <div>
+                  <p className="text-sm font-medium text-gray-700 mb-2">Age Range</p>
+                  <p className="text-lg text-gray-900">{(creator as any).audience_demographics?.ageRange ?? creator.demographics?.ageRange}</p>
+                </div>
+              )}
+              {((creator as any).audience_demographics?.topCountries || creator.demographics?.topCountries) && Array.isArray(((creator as any).audience_demographics?.topCountries ?? creator.demographics?.topCountries)) && (
+                <div>
+                  <p className="text-sm font-medium text-gray-700 mb-2">Top Countries</p>
+                  <div className="flex flex-wrap gap-2">
+                    {(((creator as any).audience_demographics?.topCountries ?? creator.demographics?.topCountries) || []).map((country: string, index: number) => (
+                      <span key={index} className="px-3 py-1 bg-blue-50 text-blue-700 rounded-md text-sm">
+                        {country}
+                      </span>
+                    ))}
                   </div>
                 </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-gray-600">Male</span>
-                  <div className="flex items-center gap-2">
-                    <div className="w-24 h-2 bg-gray-200 rounded-full">
-                      <div 
-                        className="h-2 bg-blue-500 rounded-full"
-                        style={{ width: `${creator.demographics.genderSplit.male}%` }}
-                      ></div>
-                    </div>
-                    <span className="text-sm font-medium">{creator.demographics.genderSplit.male}%</span>
+              )}
+              {((creator as any).audience_demographics?.genderSplit || creator.demographics?.genderSplit) && (
+                <div>
+                  <p className="text-sm font-medium text-gray-700 mb-2">Gender Split</p>
+                  <div className="space-y-2">
+                    {(((creator as any).audience_demographics?.genderSplit?.female ?? creator.demographics?.genderSplit?.female) !== undefined) && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm text-gray-600">Female</span>
+                        <div className="flex items-center gap-2">
+                          <div className="w-24 h-2 bg-gray-200 rounded-full">
+                            <div
+                              className="h-2 bg-pink-500 rounded-full"
+                              style={{ width: `${(creator as any).audience_demographics?.genderSplit?.female ?? creator.demographics?.genderSplit?.female}%` }}
+                            ></div>
+                          </div>
+                          <span className="text-sm font-medium">{(creator as any).audience_demographics?.genderSplit?.female ?? creator.demographics?.genderSplit?.female}%</span>
+                        </div>
+                      </div>
+                    )}
+                    {(((creator as any).audience_demographics?.genderSplit?.male ?? creator.demographics?.genderSplit?.male) !== undefined) && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm text-gray-600">Male</span>
+                        <div className="flex items-center gap-2">
+                          <div className="w-24 h-2 bg-gray-200 rounded-full">
+                            <div
+                              className="h-2 bg-blue-500 rounded-full"
+                              style={{ width: `${(creator as any).audience_demographics?.genderSplit?.male ?? creator.demographics?.genderSplit?.male}%` }}
+                            ></div>
+                          </div>
+                          <span className="text-sm font-medium">{(creator as any).audience_demographics?.genderSplit?.male ?? creator.demographics?.genderSplit?.male}%</span>
+                        </div>
+                      </div>
+                    )}
+                    {(((creator as any).audience_demographics?.genderSplit?.other ?? creator.demographics?.genderSplit?.other) !== undefined) && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm text-gray-600">Other</span>
+                        <div className="flex items-center gap-2">
+                          <div className="w-24 h-2 bg-gray-200 rounded-full">
+                            <div
+                              className="h-2 bg-gray-500 rounded-full"
+                              style={{ width: `${(creator as any).audience_demographics?.genderSplit?.other ?? creator.demographics?.genderSplit?.other}%` }}
+                            ></div>
+                          </div>
+                          <span className="text-sm font-medium">{(creator as any).audience_demographics?.genderSplit?.other ?? creator.demographics?.genderSplit?.other}%</span>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
-              </div>
+              )}
             </div>
           </div>
-        </div>
+        )}
 
-        {/* Niches */}
         <div className="bg-white rounded-lg shadow p-6">
           <h2 className="text-xl font-semibold text-gray-900 mb-4">Content Niches</h2>
           <div className="flex flex-wrap gap-2">
-            {creator.niche.map((niche, index) => (
+            {Array.isArray(creator.niche) ? creator.niche.map((n: string, index: number) => (
               <span
                 key={index}
                 className="px-3 py-2 bg-blue-50 text-blue-700 rounded-lg font-medium capitalize"
               >
-                {niche}
+                {n}
               </span>
-            ))}
+            )) : <span className="text-gray-500">N/A</span>}
           </div>
           
-          {/* Recent Performance */}
-          <div className="mt-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-3">Recent Performance</h3>
-            <div className="grid grid-cols-2 gap-4 text-sm">
-              <div>
-                <p className="text-gray-500">Avg Comments</p>
-                <p className="font-semibold text-gray-900">{formatNumber(creator.metrics.avgComments)}</p>
-              </div>
-              <div>
-                <p className="text-gray-500">Response Rate</p>
-                <p className="font-semibold text-gray-900">95%</p>
+          {creator.metrics?.avgComments !== undefined && creator.metrics?.avgComments !== null && (
+            <div className="mt-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-3">Recent Performance</h3>
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <p className="text-gray-500">Avg Comments</p>
+                  <p className="font-semibold text-gray-900">{formatNumber(creator.metrics.avgComments)}</p>
+                </div>
+                <div>
+                  <p className="text-gray-500">Response Rate</p>
+                  <p className="font-semibold text-gray-900">{creator.responseTime || 'N/A'}</p>
+                </div>
               </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
-
-      {/* Recommended Campaigns */}
-      {recommendedCampaigns.length > 0 && (
-        <div className="bg-white rounded-lg shadow p-6">
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-xl font-semibold text-gray-900">Recommended Campaigns</h2>
-            <Link to="/campaigns" className="text-blue-600 hover:text-blue-700 text-sm font-medium">
-              View All Campaigns →
-            </Link>
-          </div>
-          
-          <div className="space-y-4">
-            {recommendedCampaigns.map((match) => {
-              const quality = getMatchQuality(match.score);
-              return (
-                <div key={match.campaign.id} className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
-                  <div className="flex items-start justify-between mb-3">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-3 mb-2">
-                        <h3 className="font-semibold text-gray-900">{match.campaign.title}</h3>
-                        <span className={`px-2 py-1 text-xs font-medium rounded-full ${
-                          quality.color === 'green' ? 'bg-green-100 text-green-800' :
-                          quality.color === 'blue' ? 'bg-blue-100 text-blue-800' :
-                          quality.color === 'yellow' ? 'bg-yellow-100 text-yellow-800' :
-                          'bg-red-100 text-red-800'
-                        }`}>
-                          {match.score}% Match
-                        </span>
-                      </div>
-                      <p className="text-sm text-gray-600 mb-2">{match.campaign.brand}</p>
-                      <p className="text-sm text-gray-700">{match.campaign.description}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-sm font-medium text-gray-900">
-                        ₹{match.campaign.budget.min.toLocaleString()} - ₹{match.campaign.budget.max.toLocaleString()}
-                      </p>
-                      <p className="text-xs text-gray-500">Budget</p>
-                    </div>
-                  </div>
-
-                  {/* Match Reasons */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-                    <div>
-                      <p className="text-xs font-medium text-green-700 mb-1">Why it's a good match:</p>
-                      <ul className="text-xs text-green-600 space-y-1">
-                        {match.matchReasons.slice(0, 3).map((reason, idx) => (
-                          <li key={idx}>• {reason}</li>
-                        ))}
-                      </ul>
-                    </div>
-                    {match.concerns.length > 0 && (
-                      <div>
-                        <p className="text-xs font-medium text-amber-700 mb-1">Considerations:</p>
-                        <ul className="text-xs text-amber-600 space-y-1">
-                          {match.concerns.slice(0, 2).map((concern, idx) => (
-                            <li key={idx}>• {concern}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="flex gap-2 mt-4">
-                    <button className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors text-sm">
-                      Apply to Campaign
-                    </button>
-                    <Link 
-                      to={`/campaigns/${match.campaign.id}`}
-                      className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors text-sm text-center"
-                    >
-                      View Details
-                    </Link>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
     </div>
   );
 } 

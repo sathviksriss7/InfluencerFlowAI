@@ -21,6 +21,7 @@ export interface Creator {
   bio: string;
   verified: boolean;
   phone_number?: string;
+  email?: string;
   metrics: {
     followers: number;
     avgViews: number;
