@@ -15,6 +15,35 @@ interface ChatMessage {
   isLoading?: boolean;
 }
 
+// Backend response types (simplified for clarity here, ensure they match actual backend)
+interface BackendQueryAnalysisResponse {
+  success: boolean;
+  analysis?: { // This is the structure returned by /api/creator/analyze-query
+    intent: string;
+    queryType: string;
+    extractedCriteria: {
+      platforms?: string[];
+      niches?: string[];
+      followerRange?: string;
+      budget?: string;
+      location?: string;
+    };
+    keyRequirements?: string[];
+    confidence?: number;
+    // It might also return analysisInsights and suggestions directly
+    analysisInsights?: string; 
+    suggestions?: string[];
+  };
+  method?: string;
+  error?: string;
+}
+
+interface BackendCreatorDiscoveryResponse {
+  success: boolean;
+  creators?: Creator[]; // Creator type from ../types
+  error?: string;
+}
+
 const CHAT_STORAGE_KEY = 'ai-creator-chat-history';
 
 // Helper function to save messages to localStorage
@@ -194,80 +223,154 @@ export default function AICreatorSearchLLM({ campaignId }: AICreatorSearchLLMPro
     };
 
     setMessages(prev => [...prev, userMessage]);
-    const query = currentQuery;
+    const originalUserQuery = currentQuery; // Store the original query
     setCurrentQuery('');
     setIsAnalyzing(true);
     setShowSuggestions(false);
 
-    // Add loading message
     const loadingMessage: ChatMessage = {
       id: `loading_${Date.now()}`,
       type: 'ai',
-      content: "🧠 Analyzing your request with advanced AI...",
+      content: "🧠 Analyzing your request and searching for creators...",
       timestamp: new Date(),
       isLoading: true
     };
     setMessages(prev => [...prev, loadingMessage]);
 
-    try {
-      console.log('🤖 Calling backend API with query:', query);
-      console.log('📋 Conversation context being sent:', messages.slice(0, -1).map(m => `${m.type}: ${m.content.substring(0, 50)}...`));
-      
-      const backendApiUrl = import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:5001';
-      const token = session?.access_token;
+    const backendApiUrl = import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:5001';
+    const token = session?.access_token;
+    let finalLlmAnalysis: LLMCreatorAnalysis | null = null;
+    const startTime = Date.now();
 
-      const response = await fetch(`${backendApiUrl}/api/creator/analyze-query`, {
+    try {
+      // Step 1: Call /api/creator/analyze-query
+      console.log('🤖 Step 1: Calling /api/creator/analyze-query with query:', originalUserQuery);
+      const analyzeResponse = await fetch(`${backendApiUrl}/api/creator/analyze-query`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...(token && { 'Authorization': `Bearer ${token}` }),
         },
         body: JSON.stringify({
-          query: query,
-          conversation_history: messages.slice(0, -1).map(m => ({ // Exclude current loading message
-            role: m.type === 'user' ? 'user' : 'assistant',
-            content: m.content
-          }))
+          query: originalUserQuery,
+          // conversation_history: messages.slice(0, -1)... (consider if needed)
         }),
       });
 
-      if (!response.ok) {
-        let errorData;
-        try {
-          errorData = await response.json();
-        } catch (e) {
-          // Backend didn't return JSON or other error
-        }
-        const detail = errorData?.detail || errorData?.message || response.statusText || 'Unknown error from backend';
-        throw new Error(`Backend request failed: ${response.status} ${detail}`);
+      if (!analyzeResponse.ok) {
+        const errorData = await analyzeResponse.json().catch(() => ({}));
+        throw new Error(`Query analysis failed: ${analyzeResponse.status} ${errorData?.error || analyzeResponse.statusText}`);
       }
       
-      const llmAnalysis: LLMCreatorAnalysis = await response.json();
+      const queryAnalysisData: BackendQueryAnalysisResponse = await analyzeResponse.json();
+
+      if (!queryAnalysisData.success || !queryAnalysisData.analysis) {
+        throw new Error(`Query analysis was not successful: ${queryAnalysisData.error || 'Unknown error from analysis API'}`);
+      }
+      // Assign to a new const after the check to satisfy TypeScript's control flow analysis
+      const currentQueryAnalysis = queryAnalysisData.analysis;
       
-      // Remove loading message and add result
-      setMessages(prev => prev.filter(m => !m.isLoading));
+      console.log('✅ Step 1: Query analysis successful:', currentQueryAnalysis);
+
+      // Step 2: Call /api/creators/discover using criteria from Step 1
+      const discoveryCriteria: any = {};
+      if (currentQueryAnalysis.extractedCriteria.platforms?.length) {
+        discoveryCriteria.platforms = currentQueryAnalysis.extractedCriteria.platforms;
+      }
+      if (currentQueryAnalysis.extractedCriteria.niches?.length) {
+        discoveryCriteria.niches = currentQueryAnalysis.extractedCriteria.niches;
+      }
+      if (currentQueryAnalysis.extractedCriteria.followerRange) { // Assuming backend /discover can take this string
+        discoveryCriteria.min_followers = currentQueryAnalysis.extractedCriteria.followerRange; // Or parse if needed
+      }
+      if (currentQueryAnalysis.extractedCriteria.location) {
+        discoveryCriteria.location = currentQueryAnalysis.extractedCriteria.location;
+      }
+      // Add a default for location if not present, as discover might need it
+      if (!discoveryCriteria.location) {
+        // discoveryCriteria.location = "India"; // Or some other default, or make backend handle missing
+      }
+
+
+      console.log('🤖 Step 2: Calling /api/creators/discover with criteria:', discoveryCriteria);
+      const discoverResponse = await fetch(`${backendApiUrl}/api/creators/discover`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token && { 'Authorization': `Bearer ${token}` }),
+        },
+        body: JSON.stringify(discoveryCriteria),
+      });
+
+      if (!discoverResponse.ok) {
+        const errorData = await discoverResponse.json().catch(() => ({}));
+        throw new Error(`Creator discovery failed: ${discoverResponse.status} ${errorData?.error || discoverResponse.statusText}`);
+      }
+
+      const creatorDiscoveryData: BackendCreatorDiscoveryResponse = await discoverResponse.json();
+
+      if (!creatorDiscoveryData.success) {
+        // Even if not successful, we might have queryAnalysisData to show
+        console.warn('Creator discovery was not successful:', creatorDiscoveryData.error);
+      }
       
-      const aiMessage: ChatMessage = {
-        id: `ai_${Date.now()}`,
-        type: 'ai',
-        content: llmAnalysis.analysisInsights,
-        timestamp: new Date(),
-        llmAnalysis
+      const discoveredCreators = creatorDiscoveryData.creators || [];
+      console.log('✅ Step 2: Creator discovery successful. Found creators:', discoveredCreators.length);
+
+      // Step 3: Assemble the LLMCreatorAnalysis object for the UI
+      finalLlmAnalysis = {
+        query: originalUserQuery,
+        queryUnderstanding: { // Populate from currentQueryAnalysis
+          intent: currentQueryAnalysis.intent || "N/A",
+          queryType: currentQueryAnalysis.queryType as LLMCreatorAnalysis['queryUnderstanding']['queryType'] || "general_search",
+          secondaryAspects: currentQueryAnalysis.extractedCriteria.platforms, // Example, adjust as needed
+          extractedCriteria: {
+            platforms: currentQueryAnalysis.extractedCriteria.platforms,
+            niches: currentQueryAnalysis.extractedCriteria.niches,
+            followerRange: currentQueryAnalysis.extractedCriteria.followerRange,
+            budget: currentQueryAnalysis.extractedCriteria.budget,
+            location: currentQueryAnalysis.extractedCriteria.location,
+          },
+          confidence: currentQueryAnalysis.confidence || 0,
+          keyRequirements: currentQueryAnalysis.keyRequirements || [],
+        },
+        matchedCreators: discoveredCreators.map(creator => ({ // Transform Creator to MatchedCreator
+          creator: creator,
+          relevanceScore: 70, // Placeholder
+          reasoning: "Matched based on initial criteria.", // Placeholder
+          strengths: ["Relevant platform/niche (placeholder)"], // Placeholder
+          concerns: [], // Placeholder
+          recommendationLevel: 'potential_match', // Placeholder
+          // costEffectivenessScore and reachPotential are optional
+        })),
+        // Use insights and suggestions from currentQueryAnalysis if backend provides them, else placeholders
+        analysisInsights: currentQueryAnalysis.analysisInsights || (discoveredCreators.length > 0 ? `Found ${discoveredCreators.length} potential creators based on your query.` : "Could not find specific creators, but understood your query."),
+        suggestions: currentQueryAnalysis.suggestions || ["Try refining your niche or platform.", "Specify a follower range."],
+        totalProcessingTime: Date.now() - startTime,
       };
 
-      setMessages(prev => [...prev, aiMessage]);
     } catch (error) {
-      setMessages(prev => prev.filter(m => !m.isLoading));
-      
-      const errorMessageContent = error instanceof Error ? error.message : "I encountered an error while analyzing your request. This might be due to API limits or connectivity issues. Please try again with a simpler query.";
-      const errorMessage: ChatMessage = {
-        id: `error_${Date.now()}`,
-        type: 'ai',
-        content: errorMessageContent,
-        timestamp: new Date()
+      console.error('Error in handleSendMessage:', error);
+      finalLlmAnalysis = { // Fallback structure on error
+        query: originalUserQuery,
+        analysisInsights: error instanceof Error ? error.message : "An unexpected error occurred.",
+        queryUnderstanding: { intent: "Error processing request", queryType: 'general_search', extractedCriteria: {}, confidence: 0, keyRequirements: [] },
+        matchedCreators: [],
+        suggestions: ["Please try a different query or check console for errors."],
+        totalProcessingTime: Date.now() - startTime,
       };
-      setMessages(prev => [...prev, errorMessage]);
     } finally {
+      setMessages(prev => prev.filter(m => !m.isLoading)); // Remove loading message
+      if (finalLlmAnalysis) {
+        const aiMessage: ChatMessage = {
+          id: `ai_${Date.now()}`,
+          type: 'ai',
+          content: finalLlmAnalysis.analysisInsights, // Main textual response
+          timestamp: new Date(),
+          llmAnalysis: finalLlmAnalysis // The full structured data
+        };
+        setMessages(prev => [...prev, aiMessage]);
+      }
       setIsAnalyzing(false);
     }
   };
