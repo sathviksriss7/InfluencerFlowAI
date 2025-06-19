@@ -59,36 +59,39 @@ export default function Creators() {
   const filteredCreators = useMemo(() => {
     if (loadingCreators || errorCreators) return []; // Return empty if loading or error
     let filtered = allCreators.filter(creator => {
-      const matchesSearch = searchTerm === '' || 
-        creator.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        creator.username.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        creator.location.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        creator.niche.some(n => n.toLowerCase().includes(searchTerm.toLowerCase()));
+      const searchTermLower = searchTerm.toLowerCase();
+      const nameMatch = creator.name.toLowerCase().includes(searchTermLower);
+      const usernameMatch = creator.username?.toLowerCase().includes(searchTermLower) || false;
+      const locationMatch = creator.location?.toLowerCase().includes(searchTermLower) || false;
+      const nicheMatch = Array.isArray(creator.niche) && creator.niche.some(n => n.toLowerCase().includes(searchTermLower));
+
+      const matchesSearch = searchTerm === '' || nameMatch || usernameMatch || locationMatch || nicheMatch;
 
       const matchesPlatform = platformFilter === 'all' || creator.platform === platformFilter;
-      const matchesNiche = nicheFilter === 'all' || creator.niche.includes(nicheFilter);
+      const matchesNiche = nicheFilter === 'all' || (Array.isArray(creator.niche) && creator.niche.includes(nicheFilter));
 
       return matchesSearch && matchesPlatform && matchesNiche;
     });
 
     // Sort results
     filtered.sort((a, b) => {
-      let aValue, bValue;
+      let aValue: string | number | undefined;
+      let bValue: string | number | undefined;
       
       switch (sortBy) {
-        case 'followers':
-          aValue = a.metrics.followers;
-          bValue = b.metrics.followers;
+        case 'followers': // Assumes metrics.followers exists
+          aValue = a.metrics?.followers;
+          bValue = b.metrics?.followers;
           break;
-        case 'engagement':
-          aValue = a.metrics.engagementRate;
-          bValue = b.metrics.engagementRate;
+        case 'engagement': // Check for engagement_rate (snake_case) or engagementRate (camelCase)
+          aValue = (a.metrics as any)?.engagement_rate ?? a.metrics?.engagementRate;
+          bValue = (b.metrics as any)?.engagement_rate ?? b.metrics?.engagementRate;
           break;
-        case 'rating':
+        case 'rating': // Directly from schema: rating numeric(3,1)
           aValue = a.rating;
           bValue = b.rating;
           break;
-        case 'name':
+        case 'name': // Directly from schema: name text
           aValue = a.name;
           bValue = b.name;
           break;
@@ -96,21 +99,29 @@ export default function Creators() {
           return 0;
       }
 
-      if (typeof aValue === 'string') {
-        return sortOrder === 'asc' 
-          ? aValue.localeCompare(bValue as string)
-          : (bValue as string).localeCompare(aValue);
-      }
+      // Handle cases where values might be undefined for sorting
+      if (aValue === undefined && bValue === undefined) return 0;
+      if (aValue === undefined) return sortOrder === 'asc' ? 1 : -1; // Undefined items go to the end (asc) or start (desc)
+      if (bValue === undefined) return sortOrder === 'asc' ? -1 : 1; // Undefined items go to the end (asc) or start (desc)
 
-      return sortOrder === 'asc' 
-        ? (aValue as number) - (bValue as number)
-        : (bValue as number) - (aValue as number);
+      if (typeof aValue === 'string' && typeof bValue === 'string') {
+        return sortOrder === 'asc' 
+          ? aValue.localeCompare(bValue)
+          : bValue.localeCompare(aValue);
+      }
+      // Ensure numeric comparison if types are numbers after handling undefined
+      if (typeof aValue === 'number' && typeof bValue === 'number') {
+        return sortOrder === 'asc' 
+          ? aValue - bValue
+          : bValue - aValue;
+      }
+      return 0; // Fallback for mixed types or other scenarios, though ideally types are consistent for a sort key
     });
 
     return filtered;
   }, [searchTerm, platformFilter, nicheFilter, sortBy, sortOrder, allCreators, loadingCreators, errorCreators]);
 
-  const getVerificationIcon = (verified: boolean) => {
+  const getVerificationIcon = (verified: boolean | null | undefined) => {
     if (!verified) return null;
     return (
       <svg className="w-5 h-5 text-blue-500" fill="currentColor" viewBox="0 0 24 24">
@@ -353,15 +364,17 @@ export default function Creators() {
 
                         <div className="grid grid-cols-3 gap-2 text-xs text-gray-600">
                           <div>
-                            <span className="font-medium text-gray-900">{formatFollowers(creator.metrics.followers)}</span>
+                            <span className="font-medium text-gray-900">{formatFollowers(creator.metrics?.followers || 0)}</span>
                             <br />Followers
                           </div>
                           <div>
-                            <span className="font-medium text-gray-900">{creator.metrics.engagementRate}%</span>
+                            <span className="font-medium text-gray-900">
+                              {(((creator.metrics as any)?.engagement_rate ?? creator.metrics?.engagementRate) || 0).toFixed(1)}%
+                            </span>
                             <br />Engagement
                           </div>
                           <div>
-                            <span className="font-medium text-gray-900">{creator.rating}/5</span>
+                            <span className="font-medium text-gray-900">{creator.rating ?? 'N/A'}/5</span>
                             <br />Rating
                           </div>
                         </div>
@@ -369,11 +382,11 @@ export default function Creators() {
                         <div className="pt-2 border-t border-gray-100">
                           <div className="flex justify-between items-center">
                             <div className="text-center">
-                              <p className="font-semibold text-gray-900">₹{creator.rates.post}/post</p>
+                              <p className="font-semibold text-gray-900">₹{((creator.rates as any)?.post ?? (creator.rates as any)?.per_post) || 'N/A'}/post</p>
                               <p className="text-xs text-gray-500">Starting rate</p>
                             </div>
                             <span className="text-xs text-gray-500">
-                              {creator.location}
+                              {creator.location ?? 'N/A'}
                             </span>
                           </div>
                         </div>
