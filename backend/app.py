@@ -42,6 +42,12 @@ app = Flask(__name__)
 # Make sure to add FLASK_APP_SECRET_KEY to your backend/.env file with a strong, random string.
 app.secret_key = os.getenv("FLASK_APP_SECRET_KEY", "fallback-dev-secret-key-please-change")
 
+# Configuration for session cookie for cross-site OAuth redirects
+app.config.update(
+    SESSION_COOKIE_SAMESITE='None',
+    SESSION_COOKIE_SECURE=True
+)
+
 # NEW DETAILED LOGGING FOR SECRET KEY
 if not app.secret_key:
     app.logger.error("🔴 CRITICAL: Flask app.secret_key is NOT SET (None or empty after os.getenv). Session management will FAIL.")
