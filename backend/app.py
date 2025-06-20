@@ -84,7 +84,7 @@ else:
 @app.after_request
 def log_set_cookie_info(response): # Renamed function
     # Add any other paths here if you need to debug their Set-Cookie headers
-    paths_to_log_cookies_for = ['/api/auth/google/login', '/api/test-session'] # Added /api/test-session
+    paths_to_log_cookies_for = ['/api/auth/google/login', '/api/test-session', '/api/set-simple-cookie'] # Added /api/test-session
     if request.path in paths_to_log_cookies_for:
         try:
             set_cookie_headers = response.headers.getlist('Set-Cookie')
@@ -902,7 +902,47 @@ def test_session():
         resp.mimetype = 'application/json'
         resp.status_code = 500
         return resp
+    # ... (other routes) ...
 
+    # +++ NEW SIMPLE COOKIE TEST ROUTE +++
+@app.route('/api/set-simple-cookie', methods=['GET'])
+def set_simple_cookie():
+    try:
+        app.logger.info("--- /api/set-simple-cookie: Attempting to set 'simple_debug_cookie' ---")
+        resp = make_response(jsonify(message="Attempting to set simple_debug_cookie. Check browser DevTools."))
+            
+        cookie_name = "simple_debug_cookie"
+        cookie_value = f"hello-from-render-{secrets.token_hex(8)}"
+            
+            # We want to explicitly use the same domain logic that SESSION_COOKIE_DOMAIN should have
+            # This should resolve to influencerflowai.onrender.com based on your .env and app setup
+        cookie_domain_from_config = app.config.get('SESSION_COOKIE_DOMAIN')
+        app.logger.info(f"--- /api/set-simple-cookie: app.config.get('SESSION_COOKIE_DOMAIN') is: '{cookie_domain_from_config}' ---")
+
+        if not cookie_domain_from_config:
+            app.logger.error("--- /api/set-simple-cookie: CRITICAL - SESSION_COOKIE_DOMAIN is not set in app.config! Cannot reliably set domain for test cookie. Check Flask app initialization and FLASK_APP_BASE_URL.")
+                # If this happens, the test is invalid for explicit domain setting.
+            return jsonify(error="SESSION_COOKIE_DOMAIN not configured in backend, test inconclusive for explicit domain."), 500
+            
+        app.logger.info(f"--- /api/set-simple-cookie: Setting cookie with Name='{cookie_name}', Value='{cookie_value[:10]}...', Domain='{cookie_domain_from_config}', Secure=True, HttpOnly=True, SameSite='None', Path='/' ---")
+        resp.set_cookie(
+            cookie_name,
+            value=cookie_value,
+            domain=cookie_domain_from_config, # Explicitly use the configured domain
+            path='/',
+            secure=True,       # Must be True for SameSite=None
+            httponly=True,
+            samesite='None'    # For cross-site context (though this direct access is first-party)
+            )
+                
+        app.logger.info(f"--- /api/set-simple-cookie: Response prepared. Raw Set-Cookie header from resp.headers: {resp.headers.getlist('Set-Cookie')} ---")
+        return resp, 200
+    except Exception as e:
+        app.logger.error(f"--- /api/set-simple-cookie: Exception: {str(e)} ---", exc_info=True)
+        return jsonify(error=f"Error in set_simple_cookie: {str(e)}"), 500
+    # +++ END NEW SIMPLE COOKIE TEST ROUTE +++
+
+    # ... (your existing /api/test-session route, google_login, etc.) ...
 # --- Google OAuth Helper Functions --- START ---
 # ... (rest of your file) ...
 
