@@ -41,23 +41,32 @@ from urllib.parse import urlparse # Add this import
 load_dotenv()
 
 app = Flask(__name__)
-# Apply ProxyFix to handle X-Forwarded-* headers correctly
-# x_for=1, x_proto=1, x_host=1, x_prefix=1 are common defaults
+
+# 1. Set SECRET_KEY immediately and log it
+retrieved_secret_key = os.getenv("FLASK_APP_SECRET_KEY", "fallback-dev-secret-key-please-change")
+app.config['SECRET_KEY'] = retrieved_secret_key
+# Use app.logger.error for high visibility in logs for this critical check
+app.logger.error(f"--- INIT CHECKPOINT 1 --- Flask app.config['SECRET_KEY'] set to: '{app.config.get('SECRET_KEY')}' ---")
+
+# 2. Apply ProxyFix after SECRET_KEY is set
 # This helps Flask understand it's behind a proxy and handle SSL/TLS termination correctly for session cookies.
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+app.logger.info("--- INIT CHECKPOINT 2 --- ProxyFix applied ---")
 
-# It's important to set a secret key for session management in Flask, used by OAuth flow
-# Make sure to add FLASK_APP_SECRET_KEY to your backend/.env file with a strong, random string.
-app.secret_key = os.getenv("FLASK_APP_SECRET_KEY", "fallback-dev-secret-key-please-change")
 
-# Configuration for session cookie for cross-site OAuth redirects
+# 3. Configure other session cookie parameters
 app.config.update(
     SESSION_COOKIE_SAMESITE='None',
     SESSION_COOKIE_SECURE=True
 )
+app.logger.info(f"--- INIT CHECKPOINT 3 --- SESSION_COOKIE_SAMESITE set to: {app.config.get('SESSION_COOKIE_SAMESITE')}, SECURE set to: {app.config.get('SESSION_COOKIE_SECURE')} ---")
 
-# Set SERVER_NAME from FLASK_APP_BASE_URL for better cookie domain handling
-FLASK_APP_BASE_URL_FOR_SERVER_NAME = os.getenv("FLASK_APP_BASE_URL") # Use a distinct variable name to avoid confusion if FLASK_APP_BASE_URL is redefined later
+# Remove the old app.secret_key assignment as it's now handled by app.config['SECRET_KEY']
+# app.secret_key = os.getenv("FLASK_APP_SECRET_KEY", "fallback-dev-secret-key-please-change")
+
+
+# 4. Set SERVER_NAME from FLASK_APP_BASE_URL for better cookie domain handling
+FLASK_APP_BASE_URL_FOR_SERVER_NAME = os.getenv("FLASK_APP_BASE_URL")
 if FLASK_APP_BASE_URL_FOR_SERVER_NAME:
     parsed_url = urlparse(FLASK_APP_BASE_URL_FOR_SERVER_NAME)
     server_name_hostname = parsed_url.hostname 
