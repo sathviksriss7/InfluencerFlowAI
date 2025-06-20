@@ -55,7 +55,14 @@ const UserMenu: React.FC = () => {
     if (isOpen && user && session?.access_token) { 
       setGmailStatus('loading'); // Always set to loading before a fetch
       setGmailErrorMessage(null);
-      fetch('/api/auth/google/status', {
+      const backendUrl = import.meta.env.VITE_BACKEND_API_URL;
+      if (!backendUrl) {
+        console.error("VITE_BACKEND_API_URL is not defined! Cannot fetch Gmail status.");
+        setGmailStatus('error');
+        setGmailErrorMessage('Backend API URL not configured.');
+        return;
+      }
+      fetch(`${backendUrl}/api/auth/google/status`, {
         headers: {
           'Authorization': `Bearer ${session.access_token}`,
         },
@@ -108,7 +115,15 @@ const UserMenu: React.FC = () => {
     setIsOpen(false); // Close menu as the connection process starts
 
     try {
-      const response = await fetch('/api/auth/google/login', { // Assuming /api routes are proxied to your backend
+      const backendUrl = import.meta.env.VITE_BACKEND_API_URL;
+      if (!backendUrl) {
+        console.error("VITE_BACKEND_API_URL is not defined! Cannot initiate Gmail connection.");
+        setGmailStatus('error');
+        setGmailErrorMessage('Backend API URL not configured.');
+        setIsOpen(false);
+        return;
+      }
+      const response = await fetch(`${backendUrl}/api/auth/google/login`, { 
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${session.access_token}`,
