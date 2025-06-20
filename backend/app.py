@@ -373,6 +373,7 @@ def token_required(f):
             
             print(f"🔑 @token_required: Token validated for user: {user_id_for_log}") # DEBUG
             request.current_user = user_response.user if user_response else None # Ensure request.current_user can be None
+            g.current_user = user_response.user if user_response else None # ADDED: Set on g as well for compatibility
             request.raw_jwt = token # Store raw token on request
         except Exception as e:
             print(f"❌ @token_required: Token validation error: {type(e).__name__} - {str(e)}") # DEBUG
