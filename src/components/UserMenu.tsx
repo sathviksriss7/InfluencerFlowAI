@@ -26,7 +26,29 @@ const UserMenu: React.FC = () => {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+    // Example: In some frontend component
+    useEffect(() => {
+      const testBackendConnection = async () => {
+        const backendUrl = import.meta.env.VITE_BACKEND_API_URL; // This should be your Render URL
+        if (!backendUrl) {
+          console.error("VITE_BACKEND_API_URL is not set!");
+          return;
+        }
+        try {
+          console.log(`Attempting to fetch from: ${backendUrl}/api/hello`);
+          const response = await fetch(`${backendUrl}/api/hello`);
+          const data = await response.json();
+          console.log("Response from /api/hello:", data);
+          // You could also try to get text if .json() fails:
+          // const textData = await response.text();
+          // console.log("Raw text response from /api/hello:", textData);
+        } catch (error) {
+          console.error("Error fetching from /api/hello:", error);
+        }
+      };
 
+      testBackendConnection();
+    }, []);
   // Fetch Gmail connection status when the menu is opened or user/session changes
   useEffect(() => {
     // Fetch whenever the menu is opened and there's a valid user session.
