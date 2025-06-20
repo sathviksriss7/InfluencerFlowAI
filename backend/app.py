@@ -16,6 +16,7 @@ from postgrest.exceptions import APIError # IMPORTED APIError
 from email.mime.text import MIMEText # Added for Gmail sending
 import base64 # Added for Gmail sending
 import secrets # Added for secrets
+import sys # <--- ADD THIS IMPORT
 
 # Google OAuth specific imports
 from google_auth_oauthlib.flow import Flow as GoogleFlow
@@ -4048,32 +4049,39 @@ def google_login():
 @app.route('/api/oauth2callback/google') 
 # @token_required # Commented out as per previous correct version, we use flask_session for state
 def google_oauth2callback(): # token_required removed based on previous working version. User context if needed comes after state check.
-    # ADD DETAILED LOGGING HERE
-    app.logger.info(f"OAuth Callback: ENTERING function.")
-    # Attempt to log session, being mindful of its type and content
-    try:
-        session_dict_for_logging = dict(flask_session)
-        app.logger.info(f"OAuth Callback: Full flask_session content at entry: {session_dict_for_logging}")
-    except Exception as e_log_session:
-        app.logger.error(f"OAuth Callback: Error converting flask_session to dict for logging: {e_log_session}")
-        app.logger.info(f"OAuth Callback: flask_session object type: {type(flask_session)}")
+    # REMOVING previous print/app.logger.info statements from the beginning of this function as they were not visible.
+    # Focusing on enhancing the error log we CAN see.
 
-    app.logger.info(f"OAuth Callback: Request Host: {request.host}")
-    app.logger.info(f"OAuth Callback: Request URL: {request.url}")
-    # Log cookies from the request to see if the session cookie is being sent back
-    cookies_for_logging = {k: v for k, v in request.cookies.items()}
-    app.logger.info(f"OAuth Callback: Request cookies: {cookies_for_logging}")
-
-
-    # CORRECTED: Use the same session key 'oauth_state' as set in google_login
     session_state = flask_session.pop('oauth_state', None)
     received_state = request.args.get('state')
 
-    app.logger.info(f"OAuth Callback: Session state retrieved after pop: '{session_state}', Received state from Google: '{received_state}'")
+    # This app.logger.info might also not be visible, but keeping it for now, slightly modified.
+    app.logger.info(f"OAuth Callback: Post-pop session_state: '{session_state}', Google state: '{received_state}'")
 
     if not session_state or session_state != received_state:
-        app.logger.error(f"OAuth callback state mismatch. Session state was: '{session_state}', Received state from Google: '{received_state}'")
-        return redirect(f"{os.getenv('VITE_FRONTEND_URL', 'http://localhost:5173')}/settings?error=oauth_state_mismatch")
+        # ENHANCED ERROR LOGGING HERE
+        current_session_content_at_error = "<Error converting session to dict>"
+        try:
+            current_session_content_at_error = dict(flask_session) # Session after pop attempt
+        except Exception as e_dict_session:
+            current_session_content_at_error = f"Error converting session to dict: {str(e_dict_session)}"
+        
+        request_cookies_at_error = "<Error converting cookies to dict>"
+        try:
+            request_cookies_at_error = request.cookies.to_dict()
+        except Exception as e_dict_cookies:
+            request_cookies_at_error = f"Error converting cookies to dict: {str(e_dict_cookies)}"
+
+        error_message = (
+            f"OAuth callback state mismatch. "
+            f"Popped 'oauth_state' from session was: '{session_state}'. " # This will be None if it wasn't found
+            f"Received state from Google: '{received_state}'. "
+            f"Current flask_session content (after pop attempt): {current_session_content_at_error}. "
+            f"Request cookies at error: {request_cookies_at_error}."
+        )
+        app.logger.error(error_message)
+        # Adding detailed_error query param for frontend, if it wants to display more info (optional)
+        return redirect(f"{os.getenv('VITE_FRONTEND_URL', 'http://localhost:5173')}/settings?error=oauth_state_mismatch_detailed")
 
     if 'error' in request.args:
         error_reason = request.args.get('error', 'Unknown error')
