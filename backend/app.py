@@ -771,20 +771,49 @@ def hello_world():
 @app.route('/api/test-session', methods=['GET'])
 def test_session():
     app.logger.error("--- /api/test-session: ENTERING ---")
+    
+    # Create response object early to pass to save_session
+    resp = make_response(jsonify({
+        "message": "Test session initiated. Check logs for Set-Cookie header.",
+        "session_content_at_test_route": "will_be_updated_if_session_not_None", 
+        "manual_cookie_should_be_set": True
+    }))
+
     try:
-        # Attempt to set a simple value in the session (still want to see if session cookie appears)
+        # Attempt to set a simple value in the session
         flask_session['test_data'] = 'Hello, Session!'
         flask_session.modified = True
         app.logger.error(f"--- /api/test-session: Set 'test_data'. Session content: {dict(flask_session)} ---")
         
+        # Update response payload with actual session content
+        current_session_content_for_json = "Session is None"
+        if flask_session is not None:
+            # Ensure flask_session is serializable for jsonify, dict() usually works for simple sessions
+            try:
+                current_session_content_for_json = dict(flask_session)
+            except Exception as e_dict:
+                app.logger.error(f"  Error converting flask_session to dict: {e_dict}")
+                current_session_content_for_json = "Error converting session to dict"
+        
+        # Safely update resp.json; make_response might have already serialized it if jsonify was used.
+        # A more robust way is to rebuild the JSON data.
+        json_data = {
+            "message": "Test session initiated. Check logs for Set-Cookie header.",
+            "session_content_at_test_route": current_session_content_for_json,
+            "manual_cookie_should_be_set": True
+        }
+        resp.set_data(json.dumps(json_data)) # type: ignore
+        resp.mimetype = 'application/json'
+
+
         # Log security and host details for diagnostic comparison
         app.logger.error(f"--- /api/test-session: Security check: request.is_secure={request.is_secure}, request.scheme={request.scheme}, request.host={request.host}, SERVER_NAME={app.config.get('SERVER_NAME')}, SESSION_COOKIE_DOMAIN={app.config.get('SESSION_COOKIE_DOMAIN')} ---")
 
-        # <<< NEW DETAILED SESSION INTERFACE LOGGING START >>>
+        # Detailed Session and Interface Inspection (as before)
         app.logger.error("--- /api/test-session: Detailed Session and Interface Inspection ---")
-        app.logger.error(f"  flask_session.permanent: {flask_session.permanent}")
-        app.logger.error(f"  flask_session.modified: {flask_session.modified}")
-        app.logger.error(f"  flask_session.new: {flask_session.new}")
+        app.logger.error(f"  flask_session.permanent: {getattr(flask_session, 'permanent', 'N/A')}")
+        app.logger.error(f"  flask_session.modified: {getattr(flask_session, 'modified', 'N/A')}")
+        app.logger.error(f"  flask_session.new: {getattr(flask_session, 'new', 'N/A')}")
         
         si = app.session_interface
         app.logger.error(f"  Session Interface Type: {type(si).__name__}")
@@ -795,46 +824,67 @@ def test_session():
         app.logger.error(f"  si.get_cookie_secure(app): {si.get_cookie_secure(app)}")
         app.logger.error(f"  si.get_cookie_samesite(app): {si.get_cookie_samesite(app)}")
         
-        expiration_time = None
-        try:
-            expiration_time = si.get_expiration_time(app, flask_session)
-        except Exception as e:
-            app.logger.error(f"  Error getting expiration time: {e}")
+        expiration_time = "N/A"
+        if flask_session is not None: # get_expiration_time expects a session object
+            try:
+                expiration_time = si.get_expiration_time(app, flask_session)
+            except Exception as e_exp:
+                app.logger.error(f"  Error getting expiration time: {e_exp}")
         app.logger.error(f"  si.get_expiration_time(app, flask_session): {expiration_time}")
         
         should_set_cookie_val = False
-        try:
-            # It's possible flask_session might be None if opened then cleared,
-            # but in our case, we just set 'test_data'.
-            if flask_session is None:
-                 app.logger.error("  WARNING: flask_session is None before calling should_set_cookie!")
-            should_set_cookie_val = si.should_set_cookie(app, flask_session)
-        except Exception as e:
-            app.logger.error(f"  Error calling should_set_cookie: {e}")
+        if flask_session is not None: # should_set_cookie expects a session object
+            try:
+                should_set_cookie_val = si.should_set_cookie(app, flask_session)
+            except Exception as e_ssc:
+                 app.logger.error(f"  Error calling should_set_cookie: {e_ssc}")
+        else:
+            app.logger.error("  flask_session is None, so should_set_cookie would be False.")
         app.logger.error(f"  CRUCIAL: si.should_set_cookie(app, flask_session): {should_set_cookie_val}")
-        # <<< NEW DETAILED SESSION INTERFACE LOGGING END >>>
 
-        # Manually create a response object to set a test cookie directly
-        resp = make_response(jsonify({
-            "message": "Test session initiated. Check logs for Set-Cookie header.",
-            "session_content_at_test_route": dict(flask_session) if flask_session else "Session is None", # Handle if flask_session is None
-            "manual_cookie_should_be_set": True
-        }))
+        # <<< MANUALLY CALLING save_session START >>>
+        app.logger.error("--- /api/test-session: Attempting to MANUALLY call app.session_interface.save_session() ---")
+        try:
+            if flask_session is None:
+                app.logger.error("  WARNING: flask_session is None before manual call to save_session! This is unexpected if data was just set.")
+            
+            # We proceed to call save_session regardless of should_set_cookie for this direct test,
+            # but log its value. Flask internally would check should_set_cookie.
+            # The important part is to see if save_session *can* add a cookie to resp.
+            app.logger.error(f"  Value of should_set_cookie before manual call: {should_set_cookie_val}")
+            
+            if flask_session is not None: # save_session requires a session object
+                 app.logger.error(f"  Calling si.save_session(app, flask_session_object_id={id(flask_session)}, resp_object_id={id(resp)})")
+                 si.save_session(app, flask_session, resp) # Pass our response object
+                 app.logger.error("  MANUAL save_session call completed.")
+            else:
+                app.logger.error("  SKIPPING manual save_session call because flask_session is None.")
+
+        except Exception as e_save:
+            app.logger.error(f"  EXCEPTION during manual app.session_interface.save_session(): {e_save}", exc_info=True)
         
+        # Log headers on *our* resp object immediately after manual save_session attempt
+        manual_save_cookies = resp.headers.getlist('Set-Cookie')
+        if manual_save_cookies:
+            app.logger.error(f"  Cookies on OUR RESPONSE object (id={id(resp)}) after manual save_session attempt: {manual_save_cookies}")
+        else:
+            app.logger.error(f"  NO cookies on OUR RESPONSE object (id={id(resp)}) after manual save_session attempt.")
+        # <<< MANUALLY CALLING save_session END >>>
+
         # Attempt to set an arbitrary cookie manually - we know this part works
         manual_cookie_domain = app.config.get('SESSION_COOKIE_DOMAIN') or app.config.get('SERVER_NAME')
         if manual_cookie_domain: # Ensure domain is not None
-            app.logger.error(f"--- /api/test-session: Attempting to set manual_test_cookie directly on response object with domain: {manual_cookie_domain} ---")
+            app.logger.error(f"--- /api/test-session: Attempting to set manual_test_cookie (on resp id={id(resp)}) with domain: {manual_cookie_domain} ---")
             resp.set_cookie(
                 'manual_test_cookie', 
                 'hello_from_manual_cookie', 
-                domain=manual_cookie_domain, # Explicitly use the same domain logic
+                domain=manual_cookie_domain, 
                 secure=app.config.get('SESSION_COOKIE_SECURE', True), 
                 httponly=True, 
                 samesite=app.config.get('SESSION_COOKIE_SAMESITE', 'None'),
-                path='/' # Usually good practice to set path
+                path='/'
             )
-            app.logger.error(f"--- /api/test-session: 'manual_test_cookie' should have been added to response headers by resp.set_cookie(). ---")
+            app.logger.error(f"--- /api/test-session: 'manual_test_cookie' should have been added to response headers by resp.set_cookie(). Check final @after_request log. ---")
         else:
             app.logger.error(f"--- /api/test-session: NOT setting manual_test_cookie due to missing domain (SESSION_COOKIE_DOMAIN or SERVER_NAME). ---")
 
@@ -842,7 +892,16 @@ def test_session():
 
     except Exception as e:
         app.logger.error(f"--- /api/test-session: Error during test_session execution: {e} ---", exc_info=True)
-        return jsonify({"error": "Error in test_session, check logs"}), 500
+        # If we had an error before creating resp, we need a fallback.
+        if 'resp' not in locals() or not isinstance(resp, app.response_class): # type: ignore
+            return jsonify({"error": "Critical error in test_session before response creation or resp is invalid, check logs"}), 500
+        # If resp was created but error happened after, it might not be fully formed.
+        # Best to return a generic error if something went very wrong with session logic.
+        current_error_json = {"error": f"Error in test_session: {str(e)}"}
+        resp.set_data(json.dumps(current_error_json)) # type: ignore
+        resp.mimetype = 'application/json'
+        resp.status_code = 500
+        return resp
 
 # --- Google OAuth Helper Functions --- START ---
 # ... (rest of your file) ...
