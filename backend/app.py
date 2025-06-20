@@ -4267,13 +4267,17 @@ def google_login():
 def google_oauth2callback(): # token_required removed based on previous working version. User context if needed comes after state check.
     # REMOVING previous print/app.logger.info statements from the beginning of this function as they were not visible.
     # Focusing on enhancing the error log we CAN see.
-
+    # <<< NEW LOGGING AT THE VERY START >>>
+    app.logger.error(f"--- google_oauth2callback: ENTERING ---")
+    app.logger.error(f"  Request cookies received: {request.cookies}")
+    app.logger.error(f"  Initial flask_session content: {dict(flask_session) if flask_session else 'Session is None/Empty'}")
+    # <<< END NEW LOGGING >>
     session_state = flask_session.pop('oauth_state', None)
     received_state = request.args.get('state')
 
     # This app.logger.info might also not be visible, but keeping it for now, slightly modified.
     app.logger.info(f"OAuth Callback: Post-pop session_state: '{session_state}', Google state: '{received_state}'")
-
+    
     if not session_state or session_state != received_state:
         # ENHANCED ERROR LOGGING HERE
         current_session_content_at_error = "<Error converting session to dict>"
