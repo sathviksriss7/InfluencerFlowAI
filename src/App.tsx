@@ -1,4 +1,5 @@
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { useEffect } from 'react'
+import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { AuthProvider } from './contexts/AuthContext'
 import ProtectedRoute from './components/ProtectedRoute'
 import Layout from './components/layout'
@@ -16,10 +17,23 @@ import Payments from './pages/payments'
 import Analytics from './pages/analytics'
 import Outreaches from './pages/outreaches'
 import AgenticAI from './pages/agentic-ai'
-import { ToastContainer } from 'react-toastify'
+import SettingsPage from './pages/SettingsPage'
+import { ToastContainer, toast } from 'react-toastify'
 import 'react-toastify/dist/ReactToastify.css'
 
 function App() {
+  const location = useLocation()
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    const queryParams = new URLSearchParams(location.search)
+    if (queryParams.get('gmail_connected') === 'true') {
+      toast.success("Gmail account connected successfully!")
+      const { pathname, hash } = location
+      navigate(pathname + hash, { replace: true })
+    }
+  }, [location, navigate])
+
   return (
     <AuthProvider>
       <ToastContainer
@@ -166,6 +180,16 @@ function App() {
             <ProtectedRoute>
               <Layout>
                 <Outreaches />
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/settings"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <SettingsPage />
               </Layout>
             </ProtectedRoute>
           }

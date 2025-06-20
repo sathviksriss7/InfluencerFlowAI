@@ -129,6 +129,12 @@
 - **Status Management**: Real-time updates on deal status and creator responses
 - **Follow-up Intelligence**: AI recommendations for follow-up timing and content
 
+#### **📨 Direct Gmail Integration for Sending** (NEW!)
+- Securely connect your own Gmail account via OAuth 2.0.
+- Send outreach emails, follow-ups, and negotiation messages directly from your Gmail, enhancing authenticity and deliverability.
+- Seamlessly integrated into the Campaign Builder, Outreaches page (Follow-ups), and Negotiation Agent.
+- All sent Gmail messages are logged to the `conversation_messages` table with their Gmail send status and message ID.
+
 ### 📊 Platform Management
 
 #### Creator Discovery & Management
@@ -195,7 +201,7 @@
 - **Fallback System**: Graceful degradation when LLM is unavailable
 
 ### Data Management
-- **Supabase PostgreSQL Database**: Secure and scalable cloud database for all persistent application data, including user profiles, campaign details (both Human-created and AI-generated), creator profiles (including phone numbers), outreach information (with creator phone numbers for call-enabled outreaches), negotiation history (including current offer details), etc. Row Level Security (RLS) is utilized to ensure users can only access their own data.
+- **Supabase PostgreSQL Database**: Secure and scalable cloud database for all persistent application data, including user profiles, campaign details (both Human-created and AI-generated), creator profiles (including phone numbers), outreach information (with creator phone numbers for call-enabled outreaches), negotiation history (including current offer details), `user_google_oauth_tokens` (stores user Gmail API tokens), etc. Row Level Security (RLS) is utilized to ensure users can only access their own data.
 - **Real-time Synchronization**: Leverages Supabase's real-time capabilities for features requiring live data updates across clients.
 - **Persistent Storage**: localStorage-based outreach and campaign data (Note: This is largely superseded by Supabase for primary data storage. localStorage might be used for UI state or non-critical caching if applicable.)
 - **Comprehensive Mock Database**: 100+ creators, 18 campaigns, 25 deals, 14 contracts, 35 payments
@@ -207,6 +213,7 @@
 - **Groq API Integration**: For LLM-powered decision making and text generation in campaign creation, outreach, voice calls, and email. (Note: Ensure your Groq API key is set in `.env` for the backend).
 - **Twilio Integration**: For programmable voice call capabilities.
 - **ElevenLabs Integration**: For dynamic, high-quality Text-to-Speech generation.
+- **Google API Client Libraries (for Gmail integration)**.
 - **Environment Variable Management**: Secure configuration using `.env` files (see setup instructions).
 - **CORS Enabled**: For seamless frontend-backend communication.
 - **Detailed Logging**: For easier debugging and monitoring
@@ -217,6 +224,10 @@
     - `/api/voice/handle_user_speech`: Processes speech input from Twilio during a call.
     - `/api/voice/call-status`: Polls for call status and retrieves artifacts.
     - `/api/voice/call-artifacts`: Retrieves specific call artifacts like recordings and transcripts.
+- **Google Authentication Endpoints**:
+    - `/api/auth/google/login`: Initiates Google OAuth flow for Gmail integration.
+    - `/api/auth/google/status`: Checks current Gmail connection status.
+    - `/api/oauth2callback/google`: Handles the OAuth redirect from Google after user authorization.
 - Manages call state, conversation history for live calls, and interaction with AI services.
 
 ## 🚀 Getting Started
@@ -231,7 +242,7 @@
   - You will need your Supabase Project URL and Anon Key for the frontend.
   - You will need your Supabase Database Connection String (from Database settings) and Service Role Key (from Project API settings) for the backend for full admin privileges, or Anon Key if RLS is fully sufficient for backend operations.
 - **Groq API Key** (Required for AI features) - [Get free key](https://console.groq.com/)
-- **Google Cloud Account & OAuth Credentials** (Required for Google OAuth with Supabase Auth) - [Get started](https://console.cloud.google.com/)
+- **Google Cloud Account & OAuth Credentials** (Required for Google OAuth with Supabase Auth and for Gmail API integration) - [Get started](https://console.cloud.google.com/) (Ensure Gmail API is enabled and OAuth consent screen is configured with `https://www.googleapis.com/auth/gmail.send` scope for Gmail integration).
 - **Twilio Account & Phone Number** (Required for Voice Call features) - [Create free account](https://www.twilio.com/)
   - You will need your Twilio Account SID, Auth Token, and a Twilio phone number.
 - **ElevenLabs Account** (Optional, for premium AI Text-to-Speech in Voice Calls) - [Create free account](https://elevenlabs.io/)
@@ -250,64 +261,52 @@
     ```bash
     cd backend
     ```
-3.  **Create and activate a Python virtual environment:**
-   ```bash
-    python3 -m venv venv
-    source venv/bin/activate  # On Windows use `venv\Scripts\activate`
-   ```
-4.  **Install Python dependencies:**
-   ```bash
+3.  **Create and activate a virtual environment (recommended):**
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # On Windows: venv\Scripts\activate
+    ```
+4.  **Install dependencies:**
+    ```bash
     pip install -r requirements.txt
     ```
-5.  **🚨 CRITICAL: Create Backend Environment File (`backend/.env`)**
-    Ensure you are in the `backend` directory.
-    Copy the contents of `env.example` (if it exists and is relevant to backend) or create a new `.env` file with the following variables:
-
+5.  **Create a `.env` file in the `backend` directory and add the following variables:**
     ```env
     FLASK_APP=app.py
-    FLASK_DEBUG=True # Set to False in production
+    FLASK_ENV=development # Or production
+    FLASK_DEBUG=1 # Or 0 for production
 
-    # Supabase (replace with your actual credentials)
-    SUPABASE_URL="YOUR_SUPABASE_URL"
-    # For backend operations that need admin-like privileges (e.g., initial setup, migrations):
-    SUPABASE_SERVICE_ROLE_KEY="YOUR_SUPABASE_SERVICE_ROLE_KEY" 
-    # OR if using user context for all backend ops via JWT:
-    # SUPABASE_ANON_KEY="YOUR_SUPABASE_ANON_KEY" # Used if RLS is primary mechanism
+    # Supabase Configuration
+    SUPABASE_URL=your_supabase_project_url
+    SUPABASE_SERVICE_KEY=your_supabase_service_role_key
+    # Or if using anon key for backend operations restricted by RLS:
+    # SUPABASE_ANON_KEY=your_supabase_anon_key 
 
-    # Groq AI (replace with your actual key)
-    GROQ_API_KEY="YOUR_GROQ_API_KEY"
+    # Groq API Key
+    GROQ_API_KEY=your_groq_api_key
 
-    # Twilio (replace with your actual credentials)
-    TWILIO_ACCOUNT_SID="YOUR_TWILIO_ACCOUNT_SID"
-    TWILIO_AUTH_TOKEN="YOUR_TWILIO_AUTH_TOKEN"
-    TWILIO_PHONE_NUMBER="YOUR_TWILIO_PHONE_NUMBER" # Must be E.164 format (e.g., +1234567890)
+    # Twilio Configuration
+    TWILIO_ACCOUNT_SID=your_twilio_account_sid
+    TWILIO_AUTH_TOKEN=your_twilio_auth_token
+    TWILIO_PHONE_NUMBER=your_twilio_phone_number
 
-    # ElevenLabs (optional, for AI voice)
-    ELEVENLABS_API_KEY="YOUR_ELEVENLABS_API_KEY"
-    ELEVENLABS_VOICE_ID="YOUR_PREFERRED_ELEVENLABS_VOICE_ID" # e.g., "21m00Tcm4TlvDq8ikWAM"
+    # ElevenLabs API Key (Optional)
+    ELEVENLABS_API_KEY=your_elevenlabs_api_key
 
-    # IMPORTANT FOR LOCAL DEVELOPMENT WITH TWILIO:
-    # This must be your ngrok HTTPS forwarding URL when running locally.
-    # Example: https://xxxxxxxxxxxx.ngrok-free.app
-    BACKEND_PUBLIC_URL="" 
+    # Backend Public URL (for Twilio webhooks, use your ngrok URL during local development)
+    BACKEND_PUBLIC_URL=your_ngrok_url_or_deployed_backend_url
 
-    # Other backend specific configurations (e.g., database URLs if not using Supabase for everything)
-    # SECRET_KEY="your_flask_secret_key_here" # For Flask session management if needed
+    # Google OAuth & Gmail API Configuration
+    GOOGLE_CLIENT_ID=your_google_cloud_oauth_client_id
+    GOOGLE_CLIENT_SECRET=your_google_cloud_oauth_client_secret
+    GOOGLE_REDIRECT_URI=your_backend_public_url/api/oauth2callback/google # e.g., http://localhost:5001/api/oauth2callback/google for local
     ```
 
-6.  **Setup ngrok for Local Development (if using Voice Calls):**
-    If you are developing the voice call features locally, Twilio needs a way to send webhook requests (like call status updates or speech input) back to your local Flask server. `ngrok` exposes your local server to the internet.
-    - Start your Flask backend (next step). Let's assume it runs on port 5001.
-    - Open a new terminal and run: `ngrok http 5001`
-    - `ngrok` will give you a "Forwarding" HTTPS URL (e.g., `https://abcdef123456.ngrok-free.app`).
-    - **Crucially, update the `BACKEND_PUBLIC_URL` in your `backend/.env` file with this HTTPS URL.**
-    - Your Twilio webhook configurations (e.g., for `/api/voice/handle_user_speech`) will be `[YOUR_NGROK_URL]/api/voice/handle_user_speech`.
-
-7.  **Run the Flask Backend:**
+6.  **Run the Flask development server:**
     ```bash
-    flask run --port 5001 # Or your preferred port
+    flask run
     ```
-    Ensure your `BACKEND_PUBLIC_URL` in `.env` is correctly set if using ngrok.
+   The backend server will typically start on `http://127.0.0.1:5000/` or `http://localhost:5001/` if specified in Procfile or run arguments.
 
 ### Frontend Setup
 
@@ -348,7 +347,19 @@
     ```
     The frontend should now be running (typically on `http://localhost:5173` or another port shown in the terminal).
 
-### Full Project Structure Overview (Simplified)
+### Connecting Your Gmail Account
+
+To enable sending emails directly via your Gmail account from within InfluencerFlowAI:
+
+1.  **Navigate to your User Profile/Settings page** in the InfluencerFlowAI application.
+2.  Look for an option like **"Connect Gmail Account"** or a Gmail icon and click it.
+3.  You will be redirected to Google to authorize the application. 
+4.  **Grant permission** for InfluencerFlowAI to "Send email on your behalf" (this corresponds to the `gmail.send` scope).
+5.  After successful authorization, you will be redirected back to the InfluencerFlowAI application.
+6.  Your Gmail connection status should now be visible (e.g., in your user menu or settings page).
+7.  The "Send via Gmail" options will now be available in the Campaign Builder, for Follow-Ups on the Outreaches page, and within the Negotiation Agent for sending strategies/messages.
+
+### Development Notes
 
 ```
 influencerflowai/

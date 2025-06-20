@@ -6,11 +6,14 @@ import {
   type NegotiationInsight
 } from '../services/ai-agents';
 import { 
+  outreachStorageService,
   type StoredOutreach, 
   type ConversationMessage, 
   type VoiceCallSummaryMetadata,
   type CallRecordingMetadata
 } from '../services/outreach-storage';
+import { supabase } from '../lib/supabase';
+import { toast } from 'react-toastify';
 // Supabase import removed as it was not used in the backup component's logic
 
 interface NegotiationState {
@@ -20,6 +23,7 @@ interface NegotiationState {
   negotiationStrategy: string;
   suggestedOffer: number | null;
   method: 'ai_generated' | 'algorithmic_fallback' | null;
+  strategyEmailSubject: string;
 }
 
 // CallArtifacts interface seems unused in the component's direct logic,
@@ -64,11 +68,12 @@ function processConversationHistoryForDisplay(history: ConversationMessage[] | u
   const otherMessages: ConversationMessage[] = [];
 
   history.forEach(msg => {
-    if (msg.metadata?.call_sid && msg.type !== 'voice_call_summary') {
-      if (!messagesByCallSid[msg.metadata.call_sid]) {
-        messagesByCallSid[msg.metadata.call_sid] = [];
+    if (msg.metadata && 'call_sid' in msg.metadata && msg.metadata.call_sid && typeof msg.metadata.call_sid === 'string' && msg.type !== 'voice_call_summary') {
+      const callSid = msg.metadata.call_sid;
+      if (!messagesByCallSid[callSid]) {
+        messagesByCallSid[callSid] = [];
       }
-      messagesByCallSid[msg.metadata.call_sid].push(msg);
+      messagesByCallSid[callSid].push(msg);
     } else if (msg.type !== 'voice_call_summary') {
       otherMessages.push(msg);
     }
@@ -101,11 +106,13 @@ export const NegotiationAgentComponent: React.FC = () => {
     generatedMessage: '',
     negotiationStrategy: '',
     suggestedOffer: null,
-    method: null
+    method: null,
+    strategyEmailSubject: ''
   });
   const [showDetails, setShowDetails] = useState<{ [key: string]: boolean }>({});
   const [servicePollingState, setServicePollingState] = useState<PollingState>(negotiationAgentService.getPollingStateSnapshot());
   const [initiatingCallForOutreachId, setInitiatingCallForOutreachId] = useState<string | null>(null);
+  const [strategyEmailSubject, setStrategyEmailSubject] = useState('');
 
   console.log('[NegotiationAgentComponent] Rendering. Service Polling State:', servicePollingState, 'Initiating state:', initiatingCallForOutreachId);
 
@@ -159,9 +166,16 @@ export const NegotiationAgentComponent: React.FC = () => {
       return undefined;
     }
     const callMessages = outreach.conversationHistory
-      .filter(msg => msg.metadata?.call_sid)
+      .filter(msg => msg.metadata && 'call_sid' in msg.metadata && typeof msg.metadata.call_sid === 'string' && msg.metadata.call_sid)
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-    return callMessages.length > 0 ? callMessages[0].metadata!.call_sid : undefined;
+    
+    if (callMessages.length > 0) {
+      const firstCallMessageWithSid = callMessages[0];
+      if (firstCallMessageWithSid.metadata && 'call_sid' in firstCallMessageWithSid.metadata && typeof firstCallMessageWithSid.metadata.call_sid === 'string') {
+        return firstCallMessageWithSid.metadata.call_sid;
+      }
+    }
+    return undefined;
   };
 
   const handleGenerateNegotiation = async (outreach: StoredOutreach) => {
@@ -172,7 +186,8 @@ export const NegotiationAgentComponent: React.FC = () => {
       generatedMessage: '',
       negotiationStrategy: '',
       suggestedOffer: null,
-      method: null
+      method: null,
+      strategyEmailSubject: ''
     }));
 
     try {
@@ -188,7 +203,8 @@ export const NegotiationAgentComponent: React.FC = () => {
           generatedMessage: insight.suggestedResponse,
           negotiationStrategy: `${insight.currentPhase.replace(/_/g, ' ')} - ${insight.negotiationTactics.join(', ')}`,
           suggestedOffer: insight.recommendedOffer.amount,
-          method: result.method
+          method: result.method,
+          strategyEmailSubject: ''
         });
 
         setSelectedOutreach(outreach);
@@ -200,13 +216,96 @@ export const NegotiationAgentComponent: React.FC = () => {
       setNegotiationState(prev => ({
         ...prev,
         isGenerating: false,
-        currentOutreachId: null, // Clear currentOutreachId on error
-        generatedMessage: 'Error: Could not generate strategy.', // Provide feedback
+        currentOutreachId: null,
+        generatedMessage: 'Error: Could not generate strategy.',
         negotiationStrategy: '',
         suggestedOffer: null,
-        method: null
+        method: null,
+        strategyEmailSubject: ''
       }));
-      // setSelectedOutreach(null); // Optional: clear selection on error too
+    }
+  };
+
+  const handleSendStrategyViaGmailFromPreview = async (outreach: StoredOutreach) => {
+    if (negotiationState.currentOutreachId !== outreach.id) {
+      toast.warn("Selected outreach doesn't match strategy form.");
+      return;
+    }
+    if (!negotiationState.generatedMessage.trim()) {
+      toast.error("Strategy message body is empty.");
+      return;
+    }
+    if (!strategyEmailSubject.trim()) {
+      toast.error("Email subject for the strategy is required.");
+      return;
+    }
+
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError || !session || !session.user || !session.access_token) {
+      toast.error("Authentication error. Please log in again.");
+      console.error("Authentication error:", sessionError);
+      return;
+    }
+    const accessToken = session.access_token;
+
+    try {
+      const loggedMessage = await outreachStorageService.addConversationMessage(
+        outreach.id,
+        negotiationState.generatedMessage,
+        'brand',
+        'negotiation_message_gmail',
+        {
+          subject: strategyEmailSubject,
+          gmail_send_status: 'pending_gmail_send',
+          ai_reasoning: negotiationState.negotiationStrategy,
+        }
+      );
+
+      if (!loggedMessage || !loggedMessage.id) {
+        toast.error("Failed to log strategy message before sending.");
+        return;
+      }
+      const conversationMessageId = loggedMessage.id;
+
+      const backendUrl = import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:5001';
+      const sendResponse = await fetch(`${backendUrl}/api/outreach/send-via-gmail`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          outreach_id: outreach.id,
+          conversation_message_id: conversationMessageId,
+          subject: strategyEmailSubject,
+          body: negotiationState.generatedMessage,
+        }),
+      });
+
+      const sendResult = await sendResponse.json();
+
+      if (sendResponse.ok && sendResult.success) {
+        toast.success(`Strategy sent to ${outreach.creatorName} via Gmail!`);
+        setStrategyEmailSubject('');
+        setSelectedOutreach(null);
+        setNegotiationState({
+          isGenerating: false,
+          currentOutreachId: null,
+          generatedMessage: '',
+          negotiationStrategy: '',
+          suggestedOffer: null,
+          method: null,
+          strategyEmailSubject: ''
+        });
+        console.log(`[NegotiationAgentComponent] Strategy for ${outreach.creatorName} sent. Waiting for polling to update list.`);
+
+      } else {
+        toast.error(`Failed to send strategy: ${sendResult.error || 'Unknown server error'}`);
+        console.error("Error sending strategy via Gmail API:", sendResult.error);
+      }
+    } catch (error: any) {
+      toast.error(`Error sending strategy: ${error.message || 'Client-side error'}`);
+      console.error("Error sending strategy via Gmail:", error);
     }
   };
 
@@ -232,39 +331,30 @@ export const NegotiationAgentComponent: React.FC = () => {
           outreach.id,
           negotiationState.generatedMessage,
           negotiationState.suggestedOffer,
-          insightForUpdate, // Pass the fully typed insight or undefined
+          insightForUpdate,
           negotiationState.method || undefined
         );
         
         if (success) {
-          // Data will be reloaded by polling state update if successful
-          // For immediate feedback, you could reload here too:
-          // const updatedPositiveOutreaches = await negotiationAgentService.getPositiveResponseCreators();
-          // setAllOutreaches(updatedPositiveOutreaches);
-          // const updatedEligibleOutreaches = await negotiationAgentService.getEligibleForNegotiation();
-          // setEligibleNegotiationOutreaches(updatedEligibleOutreaches);
-          
-          setNegotiationState({ // Reset negotiation state form
+          setNegotiationState({
             isGenerating: false,
             currentOutreachId: null,
             generatedMessage: '',
             negotiationStrategy: '',
             suggestedOffer: null,
-            method: null
+            method: null,
+            strategyEmailSubject: ''
           });
-          setSelectedOutreach(null); // Clear selected outreach from the form view
+          setSelectedOutreach(null);
           console.log(`[NegotiationAgentComponent] Negotiation sent for ${outreach.creatorName}. Waiting for polling to update list.`);
         } else {
           console.error("Failed to send negotiation (updateOutreachWithNegotiation returned false)");
-          // Add user feedback for failure
         }
       } catch (error) {
           console.error("Error in handleSendNegotiation:", error);
-          // Add user feedback for error
       }
     } else {
         console.warn("Cannot send negotiation: message or offer is missing.");
-        // Add user feedback: "Please ensure message and offer are filled."
     }
   };
 
@@ -399,13 +489,11 @@ export const NegotiationAgentComponent: React.FC = () => {
             {servicePollingState.isPolling && servicePollingState.activePollingCallSid && " (Currently Polling)"}
           </p>
         }
-        {/* Display Status Message if available */}
         {servicePollingState.statusMessage && (
           <p className='text-sm mt-2 text-green-600'>
             <strong>Service Status:</strong> {servicePollingState.statusMessage}
           </p>
         )}
-        {/* Display Error/Info Message from servicePollingState.errorMessage */}
         {servicePollingState.errorMessage && (() => {
           let messagePrefix = "Service Error:";
           let messageColor = "text-red-600";
@@ -418,14 +506,12 @@ export const NegotiationAgentComponent: React.FC = () => {
           } else if (servicePollingState.errorMessage.startsWith("Call details fetched, but its effective outreach ID")) {
             messagePrefix = "Data Note:";
             messageColor = "text-orange-600";
-            // Keep original message: servicePollingState.errorMessage = "Call details were fetched, but the associated outreach record was not found locally. History might not be saved correctly.";
           } else if (servicePollingState.errorMessage.includes("Call artifacts not found")) {
             messagePrefix = "Fetch Info:";
             messageColor = "text-orange-600";
-            // Keep original message: servicePollingState.errorMessage = "Could not find call artifacts on the backend for the given Call SID.";
           } else if (servicePollingState.errorMessage.startsWith("Call ") && servicePollingState.errorMessage.includes(" status: ")) {
             messagePrefix = "Call Status:";
-            messageColor = "text-blue-600"; // Or a neutral/info color
+            messageColor = "text-blue-600";
           } else if (servicePollingState.errorMessage.startsWith("Polling for ") && servicePollingState.errorMessage.includes(" timed out")) {
             messagePrefix = "Polling Info:";
             messageColor = "text-orange-600";
@@ -487,6 +573,17 @@ export const NegotiationAgentComponent: React.FC = () => {
                 />
               </div>
               <div>
+              <label htmlFor={`strategy-subject-${selectedOutreach.id}`} className="block text-sm font-medium text-gray-700">Email Subject for Strategy:</label>
+              <input
+                id={`strategy-subject-${selectedOutreach.id}`}
+                type="text"
+                value={strategyEmailSubject}
+                onChange={(e) => setStrategyEmailSubject(e.target.value)}
+                placeholder="Enter email subject for strategy"
+                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2"
+                />
+              </div>
+              <div>
                 <label htmlFor={`offer-${selectedOutreach.id}`} className="block text-sm font-medium text-gray-700">Offer Amount (₹):</label>
                 <input 
                   id={`offer-${selectedOutreach.id}`}
@@ -499,9 +596,9 @@ export const NegotiationAgentComponent: React.FC = () => {
               <p className="text-xs text-gray-500">Method: {negotiationState.method || 'N/A'}</p>
             </div>
             <div className="mt-4 flex gap-3">
-              <button 
-                onClick={() => handleSendNegotiation(selectedOutreach)}
-                disabled={!negotiationState.generatedMessage || negotiationState.suggestedOffer === null}
+              <button
+                onClick={() => handleSendStrategyViaGmailFromPreview(selectedOutreach)}
+                disabled={!negotiationState.generatedMessage || !strategyEmailSubject.trim()} // Updated disabled condition
                 className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50"
               >
                 ✅ Send to {selectedOutreach.creatorName}
@@ -616,25 +713,20 @@ export const NegotiationAgentComponent: React.FC = () => {
                             attempt++;
                             await negotiationAgentService.manuallyFetchCallArtifacts(callSidToFetch);
                             
-                            // Check the state from the service after the attempt
                             const currentServiceState = negotiationAgentService.getPollingStateSnapshot();
 
                             if (currentServiceState.fetchedArtifactsForLastCall && currentServiceState.activePollingCallSid === callSidToFetch && !currentServiceState.errorMessage) {
-                              // Check if we actually got the recording URL as a stronger success condition
                               if (currentServiceState.fetchedArtifactsForLastCall.full_recording_url) {
                                 console.log(`[Call Details] Fetch attempt ${attempt} successful for SID ${callSidToFetch}. Recording URL found.`);
                                 success = true;
                                 alert(`Successfully fetched call details for ${outreach.creatorName} (SID: ${callSidToFetch}) on attempt ${attempt}.`);
                               } else {
                                 console.log(`[Call Details] Fetch attempt ${attempt} for SID ${callSidToFetch} seemed successful, but recording URL is still missing. Will retry if attempts remain.`);
-                                // If no error, but critical data (like recording_url) is missing, we might still want to retry.
-                                // For now, we only explicitly retry on "not found" type errors.
-                                // If errorMessage is null but no recording_url, it implies the backend sent data but it was incomplete.
                                 if (attempt < MAX_FETCH_ATTEMPTS && !currentServiceState.errorMessage) {
                                    alert(`Call details for ${outreach.creatorName} (SID: ${callSidToFetch}) fetched on attempt ${attempt}, but some data (e.g. recording) might still be processing. Will check again if attempts remain.`);
                                    await new Promise(resolve => setTimeout(resolve, FETCH_RETRY_DELAY_MS));
                                 } else if (!currentServiceState.errorMessage) {
-                                   success = true; // No error, but no URL after max attempts, count as "fetched what's available"
+                                   success = true;
                                    alert(`Fetched available call details for ${outreach.creatorName} (SID: ${callSidToFetch}). Some data (e.g. recording) might still be processing or unavailable.`);
                                 }
                               }
@@ -647,20 +739,16 @@ export const NegotiationAgentComponent: React.FC = () => {
                                 alert(`Failed to fetch call details for ${outreach.creatorName} (SID: ${callSidToFetch}) after ${MAX_FETCH_ATTEMPTS} attempts. Error: ${currentServiceState.errorMessage}`);
                               }
                             } else if (currentServiceState.errorMessage) {
-                              // A different error occurred, don't retry for this type of error
                               console.error(`[Call Details] Fetch attempt ${attempt} for SID ${callSidToFetch} failed with a non-retryable error: ${currentServiceState.errorMessage}`);
                               alert(`Error fetching call details for ${outreach.creatorName} (SID: ${callSidToFetch}): ${currentServiceState.errorMessage}`);
-                              success = true; // Break loop on other errors
+                              success = true;
                             } else {
-                              // No error, and fetchedArtifacts might be there but not for activePollingCallSid, or some other state.
-                              // This case should ideally mean success if no error is present.
                               console.log(`[Call Details] Fetch attempt ${attempt} for SID ${callSidToFetch} completed without specific error, assuming success or data already present.`);
                               success = true; 
                             }
                           }
                           if (!success && attempt === MAX_FETCH_ATTEMPTS) {
                              // This message is now covered by the more specific alerts inside the loop.
-                             // alert(`Failed to fetch complete call details for ${outreach.creatorName} (SID: ${callSidToFetch}) after ${MAX_FETCH_ATTEMPTS} attempts. Please check backend logs or try again later.`);
                           }
 
                         } else {
@@ -685,7 +773,6 @@ export const NegotiationAgentComponent: React.FC = () => {
                   {showDetails[outreach.id] ? 'Hide Details' : 'Show Details'}
                 </button>
                 {showDetails[outreach.id] && (() => {
-                  // Process history for this outreach
                   const displayHistory = processConversationHistoryForDisplay(outreach.conversationHistory);
                   
                   return (
@@ -704,7 +791,6 @@ export const NegotiationAgentComponent: React.FC = () => {
                         <p className="text-xs">No conversation history recorded.</p>
                       )}
 
-                      {/* Render Call Groups */}
                       {displayHistory.callGroups.map(callGroup => (
                         <div key={callGroup.callSid} className="my-4 p-3 border rounded-md bg-sky-50 border-sky-200">
                           <h6 className="font-semibold text-sky-700">
@@ -752,22 +838,18 @@ export const NegotiationAgentComponent: React.FC = () => {
                         </div>
                       ))}
 
-                      {/* Render General Messages (if any, and if there are calls, perhaps with a separator) */}
                       {displayHistory.generalMessages.length > 0 && (
                         <div className="mt-4 pt-3 border-t">
                           <h6 className="font-semibold text-gray-700 mb-2">Other Messages:</h6>
                           <div className="max-h-60 overflow-y-auto bg-gray-50 p-2 rounded border space-y-2">
                             {displayHistory.generalMessages.map(msg => {
-                              // Type check for 'call_recording' should now work directly
                               if (msg.type === 'call_recording') {
-                                // const callRecMsg = msg as any; // No longer needed
                                 return (
                                   <div key={msg.id} className="p-2 border-b last:border-b-0 text-xs bg-purple-50 border-purple-200 rounded">
                                     <p className="font-semibold text-purple-700">
                                       SYSTEM ({new Date(msg.timestamp).toLocaleString()}):
                                     </p>
                                     <p className="whitespace-pre-wrap">{msg.content}</p>
-                                    {/* Cast metadata to CallRecordingMetadata if needed, or check its existence based on updated type */}
                                     {(msg.metadata as CallRecordingMetadata)?.recording_url && (
                                       <a 
                                         href={(msg.metadata as CallRecordingMetadata).recording_url} 
@@ -781,14 +863,12 @@ export const NegotiationAgentComponent: React.FC = () => {
                                   </div>
                                 );
                               }
-                              // Original rendering for other general messages
                               return (
                                 <div key={msg.id} className="p-2 border-b last:border-b-0 text-xs">
                                   <p className={`font-semibold ${msg.sender === 'creator' ? 'text-green-600' : msg.sender === 'ai' ? 'text-blue-600' : 'text-purple-600'}`}>
                                     {msg.sender.toUpperCase()} ({new Date(msg.timestamp).toLocaleString()}):
                                   </p>
                                   <p className="whitespace-pre-wrap">{msg.content}</p>
-                                  {/* You could render other metadata for general messages if needed */}
                                 </div>
                               );
                             })}
@@ -798,7 +878,7 @@ export const NegotiationAgentComponent: React.FC = () => {
                     </div>
                   );
                 })()}
-                {isCurrentlySelectedForNegoForm && ( // Show form only if this outreach is selected
+                {isCurrentlySelectedForNegoForm && (
                     <div className="mt-4 p-4 border-t border-indigo-200 bg-indigo-50 rounded-md">
                         <h4 className="text-md font-semibold text-indigo-700">Generated Suggestion for {outreach.creatorName}:</h4>
                         <p className="text-sm text-indigo-600 mt-1"><strong>Strategy:</strong> {negotiationState.negotiationStrategy}</p>
@@ -806,17 +886,11 @@ export const NegotiationAgentComponent: React.FC = () => {
                         <p className="text-sm text-indigo-600"><strong>Message:</strong></p>
                         <textarea 
                             value={negotiationState.generatedMessage} 
-                            readOnly // This is the AI suggested message, should be copied/edited in the main form above
+                            readOnly
                             className="mt-1 w-full text-xs p-2 border border-indigo-200 rounded h-24 bg-white"
                         />
                         <p className="text-xs text-indigo-500 mt-1">Method: {negotiationState.method}</p>
-                        {/* Buttons to act on this specific suggestion were part of the main form, 
-                            so this section is mostly for display if an individual item is selected.
-                            The main form handles sending. Maybe add a "Use this suggestion" button
-                            that populates the main form if it's different.
-                            For now, this is just a display of the generated text IF it's the current one.
-                        */}
-                         <div className="mt-3 flex gap-2">
+                        <div className="mt-3 flex gap-2">
                             <button 
                                 onClick={() => handleSendNegotiation(outreach)}
                                 disabled={!negotiationState.generatedMessage || negotiationState.suggestedOffer === null}

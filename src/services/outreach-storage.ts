@@ -70,13 +70,23 @@ export interface CallRecordingMetadata extends BaseCallMetadata {
   duration?: string;    // Optional: e.g., "35s"
 }
 
+// NEW: Metadata for messages sent via Gmail
+export interface GmailSentMessageMetadata { // No BaseCallMetadata needed here unless a call is involved
+  subject: string;
+  gmail_send_status: 'pending_gmail_send' | 'sent_via_gmail' | 'failed_gmail_send' | string; // string for future statuses
+  gmail_message_id?: string;
+  ai_reasoning?: string;   // For AI-generated emails like follow-ups
+  ai_confidence?: number; // For AI-generated emails
+  error_message?: string;  // If sending failed
+}
+
 // --- ConversationMessage Discriminated Union ---
 interface MessageBase {
   id: string;
   outreach_id?: string;
   user_id?: string;
   content: string;
-  sender: 'brand' | 'creator' | 'ai';
+  sender: 'brand' | 'creator' | 'ai'; // MODIFIED: Reverted 'user_via_gmail' as Gmail messages will now use 'brand'
   timestamp: Date;
 }
 
@@ -116,6 +126,13 @@ export type CallRecordingMessage = MessageBase & {
   metadata: CallRecordingMetadata; // Using the new metadata type
 };
 
+// NEW: Type for messages sent via Gmail
+export type GmailSentMessage = MessageBase & {
+  type: 'initial_outreach_gmail' | 'follow_up_gmail' | 'negotiation_message_gmail';
+  sender: 'brand'; // MODIFIED: Changed from 'user_via_gmail' to 'brand' for consistency
+  metadata: GmailSentMessageMetadata;
+};
+
 // The main ConversationMessage type is now a union of all specific message types
 export type ConversationMessage =
   | GenericMessage
@@ -124,7 +141,8 @@ export type ConversationMessage =
   | VoiceTranscriptMessage
   | CallExchangeMessage
   | VoiceCallSummaryMessage
-  | CallRecordingMessage; // Added CallRecordingMessage
+  | CallRecordingMessage // Added CallRecordingMessage
+  | GmailSentMessage; // ADDED: GmailSentMessage to the union
 
 export interface StoredOutreach {
   id: string; // Will be Supabase generated UUID
@@ -172,7 +190,7 @@ function mapDbMessageToConversationMessage(dbMsg: any): ConversationMessage {
     outreach_id: dbMsg.outreach_id,
     user_id: dbMsg.user_id,
     content: dbMsg.content,
-    sender: dbMsg.sender as 'brand' | 'creator' | 'ai',
+    sender: dbMsg.sender as 'brand' | 'creator' | 'ai', // MODIFIED: Reverted, as 'user_via_gmail' is no longer a distinct top-level sender type here. dbMsg.sender from DB should be 'brand' for these.
     timestamp: new Date(dbMsg.timestamp),
     // Ensure metadata is at least an empty object if null/undefined from DB
     // Individual types will then validate or use their specific metadata shapes
@@ -194,6 +212,15 @@ function mapDbMessageToConversationMessage(dbMsg: any): ConversationMessage {
       return { ...baseMessage, type: 'voice_call_summary', metadata: dbMsg.metadata as VoiceCallSummaryMetadata };
     case 'call_recording': // Added case for call_recording
       return { ...baseMessage, type: 'call_recording', metadata: dbMsg.metadata as CallRecordingMetadata };
+    case 'initial_outreach_gmail': 
+    case 'follow_up_gmail':      
+    case 'negotiation_message_gmail': // ADDED case for negotiation_message_gmail
+      return {
+        ...baseMessage,
+        type: dbMsg.type, 
+        sender: 'brand', 
+        metadata: dbMsg.metadata as GmailSentMessageMetadata
+      };
     case 'outreach':
     case 'response':
     case 'update':
@@ -261,37 +288,6 @@ class OutreachStorageService {
       
       console.log('✅ Outreach saved to Supabase, ID:', savedOutreach.id);
 
-      // Now save the initial message to conversation_messages
-      // This will be a GenericMessage
-      const initialDbMessage = {
-        outreach_id: savedOutreach.id,
-        user_id: userId,
-        content: savedOutreach.body, // Use body from the saved outreach
-        sender: 'brand' as const, // Ensure literal type
-        type: 'outreach' as const,    // Ensure literal type
-        metadata: {}, // No specific metadata for initial outreach message
-      };
-
-      const { data: savedMessageData, error: messageError } = await supabase
-        .from('conversation_messages')
-        .insert(initialDbMessage)
-        .select()
-        .single();
-
-      if (messageError) {
-        console.error('❌ Error saving initial conversation message to Supabase:', messageError);
-        throw messageError;
-      }
-      
-      if (!savedMessageData) {
-        console.error('❌ No data returned after saving initial message.');
-        return null; 
-      }
-
-      console.log('✅ Initial conversation message saved to Supabase, ID:', savedMessageData.id);
-      
-      const initialConversationMessage: ConversationMessage = mapDbMessageToConversationMessage(savedMessageData);
-
       const fullOutreach: StoredOutreach = {
         ...outreachData, 
         id: savedOutreach.id,
@@ -299,7 +295,7 @@ class OutreachStorageService {
         campaign_id: outreachData.campaign_id, 
         createdAt: new Date(savedOutreach.created_at),
         lastContact: new Date(savedOutreach.last_contact || savedOutreach.created_at),
-        conversationHistory: [initialConversationMessage],
+        conversationHistory: [], 
       };
       
       return fullOutreach;
@@ -453,14 +449,9 @@ class OutreachStorageService {
   async addConversationMessage(
     outreachId: string, 
     content: string, 
-    sender: 'brand' | 'creator' | 'ai',
-    type: ConversationMessage['type'], // This will be the union of all literal types
-    // Metadata must now match one of the specific metadata types based on 'type'
-    // or be undefined if the specific message type allows optional/no metadata.
-    // For simplicity in the method signature, we'll keep it as `any` here and rely on
-    // the calling code to pass correctly typed metadata according to the 'type' argument.
-    // A more advanced approach could use generics and conditional types for the metadata argument.
-    metadata?: any // Ideally, this would be more strongly typed based on 'type'
+    sender: 'brand' | 'creator' | 'ai', // MODIFIED: Reverted, as 'user_via_gmail' flows through 'brand' now
+    type: ConversationMessage['type'], 
+    metadata?: any 
   ): Promise<ConversationMessage | null> {
     try {
       const { data: { user } } = await supabase.auth.getUser();

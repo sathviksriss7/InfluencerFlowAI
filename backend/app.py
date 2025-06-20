@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request, send_from_directory, g, has_request_context
+from flask import Flask, jsonify, request, send_from_directory, g, has_request_context, redirect, url_for, session as flask_session # Added redirect, url_for, session as flask_session
 from flask_cors import CORS # Import CORS
 from dotenv import load_dotenv
 import os
@@ -13,6 +13,17 @@ from supabase import create_client, Client # Supabase client
 from datetime import datetime, timedelta, timezone # Added timezone
 import re # For date validation
 from postgrest.exceptions import APIError # IMPORTED APIError
+from email.mime.text import MIMEText # Added for Gmail sending
+import base64 # Added for Gmail sending
+import secrets # Added for secrets
+
+# Google OAuth specific imports
+from google_auth_oauthlib.flow import Flow as GoogleFlow
+from google.oauth2.credentials import Credentials as GoogleCredentials
+from googleapiclient.discovery import build as build_google_api_service
+import google.auth.exceptions
+import google.auth.transport.requests # Added for token refresh
+from googleapiclient.errors import HttpError # Ensure this import is present
 
 # Import Twilio and ElevenLabs
 from twilio.rest import Client as TwilioClient
@@ -27,6 +38,17 @@ import time # Added import for time.sleep()
 load_dotenv()
 
 app = Flask(__name__)
+# It's important to set a secret key for session management in Flask, used by OAuth flow
+# Make sure to add FLASK_APP_SECRET_KEY to your backend/.env file with a strong, random string.
+app.secret_key = os.getenv("FLASK_APP_SECRET_KEY", "fallback-dev-secret-key-please-change")
+
+# NEW DETAILED LOGGING FOR SECRET KEY
+if not app.secret_key:
+    app.logger.error("🔴 CRITICAL: Flask app.secret_key is NOT SET (None or empty after os.getenv). Session management will FAIL.")
+elif app.secret_key == "fallback-dev-secret-key-please-change":
+    app.logger.warning("⚠️ WARNING: FLASK_APP_SECRET_KEY is using the default fallback. Session management will work, but PLEASE set a strong secret key in backend/.env for production.")
+else:
+    app.logger.info(f"✅ Flask app.secret_key is SET. Length: {len(app.secret_key)}. Session management should be operational.")
 
 # Configure CORS
 # For development, allow your frontend's localhost. 
@@ -36,6 +58,29 @@ CORS(app, resources={r"/api/*": {"origins": [
     os.getenv("VITE_FRONTEND_URL", "https://your-vercel-frontend-url.vercel.app") # Use an env var for Vercel URL
     # You can add more specific preview URLs if needed, e.g., "https://*.vercel.app"
 ]}})
+
+# Google OAuth Configuration
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+# Ensure FLASK_APP_BASE_URL is in your .env, e.g., FLASK_APP_BASE_URL=http://localhost:5001
+FLASK_APP_BASE_URL = os.getenv("FLASK_APP_BASE_URL") 
+GOOGLE_OAUTH_REDIRECT_URI = f"{FLASK_APP_BASE_URL}/api/oauth2callback/google"
+
+# This is the scope required to send emails on behalf of the user.
+# It does not grant permission to read or delete emails.
+# Added openid, email, profile to match scopes often returned by Google by default
+# and to prevent "Scope has changed" errors during token fetch.
+GOOGLE_OAUTH_SCOPES = [
+    'https://www.googleapis.com/auth/gmail.send',
+    'openid',
+    'https://www.googleapis.com/auth/userinfo.email',
+    'https://www.googleapis.com/auth/userinfo.profile'
+]
+
+if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+    app.logger.warning("Google OAuth Client ID or Secret not configured in backend/.env. Gmail integration will fail.")
+if not FLASK_APP_BASE_URL:
+    app.logger.warning("FLASK_APP_BASE_URL not configured in backend/.env. Google OAuth redirect URI may be incorrect.")
 
 # Get API keys and Supabase client from environment variables
 supabase_url = os.getenv("VITE_SUPABASE_URL")
@@ -136,6 +181,105 @@ NICHE_MAP = {
     # and the niches present in your creator data.
 }
 
+# --- Google OAuth Helper Functions --- START ---
+def get_google_user_credentials(user_id: str) -> GoogleCredentials | None:
+    # WORKAROUND: Using supabase_admin_client for reading due to RLS issues with regular client.
+    if not supabase_admin_client:
+        print(f"User {user_id}: Supabase ADMIN client not initialized. Cannot perform diagnostic read.", flush=True)
+        return None
+
+    required_scopes_list = GOOGLE_OAUTH_SCOPES
+    if isinstance(GOOGLE_OAUTH_SCOPES, str):
+        required_scopes_list = [s.strip() for s in GOOGLE_OAUTH_SCOPES.split(',')]
+
+    print(f"User {user_id}: Attempting to fetch Google OAuth tokens from Supabase USING ADMIN CLIENT (RLS WORKAROUND).", flush=True)
+    
+    try:
+        # Fetch all rows using supabase_admin_client
+        token_response = (supabase_admin_client.table('user_google_oauth_tokens')
+            .select('user_id, access_token, refresh_token, token_uri, client_id, client_secret, scopes, expiry_timestamp_utc')
+            .execute())
+
+        # print(f"User {user_id}: (ADMIN READ) Raw token_response.data: {token_response.data}", flush=True) # Verbose
+        
+        user_token_data = None
+        if token_response.data:
+            # print(f"User {user_id}: (ADMIN READ) Successfully fetched {len(token_response.data)} record(s). Searching for user {user_id}.", flush=True) # Verbose
+            for record in token_response.data:
+                if str(record.get('user_id')) == str(user_id):
+                    user_token_data = record
+                    # print(f"User {user_id}: (ADMIN READ) Found matching record for user_id {user_id}.", flush=True) # Verbose
+                    break
+            
+            if not user_token_data:
+                print(f"User {user_id}: (ADMIN READ) No token data found for the *current* user_id ('{user_id}') after checking all fetched records.", flush=True)
+                return None
+        else:
+            print(f"User {user_id}: (ADMIN READ) No data returned from user_google_oauth_tokens by ADMIN client.", flush=True)
+            return None
+        
+        access_token = user_token_data.get('access_token')
+        refresh_token = user_token_data.get('refresh_token')
+        
+        token_uri_from_db = user_token_data.get('token_uri', 'https://oauth2.googleapis.com/token')
+        client_id_from_db = user_token_data.get('client_id', GOOGLE_CLIENT_ID)
+        client_secret_from_db = user_token_data.get('client_secret', GOOGLE_CLIENT_SECRET)
+
+        if not access_token:
+            print(f"User {user_id}: (ADMIN READ) Access token missing in the identified user_token_data.", flush=True)
+            return None
+
+        expiry_datetime_utc = None
+        raw_expiry_timestamp = user_token_data.get('expiry_timestamp_utc')
+        if raw_expiry_timestamp:
+            try:
+                expiry_str = str(raw_expiry_timestamp)
+                if expiry_str.endswith('Z'):
+                    aware_expiry_dt = datetime.fromisoformat(expiry_str[:-1] + '+00:00')
+                else:
+                    aware_expiry_dt = datetime.fromisoformat(expiry_str)
+                expiry_datetime_utc = aware_expiry_dt.astimezone(timezone.utc).replace(tzinfo=None)
+            except Exception as e_parse:
+                print(f"User {user_id}: (ADMIN READ) ERROR parsing expiry_timestamp_utc '{raw_expiry_timestamp}': {type(e_parse).__name__} - {e_parse}", flush=True)
+                expiry_datetime_utc = None
+
+        stored_scopes_raw = user_token_data.get('scopes')
+        parsed_scopes_for_creds = [] 
+        if isinstance(stored_scopes_raw, list):
+            parsed_scopes_for_creds = stored_scopes_raw
+        elif isinstance(stored_scopes_raw, str):
+            try:
+                parsed_scopes_for_creds = json.loads(stored_scopes_raw)
+                if not isinstance(parsed_scopes_for_creds, list): 
+                    parsed_scopes_for_creds = []
+            except json.JSONDecodeError:
+                parsed_scopes_for_creds = [s.strip() for s in stored_scopes_raw.split(',') if s.strip()]
+        
+        credentials = GoogleCredentials(
+            token=access_token,
+            refresh_token=refresh_token,
+            token_uri=token_uri_from_db,
+            client_id=client_id_from_db,
+            client_secret=client_secret_from_db,
+            scopes=parsed_scopes_for_creds, 
+            expiry=expiry_datetime_utc 
+        )
+        
+        # print(f"User {user_id}: (ADMIN READ) Constructed GoogleCredentials object. Valid: {credentials.valid}, Expired: {credentials.expired}", flush=True) # Verbose
+        return credentials
+
+    except APIError as e_api: 
+        print(f"User {user_id}: (ADMIN READ) Supabase APIError: {e_api}", flush=True)
+        print(f"User {user_id}: (ADMIN READ) APIError details: code={getattr(e_api, 'code', 'N/A')}, message={getattr(e_api, 'message', 'N/A')}", flush=True)
+        return None
+    except Exception as e:
+        print(f"User {user_id}: (ADMIN READ) General Exception: {type(e).__name__} - {e}", flush=True)
+        import traceback
+        print(traceback.format_exc(), flush=True)
+        return None
+
+# --- Google OAuth Helper Functions --- END ---
+
 # --- JWT Authentication Decorator ---
 def token_required(f):
     @wraps(f)
@@ -211,8 +355,7 @@ def build_document_extraction_prompt(text_content: str) -> str:
         "other_notes_or_mandatories": "string (any other specific requirements, do's/don'ts, or mandatory inclusions) or null"
     }
 
-    prompt = f"""
-You are an expert campaign analyst. Your task is to meticulously read the following text extracted from a campaign brief document and identify key campaign requirements.
+    prompt = f"""You are an expert campaign analyst. Your task is to meticulously read the following text extracted from a campaign brief document and identify key campaign requirements.
 Extract the information and structure it as a VALID JSON object.
 The JSON object MUST strictly follow this structure. For any fields where information is not found or cannot be reasonably inferred from the text, use `null` for string fields or an empty list `[]` for list fields.
 Do NOT add any fields that are not in this predefined structure.
@@ -3677,8 +3820,11 @@ def create_outreach_assignment():
         creator_name = data.get('creator_name')
         creator_avatar = data.get('creator_avatar', None)
         creator_platform = data.get('creator_platform', None)
-        # Frontend sends 'phone_number', table has 'creator_phone_number'
         creator_phone_number = data.get('creator_phone_number', None) 
+        
+        # Get subject and body, defaulting to empty string if not provided
+        subject = data.get('subject', "")
+        body = data.get('body', "")
         
         initial_status = 'identified'
 
@@ -3693,9 +3839,23 @@ def create_outreach_assignment():
             "creator_name": creator_name,
             "creator_avatar": creator_avatar,
             "creator_platform": creator_platform,
-            "creator_phone_number": creator_phone_number, # Ensure this matches table column
+            "creator_phone_number": creator_phone_number,
+            "subject": subject, # Explicitly add subject
+            "body": body,       # Explicitly add body
             "status": initial_status,
-            # Other fields like subject, body, etc., will be null by default or set later
+            # Ensure other expected fields for a new outreach are present or handled
+            # For example, fields that are NOT NULL in DB but not set here might cause issues
+            # if they don't have DB-level defaults.
+            # Based on StoredOutreach, these seem to be the core for a new assignment:
+            "confidence": data.get('confidence', 0), # Default if not provided
+            "reasoning": data.get('reasoning', ''),   # Default if not provided
+            "key_points": data.get('keyPoints', []), # Default if not provided
+            "next_steps": data.get('nextSteps', []), # Default if not provided
+            "brand_name": data.get('brandName', ''), # Default if not provided (might come from campaign)
+            "campaign_context": data.get('campaignContext', ''), # Default if not provided
+            "notes": data.get('notes', ''), # Default if not provided
+            # 'currentOffer' can be None/null
+            # 'createdAt' and 'lastContact' will be set by Supabase or DB defaults ideally
         }
         
         app.logger.info(f"Attempting to insert outreach record: {outreach_record} by user {current_user_id}")
@@ -3812,5 +3972,399 @@ def create_new_campaign():
         if supabase_client and hasattr(supabase_client, 'postgrest'):
              supabase_client.postgrest.session.headers = original_postgrest_headers
 
+# --- Google OAuth Routes --- START ---
+@app.route('/api/auth/google/login')
+@token_required 
+def google_login():
+    # Ensure current_user is available from token_required decorator
+    if not hasattr(request, 'current_user') or not request.current_user or not request.current_user.id:
+        app.logger.error("google_login: User context not available for initiating Google OAuth.")
+        return jsonify({"success": False, "error": "User context not available for initiating Google OAuth."}), 401
+    
+    user_id = request.current_user.id
+    # Store user_id in session to link it back after OAuth callback
+    flask_session['oauth_user_id'] = user_id
+    # Generate a random state string for CSRF protection
+    flask_session['oauth_state'] = secrets.token_urlsafe(16)
+    app.logger.info(f"google_login: Initiating OAuth for user {user_id} with state {flask_session['oauth_state']}.")
+
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET or not GOOGLE_OAUTH_REDIRECT_URI:
+        app.logger.error("Google OAuth environment variables (CLIENT_ID, CLIENT_SECRET, REDIRECT_URI) are not properly configured.")
+        return jsonify({"success": False, "error": "Google OAuth is not configured on the server."}), 500
+
+    # Initialize flow with client config dictionary instead of secrets file
+    client_config = {
+        "web": {
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "redirect_uris": [GOOGLE_OAUTH_REDIRECT_URI], 
+        }
+    }
+    try:
+        flow = GoogleFlow.from_client_config(
+            client_config=client_config,
+            scopes=GOOGLE_OAUTH_SCOPES,
+            state=flask_session['oauth_state']
+        )
+        # The redirect_uri must be set on the flow instance and match one of those 
+        # configured in your Google Cloud Console for this client ID.
+        flow.redirect_uri = GOOGLE_OAUTH_REDIRECT_URI
+        
+        # Generate the authorization URL that the user will be redirected to.
+        authorization_url, _ = flow.authorization_url(
+            access_type='offline',  # Request a refresh token.
+            prompt='consent',       # Ensure user sees consent screen even if already granted, for dev/testing
+            include_granted_scopes='true' # Ensure all previously granted scopes are included.
+        )
+        app.logger.info(f"Generated Google OAuth authorization URL for user {user_id}: {authorization_url}")
+        return jsonify({"success": True, "authorization_url": authorization_url})
+    except Exception as e:
+        app.logger.error(f"Error creating Google OAuth flow for user {user_id}: {e}", exc_info=True)
+        return jsonify({"success": False, "error": f"Failed to initiate Google login: {str(e)}"}), 500
+
+@app.route('/api/oauth2callback/google') 
+# @token_required # Commented out as per previous correct version, we use flask_session for state
+def google_oauth2callback(): # token_required removed based on previous working version. User context if needed comes after state check.
+    # CORRECTED: Use the same session key 'oauth_state' as set in google_login
+    session_state = flask_session.pop('oauth_state', None)
+    received_state = request.args.get('state')
+
+    app.logger.info(f"OAuth Callback: Session state retrieved: '{session_state}', Received state from Google: '{received_state}'")
+
+    if not session_state or session_state != received_state:
+        app.logger.error(f"OAuth callback state mismatch. Session state was: '{session_state}', Received state from Google: '{received_state}'")
+        return redirect(f"{os.getenv('VITE_FRONTEND_URL', 'http://localhost:5173')}/settings?error=oauth_state_mismatch")
+
+    if 'error' in request.args:
+        error_reason = request.args.get('error', 'Unknown error')
+        app.logger.warning(f"Google OAuth permission denied or an error occurred during callback: {error_reason}")
+        return redirect(f"{os.getenv('VITE_FRONTEND_URL', 'http://localhost:5173')}/settings?error=google_auth_denied&reason={error_reason}")
+
+    # Initialize flow with client config, consistent with google_login
+    client_config = {
+        "web": {
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [GOOGLE_OAUTH_REDIRECT_URI]
+        }
+    }
+    try:
+        flow = GoogleFlow.from_client_config(
+            client_config=client_config,
+            scopes=GOOGLE_OAUTH_SCOPES,
+            state=session_state # Use the validated state
+        )
+        flow.redirect_uri = GOOGLE_OAUTH_REDIRECT_URI
+
+        flow.fetch_token(code=request.args.get('code'))
+    except google.auth.exceptions.OAuthError as oauth_error:
+        app.logger.error(f"OAuthError during token fetch: {oauth_error}. Details: {getattr(oauth_error, 'details', 'N/A')}", exc_info=True)
+        return redirect(f"{os.getenv('VITE_FRONTEND_URL', 'http://localhost:5173')}/settings?error=google_token_fetch_oauth_error&code={getattr(oauth_error, 'error_uri', '')}")
+    except Exception as e:
+        app.logger.error(f"Error fetching token from Google: {str(e)}", exc_info=True)
+        return redirect(f"{os.getenv('VITE_FRONTEND_URL', 'http://localhost:5173')}/settings?error=google_token_fetch_failed")
+
+    credentials = flow.credentials
+    
+    # Retrieve the user_id stored in the session by the google_login route
+    user_id = flask_session.pop('oauth_user_id', None)
+    if not user_id:
+        app.logger.error("User ID not found in session during OAuth callback. Cannot store tokens.")
+        return redirect(f"{os.getenv('VITE_FRONTEND_URL', 'http://localhost:5173')}/settings?error=oauth_session_error_user_id")
+    app.logger.info(f"OAuth Callback: Retrieved user_id '{user_id}' from session for token storage.")
+
+    try:
+        # Calculate expiry_timestamp_utc
+        # Google credentials.expiry is a datetime object in UTC if available
+        expiry_timestamp_utc = None
+        if credentials.expiry:
+            expiry_timestamp_utc = credentials.expiry.isoformat()
+
+        token_data = {
+            'user_id': user_id,
+            'access_token': credentials.token,
+            'refresh_token': credentials.refresh_token, 
+            'token_uri': credentials.token_uri,
+            'client_id': credentials.client_id,
+            'client_secret': credentials.client_secret, 
+            # CORRECTED: Store scopes directly as a Python list; Supabase client handles conversion to PG array
+            'scopes': credentials.scopes, 
+            'expiry_timestamp_utc': expiry_timestamp_utc, # Store calculated expiry
+            'updated_at': datetime.now(timezone.utc).isoformat()
+        }
+
+        if not supabase_admin_client:
+            app.logger.error("Supabase admin client not initialized. Cannot save OAuth tokens.")
+            return redirect(f"{os.getenv('VITE_FRONTEND_URL', 'http://localhost:5173')}/settings?error=server_config_error_token_storage")
+
+        response = supabase_admin_client.table('user_google_oauth_tokens') \
+            .upsert(token_data, on_conflict='user_id') \
+            .execute()
+
+        if response.data:
+            app.logger.info(f"Successfully stored/updated Google OAuth tokens for user {user_id}")
+            return redirect(f"{os.getenv('VITE_FRONTEND_URL', 'http://localhost:5173')}/settings?gmail_connected=true")
+        else:
+            error_msg = "Failed to save OAuth tokens to database."
+            if hasattr(response, 'error') and response.error:
+                 error_details = getattr(response.error, 'message', str(response.error))
+                 error_msg += f" Details: {error_details}"
+            app.logger.error(f"Error saving Google OAuth tokens for user {user_id}: {error_msg}. DB Response: {response}")
+            return redirect(f"{os.getenv('VITE_FRONTEND_URL', 'http://localhost:5173')}/settings?error=db_token_save_failed")
+
+    except Exception as e:
+        app.logger.error(f"Error processing and storing Google OAuth credentials for user {user_id}: {str(e)}", exc_info=True)
+        return redirect(f"{os.getenv('VITE_FRONTEND_URL', 'http://localhost:5173')}/settings?error=oauth_processing_error&detail={str(e)[:100]}")
+# --- Google OAuth Routes --- END ---
+
+# --- API Endpoint to Send Outreach via Gmail --- START ---
+@app.route('/api/outreach/send-via-gmail', methods=['POST'])
+@token_required
+def handle_send_outreach_via_gmail():
+    user_id = request.current_user.id
+    data = request.get_json()
+
+    # MODIFIED: Validate new payload
+    required_keys = ['outreach_id', 'conversation_message_id', 'subject', 'body']
+    if not data or not all(k in data for k in required_keys):
+        missing_keys = [k for k in required_keys if k not in (data or {})]
+        return jsonify({"success": False, "error": f"Missing required keys in request: {', '.join(missing_keys)}"}), 400
+    
+    outreach_id = data['outreach_id']
+    conversation_message_id = data['conversation_message_id']
+    email_subject_from_payload = data['subject']
+    email_body_from_payload = data['body']
+
+    app.logger.info(f"User {user_id} attempting to send email for outreach_id {outreach_id} (conversation_message_id: {conversation_message_id}) via Gmail.")
+
+    google_credentials = get_google_user_credentials(user_id)
+    if not google_credentials:
+        app.logger.warning(f"User {user_id} does not have valid Google credentials for outreach {outreach_id}.")
+        # Update conversation_message status to failed before returning
+        update_conversation_message_metadata(conversation_message_id, {
+            'gmail_send_status': 'failed_gmail_send',
+            'error_message': 'Gmail account not connected or needs re-authentication.'
+        })
+        return jsonify({
+            "success": False, 
+            "error": "Gmail account not connected or needs re-authentication. Please connect your Gmail account in settings.",
+            "action_required": "connect_gmail"
+        }), 403
+
+    if not supabase_admin_client:
+        app.logger.error("Supabase ADMIN client not initialized. Cannot fetch outreach details for Gmail send.")
+        # Update conversation_message status to failed before returning
+        update_conversation_message_metadata(conversation_message_id, {
+            'gmail_send_status': 'failed_gmail_send',
+            'error_message': 'Server configuration error (Supabase admin client).'
+        })
+        return jsonify({"success": False, "error": "Server configuration error (Supabase admin client)."}), 500
+    
+    recipient_email = None
+    try:
+        # Fetch only creator's email and verify ownership using outreach_id
+        # No longer need to fetch subject/body from outreaches table for sending
+        outreach_response = supabase_admin_client.table('outreaches').select(
+            'id, user_id, creators(email)' # Only select what's needed
+        ).eq('id', outreach_id).maybe_single().execute()
+
+        if not outreach_response.data:
+            error_msg = f"Outreach record {outreach_id} not found."
+            app.logger.warning(f"{error_msg} (Admin client used). User {user_id}.")
+            update_conversation_message_metadata(conversation_message_id, {'gmail_send_status': 'failed_gmail_send', 'error_message': error_msg})
+            return jsonify({"success": False, "error": error_msg}), 404
+
+        outreach_owner_id = outreach_response.data.get('user_id')
+        if str(outreach_owner_id) != str(user_id):
+            error_msg = f"Ownership mismatch: User {user_id} cannot send email for outreach {outreach_id} owned by {outreach_owner_id}."
+            app.logger.error(error_msg)
+            update_conversation_message_metadata(conversation_message_id, {'gmail_send_status': 'failed_gmail_send', 'error_message': 'Access denied to outreach record due to ownership mismatch.'})
+            return jsonify({"success": False, "error": "Access denied to outreach record."}), 403
+
+        creator_details = outreach_response.data.get('creators')
+        if not creator_details or not creator_details.get('email'):
+            error_msg = f"Creator email missing for outreach {outreach_id}."
+            app.logger.warning(f"{error_msg} Creator details from DB: {creator_details}")
+            update_conversation_message_metadata(conversation_message_id, {'gmail_send_status': 'failed_gmail_send', 'error_message': error_msg})
+            return jsonify({"success": False, "error": error_msg}), 400
+        
+        recipient_email = creator_details['email']
+        app.logger.info(f"Proceeding to send email to {recipient_email} using subject/body from payload for conv_msg_id {conversation_message_id}.")
+
+    except APIError as e:
+        error_msg = f"Supabase APIError during outreach/creator fetch for {outreach_id}: {e.message}"
+        app.logger.error(error_msg, exc_info=True)
+        update_conversation_message_metadata(conversation_message_id, {'gmail_send_status': 'failed_gmail_send', 'error_message': error_msg})
+        return jsonify({"success": False, "error": f"Database API error: {e.message}"}), 500
+    except Exception as e:
+        error_msg = f"Unexpected error during outreach/creator fetch for {outreach_id}: {str(e)}"
+        app.logger.error(error_msg, exc_info=True)
+        update_conversation_message_metadata(conversation_message_id, {'gmail_send_status': 'failed_gmail_send', 'error_message': error_msg})
+        return jsonify({"success": False, "error": "Unexpected server error fetching recipient details."}), 500
+
+    # Call the modified send_gmail_email function using subject and body from payload
+    send_result = send_gmail_email(
+        credentials=google_credentials, 
+        to_email=recipient_email, 
+        subject=email_subject_from_payload, 
+        message_text=email_body_from_payload
+    )
+
+    if send_result["success"]:
+        app.logger.info(f"Email sent successfully for conv_msg_id {conversation_message_id}. Gmail ID: {send_result.get('message_id')}")
+        update_conversation_message_metadata(conversation_message_id, {
+            'gmail_send_status': 'sent_via_gmail',
+            'gmail_message_id': send_result.get('message_id'),
+            'error_message': None # Clear any previous error
+        })
+        return jsonify({
+            "success": True, 
+            "message": f"Email successfully sent to {recipient_email} via Gmail.",
+            "gmail_message_id": send_result.get('message_id')
+        }), 200
+    else:
+        error_detail_from_send = send_result.get("error", "Unknown error from send_gmail_email function.")
+        app.logger.error(f"Failed to send email for conv_msg_id {conversation_message_id}: {error_detail_from_send}")
+        update_conversation_message_metadata(conversation_message_id, {
+            'gmail_send_status': 'failed_gmail_send',
+            'error_message': error_detail_from_send
+        })
+        return jsonify({
+            "success": False, 
+            "error": f"Failed to send email via Gmail: {error_detail_from_send}"
+        }), 500
+
+# --- API Endpoint to Send Outreach via Gmail --- END ---
+# ... existing code ...
+
+# --- Google Auth Status API Endpoint --- START ---
+@app.route('/api/auth/google/status', methods=['GET'])
+@token_required
+def get_google_auth_status():
+    # REPLACED app.logger with print(..., flush=True)
+    user_id = request.current_user.id
+    print(f"--- get_google_auth_status: Checking Google Auth status for user_id: {user_id} ---", flush=True)
+    
+    credentials = get_google_user_credentials(user_id)
+    
+    if credentials and credentials.valid:
+        print(f"User {user_id}: IS connected to Google and credentials are valid.", flush=True)
+        return jsonify({"success": True, "is_connected": True})
+    elif credentials and not credentials.valid:
+        print(f"User {user_id}: WARNING - Has Google token record, but credentials NOT valid.", flush=True)
+        return jsonify({"success": True, "is_connected": False, "message": "Google connection found but requires re-authentication."})
+    else:
+        print(f"User {user_id}: IS NOT connected to Google (no valid tokens or error retrieving).", flush=True)
+        return jsonify({"success": True, "is_connected": False, "message": "User not connected to Google."})
+
+# --- Helper function to send email via Gmail API ---
+def send_gmail_email(credentials: GoogleCredentials, to_email: str, subject: str, message_text: str, from_email: str = 'me') -> dict: # MODIFIED return type
+    """
+    Sends an email using the Gmail API with the provided credentials.
+
+    Args:
+        credentials: The Google OAuth2 credentials for the user.
+        to_email: The recipient's email address.
+        subject: The subject of the email.
+        message_text: The body of the email (can be plain text or HTML).
+        from_email: The sender's email address (usually 'me' for the authenticated user).
+
+    Returns:
+        A dictionary: {"success": True, "message_id": "gmail_message_id"} on success,
+                     {"success": False, "error": "error description"} on failure.
+    """
+    if not credentials or not credentials.valid:
+        error_msg = f"Attempted to send Gmail with invalid or missing credentials. Valid: {credentials.valid if credentials else 'N/A'}"
+        print(f"Error: {error_msg}", flush=True)
+        if credentials and not credentials.token:
+             print("Error: Access token is missing from Google credentials.", flush=True)
+        return {"success": False, "error": error_msg}
+    
+    try:
+        service = build_google_api_service('gmail', 'v1', credentials=credentials)
+        
+        mime_message = MIMEText(message_text, 'plain') 
+        mime_message['to'] = to_email
+        mime_message['from'] = from_email
+        mime_message['subject'] = subject
+        
+        raw_message = base64.urlsafe_b64encode(mime_message.as_bytes()).decode()
+        message_body = {'raw': raw_message}
+        
+        sent_message = service.users().messages().send(userId=from_email, body=message_body).execute()
+        gmail_message_id = sent_message.get('id')
+        
+        if gmail_message_id:
+            print(f"Email sent successfully. Message ID: {gmail_message_id}", flush=True)
+            return {"success": True, "message_id": gmail_message_id}
+        else:
+            # This case should ideally not happen if execute() doesn't raise an error and returns a response
+            error_msg = "Gmail API executed send but returned no message ID."
+            print(f"Error: {error_msg}", flush=True)
+            return {"success": False, "error": error_msg}
+
+    except HttpError as error:
+        error_details = f"Gmail API HttpError: {error.status_code} - {error.reason}. Content: {error.content.decode() if error.content else 'N/A'}"
+        print(f"Error sending email via Gmail: {error_details}", flush=True)
+        return {"success": False, "error": error_details}
+    except Exception as e:
+        error_details = f"Unexpected error in send_gmail_email: {str(e)}"
+        print(f"Error: {error_details}", flush=True)
+        return {"success": False, "error": error_details}
+
+# NEW Helper function to update metadata in conversation_messages
+def update_conversation_message_metadata(conversation_message_id: str, metadata_updates: dict) -> bool:
+    """
+    Updates the metadata for a specific message in the conversation_messages table.
+    It fetches existing metadata, merges it with updates, and saves it back.
+    """
+    if not supabase_admin_client: # Use admin client for system-level updates
+        print("❌ Supabase ADMIN client not initialized. Cannot update conversation_message metadata.", flush=True)
+        return False
+
+    try:
+        # Fetch existing metadata
+        msg_response = supabase_admin_client.table('conversation_messages').select('metadata').eq('id', conversation_message_id).maybe_single().execute()
+
+        if not msg_response.data:
+            print(f"❌ Conversation message with ID {conversation_message_id} not found for metadata update.", flush=True)
+            return False
+
+        existing_metadata = msg_response.data.get('metadata', {})
+        if not isinstance(existing_metadata, dict): # Ensure it's a dict
+             print(f"⚠️ Metadata for message {conversation_message_id} was not a dict, re-initializing. Original: {existing_metadata}", flush=True)
+             existing_metadata = {}
+        
+        # Merge new updates into existing metadata
+        updated_metadata = {**existing_metadata, **metadata_updates}
+
+        # Update the record
+        update_response = supabase_admin_client.table('conversation_messages').update({'metadata': updated_metadata}).eq('id', conversation_message_id).execute()
+
+        if hasattr(update_response, 'data') and update_response.data: # In v2, data is a list
+            print(f"✅ Metadata updated for conversation_message {conversation_message_id}.", flush=True)
+            return True
+        elif hasattr(update_response, 'error') and update_response.error:
+            print(f"❌ Error updating metadata for conversation_message {conversation_message_id}: {update_response.error}", flush=True)
+            return False
+        else: # Should not happen if data or error is always present
+            print(f"⚠️ Unknown response from Supabase during metadata update for {conversation_message_id}. Data: {getattr(update_response, 'data', 'N/A')}", flush=True)
+            return False
+            
+    except APIError as e_api:
+        print(f"❌ Supabase APIError updating metadata for {conversation_message_id}: {e_api.message}", flush=True)
+        return False
+    except Exception as e:
+        print(f"❌ Unexpected error in update_conversation_message_metadata for {conversation_message_id}: {str(e)}", flush=True)
+        return False
+
+# Ensure this function is defined before its first use in handle_send_outreach_via_gmail
+# ... existing code ...
+
 if __name__ == '__main__':
-    app.run(debug=True, port=int(os.getenv('PORT', 5001))) # Use PORT from env if available
+    app.run(debug=True, port=int(os.getenv('PORT', 5001)))

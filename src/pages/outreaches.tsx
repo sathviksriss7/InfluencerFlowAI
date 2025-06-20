@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { outreachStorageService, type StoredOutreach } from '../services/outreach-storage';
 import { aiOutreachService, type AIOutreachResponse, type BrandInfo } from '../services/ai-outreach';
+import { toast } from 'react-toastify';
+import { useAuth } from '../contexts/AuthContext';
 
 // Modal component for displaying follow-up emails
 interface FollowUpModalProps {
@@ -165,7 +167,7 @@ function FollowUpModal({ isOpen, onClose, followUpResponse, creatorName, onSend,
                 <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M2,21L23,12L2,3V10L17,12L2,14V21Z"/>
                 </svg>
-                Mark as Sent
+                Send via Gmail & Mark Sent
               </button>
             </div>
           </div>
@@ -187,6 +189,8 @@ export default function Outreaches() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [isLoading, setIsLoading] = useState(true);
   const [isGeneratingFollowUp, setIsGeneratingFollowUp] = useState(false);
+
+  const { session } = useAuth();
 
   // Follow-up modal state
   const [followUpModal, setFollowUpModal] = useState<{
@@ -361,6 +365,17 @@ export default function Outreaches() {
         'initial_outreach' // Default to initial outreach
       );
 
+      // AGGRESSIVE LOGGING OF THE ACTUAL RESPONSE
+      console.log('---------- SERVICE RESPONSE RECEIVED (RAW) ----------');
+      console.log(response);
+      try {
+        console.log('---------- SERVICE RESPONSE RECEIVED (JSON) ----------');
+        console.log(JSON.stringify(response, null, 2));
+      } catch (e) {
+        console.error('Error trying to JSON.stringify the service response:', e);
+      }
+      console.log('--------------------------------------------------');
+
       // Update modal with generated response
       setFollowUpModal(prev => ({
         ...prev,
@@ -381,21 +396,93 @@ export default function Outreaches() {
 
   // Handle follow-up email send
   const handleSendFollowUp = async () => {
-    if (!followUpModal.outreachId || !followUpModal.creatorName || !followUpModal.followUpResponse) return;
+    if (!followUpModal.outreachId || !followUpModal.creatorName || !followUpModal.followUpResponse?.email) {
+      toast.error("Missing outreach information or email content to send.");
+      return;
+    }
+    if (!session?.user?.id || !session?.access_token) {
+      toast.error("Authentication session or user ID not found. Please log in again.");
+      return;
+    }
+
     setIsGeneratingFollowUp(true);
+
+    const { outreachId, followUpResponse } = followUpModal;
+    const emailSubject = followUpResponse.email.subject;
+    const emailBody = followUpResponse.email.body;  
+    const userId = session.user.id;
+
+    let loggedConversationMessageId: string | undefined = undefined;
+
     try {
-      console.log('Simulating sending follow-up:', followUpModal.followUpResponse.email);
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // Step 1: Log the message to conversation_messages table with 'pending_gmail_send' status
+      try {
+        const loggedMessage = await outreachStorageService.addConversationMessage(
+          outreachId,
+          emailBody,
+          'brand',
+          'follow_up_gmail',
+          {
+            subject: emailSubject,
+            ai_reasoning: followUpResponse.reasoning,
+            ai_confidence: followUpResponse.confidence,
+            gmail_send_status: 'pending_gmail_send'
+          }
+        );
+
+        if (!loggedMessage || !loggedMessage.id) {
+          throw new Error('Failed to log conversation message or obtain its ID.');
+        }
+        loggedConversationMessageId = loggedMessage.id;
+        toast.info("Follow-up email draft logged.", { autoClose: 1500 });
+      } catch (logError: any) {
+        console.error('Error logging conversation message:', logError);
+        toast.error(`Failed to log email draft: ${logError.message || 'Unknown error'}`);
+        setIsGeneratingFollowUp(false);
+        return; // Stop if logging fails
+      }
+
+      // Step 2: Call the backend to send the email via Gmail
+      // The backend will update the status in conversation_messages based on send success/failure
+      const apiResponse = await fetch('/api/outreach/send-via-gmail', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ 
+          outreach_id: outreachId,
+          conversation_message_id: loggedConversationMessageId, // Pass the ID of the logged message
+          subject: emailSubject, // Pass subject directly
+          body: emailBody        // Pass body directly
+        }),
+      });
+
+      const responseData = await apiResponse.json();
+
+      if (!apiResponse.ok) {
+        // If backend failed, we might want to update the conversation_messages status to 'failed_gmail_send' here
+        // For now, the backend is expected to handle this update.
+        throw new Error(responseData.error || `Failed to send email via Gmail (HTTP ${apiResponse.status})`);
+      }
+
+      // Step 3: On successful send, update local outreach status and close modal
+      toast.success(responseData.message || "Follow-up email successfully sent via Gmail!");
+      
       await handleUpdateStatus(
-        followUpModal.outreachId,
-        'contacted',
-        `Follow-up email sent: ${new Date().toLocaleString()}`
+        outreachId,
+        'contacted', 
+        `Follow-up email sent via Gmail: ${new Date().toLocaleString()}`
       );
+      
       setFollowUpModal({ isOpen: false, outreachId: null, creatorName: '', followUpResponse: null, isGenerating: false });
-      alert('Follow-up email sent successfully (simulated)!');
-    } catch (error) {
-      console.error('Error sending follow-up:', error);
-      alert('Failed to send follow-up.');
+
+    } catch (error: any) {
+      console.error('Error sending follow-up via Gmail:', error);
+      toast.error(`Failed to send follow-up: ${error.message || 'Unknown error'}`);
+      // If an error occurred after logging, and we have loggedConversationMessageId,
+      // we could potentially try to update its status to 'failed_gmail_send' here via another service call,
+      // but typically the backend should handle the final status update of the conversation_message.
     } finally {
       setIsGeneratingFollowUp(false);
     }
@@ -629,10 +716,10 @@ export default function Outreaches() {
 
               {/* Email Details */}
               <div className="bg-gray-50 rounded-lg p-4 mb-4">
-                <h4 className="font-medium text-gray-900 mb-2">📧 {outreach.subject}</h4>
+                <h4 className="font-medium text-gray-900 mb-2">📧 {outreach.subject || 'No Subject'}</h4>
                 <div className="text-sm text-gray-700 max-h-20 overflow-y-auto">
-                  {outreach.body.substring(0, 200)}
-                  {outreach.body.length > 200 && '...'}
+                  {outreach.body ? outreach.body.substring(0, 200) : 'No body content.'}
+                  {outreach.body && outreach.body.length > 200 && '...'}
                 </div>
               </div>
 

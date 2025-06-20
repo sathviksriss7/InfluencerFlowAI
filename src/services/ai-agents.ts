@@ -954,47 +954,49 @@ class OutreachAgent {
     campaignId: string // ADDED: campaignId parameter
   ): Promise<OutreachSummary> {
     const results: OutreachResult[] = [];
-    let sentCount = 0;
+    let successfullySentCount = 0;
     let aiGeneratedCount = 0;
     let templateBasedCount = 0;
     let failedCount = 0;
 
-    // Filter, sort, and slice creatorMatches based on outreachCount
     const qualifiedCreators = creatorMatches
       .filter(match => 
         match.recommendedAction === 'highly_recommend' || 
         match.recommendedAction === 'recommend' || 
         match.recommendedAction === 'consider'
       )
-      .sort((a, b) => (b.score || 0) - (a.score || 0)); // Sort by score descending
+      .sort((a, b) => (b.score || 0) - (a.score || 0));
 
     const creatorsToOutreach = qualifiedCreators.slice(0, requirements.outreachCount);
 
-    console.log(`[OutreachAgent] Initial matches: ${creatorMatches.length}, Qualified (recommended/consider): ${qualifiedCreators.length}, To outreach (based on count ${requirements.outreachCount}): ${creatorsToOutreach.length}`);
+    console.log(`[OutreachAgent] Initial matches: ${creatorMatches.length}, Qualified: ${qualifiedCreators.length}, To outreach (count ${requirements.outreachCount}): ${creatorsToOutreach.length}`);
 
     const brandInfo: BrandInfo = {
       name: campaign.brand || requirements.companyName,
       industry: requirements.industry.join(', '),
       campaignGoals: requirements.campaignObjective,
-      budget: { min: campaign.budgetMin, max: campaign.budgetMax, currency: 'USD' }, // Assuming USD for now
+      budget: { min: campaign.budgetMin, max: campaign.budgetMax, currency: 'USD' },
       timeline: requirements.timeline,
       contentRequirements: campaign.deliverables,
     };
 
-    for (const match of creatorsToOutreach) { // Iterate over the sliced list
+    for (const match of creatorsToOutreach) {
       if (!match.creator || !match.creator.id) {
         console.warn("[OutreachAgent] Skipping creator match due to missing creator or creator ID:", match);
         failedCount++;
+        results.push({
+          creator: match.creator || {} as Creator,
+          subject: "Error: Missing Creator Info",
+          message: "Creator data was incomplete, cannot proceed with outreach.",
+          status: 'failed',
+          method: 'template_based',
+          timestamp: new Date(),
+        });
         continue;
       }
-      try {
-        await GlobalRateLimiter.getInstance().waitIfNeeded('OutreachAgent');
-        // TODO: Re-integrate actual AI outreach generation if `requirements.personalizedOutreach` is true
-        // For now, using a simplified template-like approach or fetching pre-generated.
 
-        // Simulating personalized message generation or template selection
-        let subject = `Collaboration Opportunity: ${campaign.title} with ${brandInfo.name}`;
-        let messageBody = `
+      let subject = `Collaboration Opportunity: ${campaign.title} with ${brandInfo.name}`;
+      let messageBody = `
 Dear ${match.creator.name},
 
 My name is [Your Name/Brand Rep Name] from ${brandInfo.name}. We're very impressed with your content on ${match.creator.platform} and your connection with your audience in the ${match.creator.niche.join(', ')} space.
@@ -1008,70 +1010,132 @@ We'd love to discuss a potential partnership. Are you available for a quick chat
 Best regards,
 [Your Name/Brand Rep Name]
 ${brandInfo.name}
-        `.trim();
-        
-        let methodUsed = 'template_based'; // Default, update if AI generation is used
+      `.trim();
+      
+      let methodUsed: 'ai_generated' | 'template_based' = 'template_based';
+      let aiReasoningForMetadata = "Standard initial outreach";
 
-        if (requirements.personalizedOutreach) {
-          // Placeholder for actual AI-powered personalization
-          // This would involve calling a service like aiOutreachService.generatePersonalizedEmail
-          // For now, we'll just mark it as AI-generated if the flag is true
-          console.log(`[OutreachAgent] Simulating AI personalized outreach for ${match.creator.name}`);
-          subject = `✨ Personalized Collab Idea: ${match.creator.name} x ${brandInfo.name} for ${campaign.title}`;
-          messageBody = `Hi ${match.creator.name} - We love your ${match.creator.niche[0]} content! We at ${brandInfo.name} think you'd be amazing for our new "${campaign.title}" campaign. Let's chat!`;
-          methodUsed = 'ai_generated';
-          aiGeneratedCount++;
-        } else {
-          templateBasedCount++;
-        }
+      if (requirements.personalizedOutreach) {
+        console.log(`[OutreachAgent] Simulating AI personalized outreach for ${match.creator.name}`);
+        subject = `✨ Personalized Collab Idea: ${match.creator.name} x ${brandInfo.name} for ${campaign.title}`;
+        messageBody = `Hi ${match.creator.name} - We love your ${match.creator.niche[0]} content on ${match.creator.platform}! We at ${brandInfo.name} are working on an exciting new project, "${campaign.title}", and thought your style would be a perfect fit. Specifically, we're aiming to ${brandInfo.campaignGoals.join(', ')} and your recent work on [mention specific post/topic if available, otherwise generic positive] really caught our eye. Would you be open to exploring a collaboration?`;
+        methodUsed = 'ai_generated';
+        aiGeneratedCount++;
+        aiReasoningForMetadata = campaign.aiInsights?.reasoning || "AI-assisted initial outreach";
+      } else {
+        templateBasedCount++;
+      }
 
-        // Call the internal saveOutreach method, now passing campaignId and creatorPhoneNumber
-        await this.saveOutreach(
+      let currentOutreachStatus: 'sent' | 'failed' = 'failed';
+      let conversationMessageId: string | undefined = undefined;
+
+      try {
+        await GlobalRateLimiter.getInstance().waitIfNeeded('OutreachAgent.Gmail');
+
+        // Step 1: Save the initial outreach record to the 'outreaches' table
+        const savedOutreach = await this.saveOutreach(
           campaign, 
           match.creator, 
           subject, 
           messageBody, 
           false, 
           methodUsed, 
-          campaignId, // Pass campaignId
-          match.creator.phone_number // Pass creator's phone number
+          campaignId,
+          match.creator.phone_number
         );
 
-        results.push({
-          creator: match.creator,
-          subject,
-          message: messageBody,
-          status: 'sent',
-          method: methodUsed as 'ai_generated' | 'template_based',
-          timestamp: new Date(),
+        if (!savedOutreach || !savedOutreach.id) {
+          console.error(`[OutreachAgent] Failed to save initial outreach record for ${match.creator.name}.`);
+          throw new Error("Failed to save initial outreach record.");
+        }
+        const outreachId = savedOutreach.id;
+
+        // Step 2: Check for Creator Email (Frontend Check)
+        const creatorEmailExistsLocally = !!match.creator.email;
+        if (!creatorEmailExistsLocally) {
+          console.warn(`[OutreachAgent] No email found locally for creator ${match.creator.name} (ID: ${match.creator.id}). Backend will attempt DB lookup.`);
+        }
+        
+        // Step 3: Log to conversation_messages (Pre-Send)
+        const loggedConversationMessage = await outreachStorageService.addConversationMessage(
+          outreachId,
+          messageBody,
+          'brand',
+          'initial_outreach_gmail',
+          {
+            subject: subject,
+            gmail_send_status: creatorEmailExistsLocally ? 'pending_gmail_send' : 'pending_email_lookup_by_backend',
+            error_message: !creatorEmailExistsLocally ? 'Local email missing. Backend to verify and attempt send.' : undefined,
+            ai_reasoning: aiReasoningForMetadata,
+          }
+        );
+
+        if (!loggedConversationMessage || !loggedConversationMessage.id) {
+          console.error(`[OutreachAgent] Failed to log initial outreach to conversation_messages for ${match.creator.name}.`);
+          throw new Error("Failed to log to conversation_messages.");
+        }
+        conversationMessageId = loggedConversationMessage.id; // Store for potential error logging if API call itself fails
+
+        // Step 4: Call Backend to Send via Gmail API
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError || !session?.access_token) {
+          console.error('[OutreachAgent] Authentication error, cannot make Gmail send API call:', sessionError);
+          // Note: Backend is responsible for updating the conversation_message status upon actual send attempt failure.
+          // This error is about the inability to even make the API call.
+          throw new Error("Authentication failed before making Gmail send API call.");
+        }
+
+        const backendUrl = import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:5001';
+        const sendResponse = await fetch(`${backendUrl}/api/outreach/send-via-gmail`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({
+            outreach_id: outreachId, // Backend uses this to find creator's email
+            conversation_message_id: conversationMessageId,
+            subject: subject,
+            body: messageBody,
+            // NO creator_email here in payload, backend will look it up
+          }),
         });
-        sentCount++;
+
+        const sendResult = await sendResponse.json();
+
+        if (sendResponse.ok && sendResult.success) {
+          console.log(`[OutreachAgent] Backend API call for Gmail to ${match.creator.name} was successful. Backend handles final send status logging.`);
+          currentOutreachStatus = 'sent'; // Mark as 'sent' from frontend perspective (API call succeeded)
+          successfullySentCount++; 
+        } else {
+          console.error(`[OutreachAgent] Backend API call for Gmail to ${match.creator.name} failed. Error: ${sendResult.error || sendResponse.statusText || 'Unknown API error'}`);
+          // The backend is responsible for updating the conversation_message.gmail_send_status to 'failed_gmail_send'.
+          // If the API call itself failed (e.g., network error, 500), the conversation_message might remain in its 'pending' state.
+          // This is acceptable as the backend didn't get a chance to process it.
+          throw new Error(sendResult.error || `Backend API call for Gmail send failed with status: ${sendResponse.status}`);
+        }
+
       } catch (error: any) {
-        console.error(`[OutreachAgent] Failed to execute outreach for ${match.creator.name}: ${error.message}`, error);
+        console.error(`[OutreachAgent] Critical error during executeOutreach for ${match.creator.name}: ${error.message}`, error);
         failedCount++;
-        await this.saveOutreach(
-          campaign, 
-          match.creator, 
-          "Outreach Failed", 
-          `Error: ${error.message}`, 
-          true, 
-          'failed',
-          campaignId, // Pass campaignId even for failures
-          match.creator.phone_number // Pass phone number even for failures
-        ); 
-        results.push({
-          creator: match.creator,
-          subject: "Outreach Failed",
-          message: `Error: ${error.message}`,
-          status: 'failed',
-          method: 'template_based', // or 'ai_generated' depending on where it failed
-          timestamp: new Date(),
-        });
+        currentOutreachStatus = 'failed';
+        // If conversationMessageId was set, it means the pre-send log happened.
+        // The backend would be responsible for updating its status if the error occurred during/after the API call.
+        // If error was before API call (e.g. saveOutreach, addConversationMessage), then that log reflects the state.
       }
-    }
+
+      results.push({
+        creator: match.creator,
+        subject,
+        message: messageBody,
+        status: currentOutreachStatus,
+        method: methodUsed,
+        timestamp: new Date(),
+      });
+    } // End of for...of loop
 
     return {
-      totalSent: sentCount,
+      totalSent: successfullySentCount,
       aiGenerated: aiGeneratedCount,
       templateBased: templateBasedCount,
       failed: failedCount,
@@ -1086,35 +1150,37 @@ ${brandInfo.name}
     message: string, 
     isFailure: boolean = false, 
     methodUsed: string = 'template_based',
-    campaignId: string, // Added campaignId
-    creatorPhoneNumber?: string // Added creatorPhoneNumber
-  ): Promise<void> {
+    campaignId: string, 
+    creatorPhoneNumber?: string 
+  ): Promise<StoredOutreach | null> { // Return type is already correct from previous successful edit
     try {
       if (!campaignId) {
         console.error("[OutreachAgent] campaignId is missing, cannot save outreach.");
         throw new Error("campaignId is required to save outreach.");
       }
+      if (!creator || !creator.id) { 
+        console.error("[OutreachAgent] Creator or Creator ID is missing, cannot save outreach.");
+        throw new Error("Creator and Creator ID are required to save outreach.");
+      }
 
       const outreachDetails: NewOutreachData = {
-        campaign_id: campaignId, // Use the passed campaignId
+        campaign_id: campaignId, 
         creatorId: creator.id,
         creatorName: creator.name,
         creatorAvatar: creator.avatar,
         creatorPlatform: creator.platform,
-        creatorPhoneNumber: creatorPhoneNumber, // Use the passed phone number
+        creatorPhoneNumber: creatorPhoneNumber, 
         subject: subject,
         body: message,
-        status: isFailure ? 'declined' : 'contacted', // More specific status for failure
-        confidence: isFailure ? 0 : (campaign.confidence || 0.75), // Lower confidence for failures
+        status: isFailure ? 'declined' : 'contacted', 
+        confidence: isFailure ? 0 : (campaign.confidence || 0.75), 
         reasoning: isFailure ? "Outreach attempt failed" : (campaign.aiInsights?.reasoning || "Standard outreach based on campaign match"),
         keyPoints: campaign.aiInsights?.successFactors || [],
-        nextSteps: campaign.aiInsights?.optimizationSuggestions || ["Follow up if no response"], // Changed from recommendedNextSteps
+        nextSteps: campaign.aiInsights?.optimizationSuggestions || ["Follow up if no response"], 
         brandName: campaign.brand,
         campaignContext: campaign.brief,
-        // currentOffer, notes can be added later or if available
-        // Set default values for notes and currentOffer if they are mandatory in NewOutreachData but not provided here
         notes: isFailure ? "Automated outreach failed." : "Initial outreach sent.",
-        currentOffer: undefined, // Or a default value if required
+        currentOffer: undefined, 
       };
 
       const savedOutreach = await outreachStorageService.saveOutreach(outreachDetails);
@@ -1123,9 +1189,10 @@ ${brandInfo.name}
       } else {
         console.error(`[OutreachAgent] Failed to save outreach for ${creator.name} (Campaign: ${campaignId}) to storage service.`);
       }
+      return savedOutreach; 
     } catch (error) {
       console.error(`[OutreachAgent] Error in internal saveOutreach for ${creator.name}: ${(error as Error).message}`, error);
-      // Decide if this error should propagate or be handled quietly
+      return null; 
     }
   }
 }
@@ -1443,7 +1510,18 @@ class WorkflowOrchestrationAgent {
       const campaignDuration = Date.now() - campaignStartTime;
       onProgress?.({ stageId: 'campaign', status: 'completed', duration: campaignDuration });
       console.log(`🚀 Workflow Orchestrator (FE): Step 1 (Campaign Generation) COMPLETE. Title: ${generatedCampaign.title} (using ${generatedCampaign.agentVersion.includes('fallback') ? 'Fallback' : 'AI'}) Time: ${campaignDuration}ms`);
-      console.log("🚀 Workflow Orchestrator (FE): Generated Campaign Object:", JSON.stringify(generatedCampaign, null, 2));
+      console.log("🚀 Workflow Orchestrator (FE): Generated Campaign Object (from backend, includes DB ID):", JSON.stringify(generatedCampaign, null, 2));
+
+      // Ensure generatedCampaign has an ID, as it's critical for next steps.
+      if (!generatedCampaign || !generatedCampaign.id) {
+        console.error("❌🚀 Workflow Orchestrator (FE): CRITICAL - generatedCampaign.id is missing after campaign generation from backend/fallback.");
+        onProgress?.({ stageId: 'campaign', status: 'completed', error: "Campaign ID missing after generation." });
+        // Halt workflow if campaign ID is missing
+        throw new Error("Campaign ID is missing after generation step. Cannot proceed.");
+      }
+      const actualCampaignId = generatedCampaign.id; // This ID comes from the backend or fallback.
+      console.log(`✅🚀 Workflow Orchestrator (FE): Using Campaign ID for subsequent steps: ${actualCampaignId}`);
+
 
       // Stage 2: Creator Discovery
       onProgress?.({ stageId: 'discovery', status: 'running' });
@@ -1486,14 +1564,14 @@ class WorkflowOrchestrationAgent {
       // Stage 4: Outreach
       onProgress?.({ stageId: 'outreach', status: 'running' });
       const outreachStartTime = Date.now();
-      // MODIFIED: Pass generatedCampaign.id to executeOutreach
-      if (!generatedCampaign || !generatedCampaign.id) {
-        console.error("❌🚀 Workflow Orchestrator (FE): CRITICAL - generatedCampaign or generatedCampaign.id is missing before outreach step.");
-        // Handle error appropriately, perhaps throw or set outreachSummary to an error state
-        outreachSummary = { totalSent: 0, aiGenerated: 0, templateBased: 0, failed: 1, outreaches: [{ creator: {} as Creator, subject: "Campaign ID Error", message: "Campaign ID missing", status: 'failed', method: 'template_based', timestamp: new Date()}] };
-        onProgress?.({ stageId: 'outreach', status: 'completed', duration: 0, error: "Campaign ID missing for outreach" });
+      
+      // MODIFIED: Use actualCampaignId directly (which is generatedCampaign.id)
+      if (!actualCampaignId) { 
+        console.error("❌🚀 Workflow Orchestrator (FE): CRITICAL - actualCampaignId is somehow missing before outreach step (should have been caught earlier).");
+        outreachSummary = { totalSent: 0, aiGenerated: 0, templateBased: 0, failed: 1, outreaches: [{ creator: {} as Creator, subject: "Campaign ID Error", message: "Actual Campaign ID from DB missing", status: 'failed', method: 'template_based', timestamp: new Date()}] };
+        onProgress?.({ stageId: 'outreach', status: 'completed', duration: 0, error: "Actual Campaign ID missing for outreach" });
       } else {
-        outreachSummary = await this.outreachAgent.executeOutreach(generatedCampaign, creatorMatches, requirements, generatedCampaign.id);
+        outreachSummary = await this.outreachAgent.executeOutreach(generatedCampaign, creatorMatches.slice(0, requirements.outreachCount), requirements, actualCampaignId); 
       }
       const outreachDuration = Date.now() - outreachStartTime;
       onProgress?.({ stageId: 'outreach', status: 'completed', duration: outreachDuration });

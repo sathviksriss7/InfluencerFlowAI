@@ -1,5 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { outreachStorageService, type StoredOutreach, type ConversationMessage } from '../services/outreach-storage';
+import { supabase } from '../lib/supabase';
+import { toast } from 'react-toastify';
 
 export default function Negotiations() {
   const [selectedOutreach, setSelectedOutreach] = useState<StoredOutreach | null>(null);
@@ -9,6 +11,10 @@ export default function Negotiations() {
   const [conversationHistory, setConversationHistory] = useState<ConversationMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [proposedOffer, setProposedOffer] = useState<string>('');
+  const [newSubject, setNewSubject] = useState('');
+
+  // State for the strategy preview modal/pop-up
+  const [strategyEmailSubject, setStrategyEmailSubject] = useState('');
 
   // Load initial outreach data
   useEffect(() => {
@@ -93,28 +99,79 @@ export default function Negotiations() {
   };
 
   const handleSendMessage = async () => {
-    if (!newMessage.trim() || !selectedOutreachData) return;
+    if (!newMessage.trim() || !newSubject.trim() || !selectedOutreachData) {
+      toast.error("Subject and message body are required.");
+      return;
+    }
+
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError || !session || !session.user || !session.access_token) {
+      toast.error("Authentication error. Please log in again.");
+      console.error("Authentication error:", sessionError);
+      return;
+    }
+    const userId = session.user.id;
+    const accessToken = session.access_token;
+
     try {
-      await outreachStorageService.addConversationMessage(
+      const loggedMessage = await outreachStorageService.addConversationMessage(
         selectedOutreachData.id,
         newMessage,
-        'brand', // Assuming message from dashboard user is 'brand'
-        'response' // Changed from 'text' to 'response'
+        'brand',
+        'negotiation_message_gmail',
+        {
+          subject: newSubject,
+          gmail_send_status: 'pending_gmail_send',
+        }
       );
-      setNewMessage('');
-      const updatedHistory = await outreachStorageService.getConversationHistory(selectedOutreachData.id);
-      setConversationHistory(updatedHistory || []);
-      
-      // Re-fetch all and find the updated selected outreach
-      const allOutreaches = await outreachStorageService.getAllOutreaches();
-      const negotiationOutreaches = allOutreaches.filter(o =>
-        ['negotiating', 'interested', 'deal_closed', 'pending_response'].includes(o.status)
-      );
-      setOutreaches(negotiationOutreaches);
-      const updatedSelected = negotiationOutreaches.find(o => o.id === selectedOutreachData.id);
-      setSelectedOutreach(updatedSelected || null);
 
-    } catch (error) {
+      if (!loggedMessage || !loggedMessage.id) {
+        toast.error("Failed to log message before sending.");
+        console.error("Failed to log message to conversation_messages");
+        return;
+      }
+      const conversationMessageId = loggedMessage.id;
+
+      const backendUrl = import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:5001';
+      const sendResponse = await fetch(`${backendUrl}/api/outreach/send-via-gmail`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          outreach_id: selectedOutreachData.id,
+          conversation_message_id: conversationMessageId,
+          subject: newSubject,
+          body: newMessage,
+        }),
+      });
+
+      const sendResult = await sendResponse.json();
+
+      if (sendResponse.ok && sendResult.success) {
+        toast.success("Negotiation message sent via Gmail!");
+        setNewMessage('');
+        setNewSubject('');
+        
+        const updatedHistory = await outreachStorageService.getConversationHistory(selectedOutreachData.id);
+        setConversationHistory(updatedHistory || []);
+        
+        const allOutreaches = await outreachStorageService.getAllOutreaches();
+        const negotiationOutreaches = allOutreaches.filter(o =>
+          ['negotiating', 'interested', 'deal_closed', 'pending_response'].includes(o.status)
+        );
+        setOutreaches(negotiationOutreaches);
+        const updatedSelected = negotiationOutreaches.find(o => o.id === selectedOutreachData.id);
+        setSelectedOutreach(updatedSelected || null);
+
+      } else {
+        toast.error(`Failed to send message: ${sendResult.error || 'Unknown server error'}`);
+        console.error("Error sending message via Gmail API:", sendResult.error);
+      }
+
+    } catch (error: any) {
+      toast.error(`Error sending message: ${error.message || 'Client-side error'}`);
       console.error("Error sending message:", error);
     }
   };
@@ -196,6 +253,94 @@ export default function Negotiations() {
       case 'system': return 'bg-gray-200 text-gray-700 border border-gray-300';
       case 'creator': return 'bg-gray-100 text-gray-900';
       default: return 'bg-gray-100 text-gray-900';
+    }
+  };
+
+  // New handler for sending the strategy preview via Gmail
+  const handleSendStrategyPreviewViaGmail = async () => {
+    // For demonstration, using placeholders. Replace with your actual state values.
+    const currentStrategyMessage = "Placeholder: Actual suggested message from preview"; // REPLACE
+    const currentStrategyTactics = "Placeholder: Actual strategy tactics from preview"; // REPLACE
+
+    if (!selectedOutreachData || !selectedOutreachData.id) {
+      toast.error("No outreach selected.");
+      return;
+    }
+    if (!currentStrategyMessage.trim()) {
+      toast.error("Strategy message body is empty.");
+      return;
+    }
+    if (!strategyEmailSubject.trim()) {
+      toast.error("Email subject for strategy is required.");
+      return;
+    }
+
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError || !session || !session.user || !session.access_token) {
+      toast.error("Authentication error. Please log in again.");
+      console.error("Authentication error:", sessionError);
+      return;
+    }
+    const userId = session.user.id;
+    const accessToken = session.access_token;
+
+    try {
+      const loggedMessage = await outreachStorageService.addConversationMessage(
+        selectedOutreachData.id,
+        currentStrategyMessage, // This is the email body
+        'brand',
+        'negotiation_message_gmail', // Using the same type as other negotiation Gmails
+        {
+          subject: strategyEmailSubject,
+          gmail_send_status: 'pending_gmail_send',
+          ai_reasoning: currentStrategyTactics, // Storing tactics as AI reasoning
+        }
+      );
+
+      if (!loggedMessage || !loggedMessage.id) {
+        toast.error("Failed to log strategy message before sending.");
+        return;
+      }
+      const conversationMessageId = loggedMessage.id;
+
+      const backendUrl = import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:5001';
+      const sendResponse = await fetch(`${backendUrl}/api/outreach/send-via-gmail`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          outreach_id: selectedOutreachData.id,
+          conversation_message_id: conversationMessageId,
+          subject: strategyEmailSubject,
+          body: currentStrategyMessage,
+        }),
+      });
+
+      const sendResult = await sendResponse.json();
+
+      if (sendResponse.ok && sendResult.success) {
+        toast.success("Strategy sent via Gmail!");
+        setStrategyEmailSubject(''); 
+        
+        // Refresh conversation history and outreach list
+        const updatedHistory = await outreachStorageService.getConversationHistory(selectedOutreachData.id);
+        setConversationHistory(updatedHistory || []);
+        const allOutreaches = await outreachStorageService.getAllOutreaches();
+        const negotiationOutreaches = allOutreaches.filter(o =>
+          ['negotiating', 'interested', 'deal_closed', 'pending_response'].includes(o.status)
+        );
+        setOutreaches(negotiationOutreaches);
+        const updatedSelected = negotiationOutreaches.find(o => o.id === selectedOutreachData.id);
+        setSelectedOutreach(updatedSelected || null);
+
+      } else {
+        toast.error(`Failed to send strategy: ${sendResult.error || 'Unknown server error'}`);
+      }
+    } catch (error: any) {
+      toast.error(`Error sending strategy: ${error.message || 'Client-side error'}`);
+      console.error("Error sending strategy via Gmail:", error);
     }
   };
 
@@ -523,14 +668,23 @@ export default function Negotiations() {
                 />
                 <button 
                   onClick={() => handleSendMessage()}
-                  disabled={!newMessage.trim()}
+                  disabled={!newMessage.trim() || !newSubject.trim()}
                   className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Send
                 </button>
               </div>
+              <div className="mt-2">
+                <input
+                  type="text"
+                  value={newSubject}
+                  onChange={(e) => setNewSubject(e.target.value)}
+                  placeholder="Email Subject"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
               <p className="text-xs text-gray-500 mt-2">
-                💡 Press Enter to send, Shift+Enter for new line. Use AI Negotiation Agent for strategic assistance.
+                💡 Press Enter in message to send, Shift+Enter for new line. Gmail will be used for sending.
               </p>
             </div>
           </div>
