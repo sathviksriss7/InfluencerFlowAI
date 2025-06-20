@@ -33,6 +33,7 @@ import shutil # For saving audio file temporarily
 import uuid   # For generating unique filenames
 import urllib.request # For downloading the recording
 import time # Added import for time.sleep()
+from urllib.parse import urlparse # Add this import
 
 # Load environment variables from .env file
 load_dotenv()
@@ -47,6 +48,19 @@ app.config.update(
     SESSION_COOKIE_SAMESITE='None',
     SESSION_COOKIE_SECURE=True
 )
+
+# Set SERVER_NAME from FLASK_APP_BASE_URL for better cookie domain handling
+FLASK_APP_BASE_URL_FOR_SERVER_NAME = os.getenv("FLASK_APP_BASE_URL") # Use a distinct variable name to avoid confusion if FLASK_APP_BASE_URL is redefined later
+if FLASK_APP_BASE_URL_FOR_SERVER_NAME:
+    parsed_url = urlparse(FLASK_APP_BASE_URL_FOR_SERVER_NAME)
+    server_name_hostname = parsed_url.hostname 
+    if server_name_hostname:
+        app.config['SERVER_NAME'] = server_name_hostname
+        app.logger.info(f"✅ Flask app.config['SERVER_NAME'] set to: {server_name_hostname}")
+    else:
+        app.logger.warning(f"⚠️ Could not parse hostname from FLASK_APP_BASE_URL: {FLASK_APP_BASE_URL_FOR_SERVER_NAME}")
+else:
+    app.logger.warning("⚠️ FLASK_APP_BASE_URL not set, cannot configure app.config['SERVER_NAME'] optimally.")
 
 # NEW DETAILED LOGGING FOR SECRET KEY
 if not app.secret_key:
@@ -4034,11 +4048,28 @@ def google_login():
 @app.route('/api/oauth2callback/google') 
 # @token_required # Commented out as per previous correct version, we use flask_session for state
 def google_oauth2callback(): # token_required removed based on previous working version. User context if needed comes after state check.
+    # ADD DETAILED LOGGING HERE
+    app.logger.info(f"OAuth Callback: ENTERING function.")
+    # Attempt to log session, being mindful of its type and content
+    try:
+        session_dict_for_logging = dict(flask_session)
+        app.logger.info(f"OAuth Callback: Full flask_session content at entry: {session_dict_for_logging}")
+    except Exception as e_log_session:
+        app.logger.error(f"OAuth Callback: Error converting flask_session to dict for logging: {e_log_session}")
+        app.logger.info(f"OAuth Callback: flask_session object type: {type(flask_session)}")
+
+    app.logger.info(f"OAuth Callback: Request Host: {request.host}")
+    app.logger.info(f"OAuth Callback: Request URL: {request.url}")
+    # Log cookies from the request to see if the session cookie is being sent back
+    cookies_for_logging = {k: v for k, v in request.cookies.items()}
+    app.logger.info(f"OAuth Callback: Request cookies: {cookies_for_logging}")
+
+
     # CORRECTED: Use the same session key 'oauth_state' as set in google_login
     session_state = flask_session.pop('oauth_state', None)
     received_state = request.args.get('state')
 
-    app.logger.info(f"OAuth Callback: Session state retrieved: '{session_state}', Received state from Google: '{received_state}'")
+    app.logger.info(f"OAuth Callback: Session state retrieved after pop: '{session_state}', Received state from Google: '{received_state}'")
 
     if not session_state or session_state != received_state:
         app.logger.error(f"OAuth callback state mismatch. Session state was: '{session_state}', Received state from Google: '{received_state}'")
