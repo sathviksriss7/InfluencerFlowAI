@@ -4020,8 +4020,10 @@ def google_login():
     # Store user_id in session to link it back after OAuth callback
     flask_session['oauth_user_id'] = user_id
     # Generate a random state string for CSRF protection
-    flask_session['oauth_state'] = secrets.token_urlsafe(16)
-    app.logger.info(f"google_login: Initiating OAuth for user {user_id} with state {flask_session['oauth_state']}.")
+    state = secrets.token_urlsafe(32)
+    flask_session['oauth_state'] = state
+    flask_session.modified = True # <--- ADD THIS LINE
+    app.logger.info(f"Auth Login: Stored 'oauth_state' in session: {state}. Session content before redirect: {dict(flask_session)}")
 
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET or not GOOGLE_OAUTH_REDIRECT_URI:
         app.logger.error("Google OAuth environment variables (CLIENT_ID, CLIENT_SECRET, REDIRECT_URI) are not properly configured.")
