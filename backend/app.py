@@ -50,8 +50,8 @@ app.logger.error(f"--- INIT CHECKPOINT 1 --- Flask app.config['SECRET_KEY'] set 
 
 # 2. Apply ProxyFix after SECRET_KEY is set
 # This helps Flask understand it's behind a proxy and handle SSL/TLS termination correctly for session cookies.
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
-app.logger.info("--- INIT CHECKPOINT 2 --- ProxyFix applied ---")
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=0, x_prefix=1)
+app.logger.info("--- INIT CHECKPOINT 2 --- ProxyFix applied (x_host=0)---")
 
 
 # 3. Configure other session cookie parameters
@@ -4084,7 +4084,7 @@ def google_login():
             return jsonify({"success": False, "error": "Internal server error during OAuth state generation."}), 500
 
         app.logger.error(f"--- google_login: Authorization URL generated: {authorization_url}. State used by flow: {generated_state_by_flow} (matches session state) ---")
-        app.logger.error(f"--- google_login: Security check: request.is_secure={request.is_secure}, request.scheme={request.scheme}, request remote_addr={request.remote_addr}, X-Forwarded-For={request.headers.get('X-Forwarded-For')}, X-Forwarded-Proto={request.headers.get('X-Forwarded-Proto')}, X-Forwarded-Host={request.headers.get('X-Forwarded-Host')} ---")
+        app.logger.error(f"--- google_login: Security check: request.is_secure={request.is_secure}, request.scheme={request.scheme}, request.host={request.host}, SERVER_NAME={app.config.get('SERVER_NAME')}, request remote_addr={request.remote_addr}, X-Forwarded-For={request.headers.get('X-Forwarded-For')}, X-Forwarded-Proto={request.headers.get('X-Forwarded-Proto')}, X-Forwarded-Host={request.headers.get('X-Forwarded-Host')} ---")
         app.logger.error(f"--- google_login: Value of app.config['SECRET_KEY'] before returning: '{app.config.get('SECRET_KEY')}' ---")
         return jsonify({"success": True, "authorization_url": authorization_url})
 
