@@ -123,11 +123,12 @@ const UserMenu: React.FC = () => {
         // setIsOpen(false); // Already called
         return;
       }
-      const response = await fetch(`${backendUrl}/api/auth/google/login`, { 
+      const response = await fetch(`${backendUrl}/api/auth/google/login`, {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${session.access_token}`,
         },
+        credentials: 'include',
       });
 
       if (!response.ok) {

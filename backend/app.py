@@ -111,7 +111,9 @@ CORS(app, resources={r"/api/*": {"origins": [
     "http://localhost:5173", # For local frontend development
     os.getenv("VITE_FRONTEND_URL", "https://influencerflowai.vercel.app") # Use an env var for Vercel URL, updated to actual Vercel URL
     # You can add more specific preview URLs if needed, e.g., "https://*.vercel.app"
-]}})
+],
+"supports_credentials": True
+}})
 
 # Google OAuth Configuration
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
