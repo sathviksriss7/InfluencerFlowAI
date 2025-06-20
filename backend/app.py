@@ -4084,6 +4084,7 @@ def google_login():
             return jsonify({"success": False, "error": "Internal server error during OAuth state generation."}), 500
 
         app.logger.error(f"--- google_login: Authorization URL generated: {authorization_url}. State used by flow: {generated_state_by_flow} (matches session state) ---")
+        app.logger.error(f"--- google_login: Security check: request.is_secure={request.is_secure}, request.scheme={request.scheme}, request remote_addr={request.remote_addr}, X-Forwarded-For={request.headers.get('X-Forwarded-For')}, X-Forwarded-Proto={request.headers.get('X-Forwarded-Proto')}, X-Forwarded-Host={request.headers.get('X-Forwarded-Host')} ---")
         app.logger.error(f"--- google_login: Value of app.config['SECRET_KEY'] before returning: '{app.config.get('SECRET_KEY')}' ---")
         return jsonify({"success": True, "authorization_url": authorization_url})
 
