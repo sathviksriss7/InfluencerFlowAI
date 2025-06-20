@@ -844,40 +844,6 @@ def test_session():
         app.logger.error(f"--- /api/test-session: Error during test_session execution: {e} ---", exc_info=True)
         return jsonify({"error": "Error in test_session, check logs"}), 500
 
-    app.logger.error("--- /api/test-session: ENTERING ---")
-    try:
-        # Attempt to set a simple value in the session (still want to see if session cookie appears)
-        flask_session['test_data'] = 'Hello, Session!'
-        flask_session.modified = True # Mark session as modified
-        app.logger.error(f"--- /api/test-session: Set 'test_data'. Session content: {dict(flask_session)} ---")
-            
-        # Log security and host details for diagnostic comparison
-        app.logger.error(f"--- /api/test-session: Security check: request.is_secure={request.is_secure}, request.scheme={request.scheme}, request.host={request.host}, SERVER_NAME={app.config.get('SERVER_NAME')}, SESSION_COOKIE_DOMAIN={app.config.get('SESSION_COOKIE_DOMAIN')} ---")
-            
-        # Manually create a response and set an ARBITRARY cookie
-        response_message = "Session data set (attempted). Arbitrary 'manual_test_cookie' also attempted. Check logs."
-        # Create a response object from jsonify
-        resp = make_response(jsonify(message=response_message), 200)
-            
-        app.logger.error("--- /api/test-session: Attempting to set manual_test_cookie directly on response object ---")
-        resp.set_cookie(
-            'manual_test_cookie', 
-            'hello_from_manual_cookie',
-            # Use app.config for consistency, though these could be hardcoded for this test
-            samesite=app.config.get("SESSION_COOKIE_SAMESITE", 'Lax'), 
-            secure=app.config.get("SESSION_COOKIE_SECURE", False),
-            domain=app.config.get("SESSION_COOKIE_DOMAIN", None), # Use configured domain
-            httponly=True, # Good practice for cookies not needed by client-side JS
-            path='/'      # Set path to root
-        )
-        app.logger.error("--- /api/test-session: 'manual_test_cookie' should have been added to response headers by resp.set_cookie(). ---")
-            
-        return resp # Return the manually crafted response
-
-    except Exception as e:
-        app.logger.error(f"--- /api/test-session: EXCEPTION: {e} ---", exc_info=True)
-        # Create a response object for error case too
-        return make_response(jsonify(error=str(e)), 500)
 # --- Google OAuth Helper Functions --- START ---
 # ... (rest of your file) ...
 
