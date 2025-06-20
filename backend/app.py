@@ -279,10 +279,7 @@ def get_google_user_credentials(user_id: str) -> GoogleCredentials | None:
         return None
 
 # --- Google OAuth Helper Functions --- END ---
-@app.route('/api/hello', methods=['GET'])
-def hello_world():
-    app.logger.info("--- /api/hello endpoint was reached ---") # Add a log here
-    return jsonify({"message": "Hello from InfluencerFlowAI Backend!"})
+
 # --- JWT Authentication Decorator ---
 def token_required(f):
     @wraps(f)
