@@ -374,6 +374,8 @@ def token_required(f):
             print(f"🔑 @token_required: Token validated for user: {user_id_for_log}") # DEBUG
             request.current_user = user_response.user if user_response else None # Ensure request.current_user can be None
             g.current_user = user_response.user if user_response else None # ADDED: Set on g as well for compatibility
+            # NEW PRINT STATEMENT FOR g.current_user
+            print(f"🕵️ @token_required: Set g.current_user attempts. Value on g: {getattr(g, 'current_user', 'g has no current_user attr')}, User ID if g.current_user exists: {getattr(g.current_user, 'id', 'N/A') if hasattr(g, 'current_user') and g.current_user else 'g.current_user is None or has no id attr'}")
             request.raw_jwt = token # Store raw token on request
         except Exception as e:
             print(f"❌ @token_required: Token validation error: {type(e).__name__} - {str(e)}") # DEBUG
