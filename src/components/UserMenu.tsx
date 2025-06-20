@@ -120,7 +120,7 @@ const UserMenu: React.FC = () => {
         console.error("VITE_BACKEND_API_URL is not defined! Cannot initiate Gmail connection.");
         setGmailStatus('error');
         setGmailErrorMessage('Backend API URL not configured.');
-        setIsOpen(false);
+        // setIsOpen(false); // Already called
         return;
       }
       const response = await fetch(`${backendUrl}/api/auth/google/login`, { 
@@ -134,9 +134,8 @@ const UserMenu: React.FC = () => {
         let errorMessage = `Failed to initiate Gmail connection. Status: ${response.status}`;
         try {
             const errorData = await response.json();
-            errorMessage = errorData.error || errorData.message || errorMessage; // Prefer backend's error message
+            errorMessage = errorData.error || errorData.message || errorMessage; 
         } catch (parseError) {
-            // If parsing errorData fails, stick with the status-based message
             console.warn("Could not parse error response from /api/auth/google/login:", parseError);
         }
         throw new Error(errorMessage);
@@ -145,8 +144,21 @@ const UserMenu: React.FC = () => {
       const data = await response.json();
 
       if (data.success && data.authorization_url) {
-        window.location.href = data.authorization_url;
-        // Redirect will happen, no further state changes needed here for success
+        const authorization_url = data.authorization_url; // Store it for clarity
+        
+        console.log("Received authorization_url:", authorization_url);
+        console.log("PAUSING FOR 15 SECONDS: Please check browser cookies for influencerflowai.onrender.com NOW!");
+        
+        // TEMPORARILY COMMENT OUT THE IMMEDIATE REDIRECT or just remove this line if using setTimeout:
+        // window.location.href = authorization_url;
+
+        // ADD A DELAYED REDIRECT (e.g., 15 seconds)
+        setTimeout(() => {
+            console.log("Resuming redirect to Google:", authorization_url);
+            window.location.href = authorization_url;
+        }, 15000); // 15000 milliseconds = 15 seconds
+
+        // No further state changes needed here for success due to redirect
       } else {
         throw new Error(data.message || 'Failed to retrieve authorization URL from the server.');
       }
