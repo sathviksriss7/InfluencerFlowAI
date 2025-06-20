@@ -768,9 +768,82 @@ def hello_world():
 # ... (after your /api/hello route) ...
 
 # SIMPLE SESSION TEST ROUTE
-# SIMPLE SESSION TEST ROUTE
 @app.route('/api/test-session', methods=['GET'])
 def test_session():
+    app.logger.error("--- /api/test-session: ENTERING ---")
+    try:
+        # Attempt to set a simple value in the session (still want to see if session cookie appears)
+        flask_session['test_data'] = 'Hello, Session!'
+        flask_session.modified = True
+        app.logger.error(f"--- /api/test-session: Set 'test_data'. Session content: {dict(flask_session)} ---")
+        
+        # Log security and host details for diagnostic comparison
+        app.logger.error(f"--- /api/test-session: Security check: request.is_secure={request.is_secure}, request.scheme={request.scheme}, request.host={request.host}, SERVER_NAME={app.config.get('SERVER_NAME')}, SESSION_COOKIE_DOMAIN={app.config.get('SESSION_COOKIE_DOMAIN')} ---")
+
+        # <<< NEW DETAILED SESSION INTERFACE LOGGING START >>>
+        app.logger.error("--- /api/test-session: Detailed Session and Interface Inspection ---")
+        app.logger.error(f"  flask_session.permanent: {flask_session.permanent}")
+        app.logger.error(f"  flask_session.modified: {flask_session.modified}")
+        app.logger.error(f"  flask_session.new: {flask_session.new}")
+        
+        si = app.session_interface
+        app.logger.error(f"  Session Interface Type: {type(si).__name__}")
+        app.logger.error(f"  si.get_cookie_name(app): {si.get_cookie_name(app)}")
+        app.logger.error(f"  si.get_cookie_domain(app): {si.get_cookie_domain(app)}")
+        app.logger.error(f"  si.get_cookie_path(app): {si.get_cookie_path(app)}")
+        app.logger.error(f"  si.get_cookie_httponly(app): {si.get_cookie_httponly(app)}")
+        app.logger.error(f"  si.get_cookie_secure(app): {si.get_cookie_secure(app)}")
+        app.logger.error(f"  si.get_cookie_samesite(app): {si.get_cookie_samesite(app)}")
+        
+        expiration_time = None
+        try:
+            expiration_time = si.get_expiration_time(app, flask_session)
+        except Exception as e:
+            app.logger.error(f"  Error getting expiration time: {e}")
+        app.logger.error(f"  si.get_expiration_time(app, flask_session): {expiration_time}")
+        
+        should_set_cookie_val = False
+        try:
+            # It's possible flask_session might be None if opened then cleared,
+            # but in our case, we just set 'test_data'.
+            if flask_session is None:
+                 app.logger.error("  WARNING: flask_session is None before calling should_set_cookie!")
+            should_set_cookie_val = si.should_set_cookie(app, flask_session)
+        except Exception as e:
+            app.logger.error(f"  Error calling should_set_cookie: {e}")
+        app.logger.error(f"  CRUCIAL: si.should_set_cookie(app, flask_session): {should_set_cookie_val}")
+        # <<< NEW DETAILED SESSION INTERFACE LOGGING END >>>
+
+        # Manually create a response object to set a test cookie directly
+        resp = make_response(jsonify({
+            "message": "Test session initiated. Check logs for Set-Cookie header.",
+            "session_content_at_test_route": dict(flask_session) if flask_session else "Session is None", # Handle if flask_session is None
+            "manual_cookie_should_be_set": True
+        }))
+        
+        # Attempt to set an arbitrary cookie manually - we know this part works
+        manual_cookie_domain = app.config.get('SESSION_COOKIE_DOMAIN') or app.config.get('SERVER_NAME')
+        if manual_cookie_domain: # Ensure domain is not None
+            app.logger.error(f"--- /api/test-session: Attempting to set manual_test_cookie directly on response object with domain: {manual_cookie_domain} ---")
+            resp.set_cookie(
+                'manual_test_cookie', 
+                'hello_from_manual_cookie', 
+                domain=manual_cookie_domain, # Explicitly use the same domain logic
+                secure=app.config.get('SESSION_COOKIE_SECURE', True), 
+                httponly=True, 
+                samesite=app.config.get('SESSION_COOKIE_SAMESITE', 'None'),
+                path='/' # Usually good practice to set path
+            )
+            app.logger.error(f"--- /api/test-session: 'manual_test_cookie' should have been added to response headers by resp.set_cookie(). ---")
+        else:
+            app.logger.error(f"--- /api/test-session: NOT setting manual_test_cookie due to missing domain (SESSION_COOKIE_DOMAIN or SERVER_NAME). ---")
+
+        return resp, 200
+
+    except Exception as e:
+        app.logger.error(f"--- /api/test-session: Error during test_session execution: {e} ---", exc_info=True)
+        return jsonify({"error": "Error in test_session, check logs"}), 500
+
     app.logger.error("--- /api/test-session: ENTERING ---")
     try:
         # Attempt to set a simple value in the session (still want to see if session cookie appears)
