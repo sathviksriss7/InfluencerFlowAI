@@ -70,9 +70,9 @@ def log_set_cookie_for_login(response):
         try:
             set_cookie_headers = response.headers.getlist('Set-Cookie')
             if set_cookie_headers:
-                app.logger.info(f"--- @after_request for {request.path}: Set-Cookie headers being sent: {set_cookie_headers} ---")
+                app.logger.error(f"--- @after_request for {request.path}: Set-Cookie headers being sent: {set_cookie_headers} ---")
             else:
-                app.logger.info(f"--- @after_request for {request.path}: No Set-Cookie headers found in response. ---")
+                app.logger.error(f"--- @after_request for {request.path}: No Set-Cookie headers found in response. ---")
         except Exception as e:
             app.logger.error(f"--- @after_request for {request.path}: Error logging Set-Cookie headers: {e} ---")
     return response
