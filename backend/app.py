@@ -107,7 +107,7 @@ else:
 # For production, add your specific Vercel frontend URL(s).
 CORS(app, resources={r"/api/*": {"origins": [
     "http://localhost:5173", # For local frontend development
-    os.getenv("VITE_FRONTEND_URL", "https://your-vercel-frontend-url.vercel.app") # Use an env var for Vercel URL
+    os.getenv("VITE_FRONTEND_URL", "https://influencerflowai.vercel.app") # Use an env var for Vercel URL, updated to actual Vercel URL
     # You can add more specific preview URLs if needed, e.g., "https://*.vercel.app"
 ]}})
 
@@ -4028,55 +4028,68 @@ def create_new_campaign():
 @app.route('/api/auth/google/login')
 @token_required 
 def google_login():
-    # Ensure current_user is available from token_required decorator
-    if not hasattr(request, 'current_user') or not request.current_user or not request.current_user.id:
-        app.logger.error("google_login: User context not available for initiating Google OAuth.")
+    app.logger.error("--- google_login: ENTERING ---") # Ensure this is the first log
+
+    # Ensure current_user is available from token_required decorator (using g object)
+    if not hasattr(g, 'current_user') or not g.current_user or 'id' not in g.current_user: # CHECKING g.current_user
+        app.logger.error("--- google_login: User context not available from g.current_user or missing 'id'.")
         return jsonify({"success": False, "error": "User context not available for initiating Google OAuth."}), 401
     
-    user_id = request.current_user.id
+    user_id = g.current_user['id'] # USING g.current_user
+    app.logger.error(f"--- google_login: User ID from g.current_user: {user_id} ---")
+
     # Store user_id in session to link it back after OAuth callback
     flask_session['oauth_user_id'] = user_id
     # Generate a random state string for CSRF protection
     state = secrets.token_urlsafe(32)
     flask_session['oauth_state'] = state
-    flask_session.modified = True # <--- ADD THIS LINE
-    app.logger.info(f"Auth Login: Stored 'oauth_state' in session: {state}. Session content before redirect: {dict(flask_session)}")
+    flask_session.modified = True 
+    app.logger.error(f"--- google_login: Stored 'oauth_user_id' ({user_id}) and 'oauth_state' ({state}) in session. Session.modified=True. Session content: {dict(flask_session)} ---")
 
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET or not GOOGLE_OAUTH_REDIRECT_URI:
-        app.logger.error("Google OAuth environment variables (CLIENT_ID, CLIENT_SECRET, REDIRECT_URI) are not properly configured.")
+        app.logger.error("--- google_login: Google OAuth environment variables (CLIENT_ID, CLIENT_SECRET, REDIRECT_URI) are not properly configured.")
         return jsonify({"success": False, "error": "Google OAuth is not configured on the server."}), 500
 
-    # Initialize flow with client config dictionary instead of secrets file
     client_config = {
         "web": {
             "client_id": GOOGLE_CLIENT_ID,
             "client_secret": GOOGLE_CLIENT_SECRET,
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
+            "token_uri": "https://oauth2.googleapis.com/token", # This was already correct
             "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
             "redirect_uris": [GOOGLE_OAUTH_REDIRECT_URI], 
         }
     }
+    app.logger.error(f"--- google_login: Client config for GoogleFlow: {client_config} ---")
+    
     try:
         flow = GoogleFlow.from_client_config(
             client_config=client_config,
             scopes=GOOGLE_OAUTH_SCOPES,
-            state=flask_session['oauth_state']
+            state=flask_session['oauth_state'] # Pass the state generated above
         )
-        # The redirect_uri must be set on the flow instance and match one of those 
-        # configured in your Google Cloud Console for this client ID.
         flow.redirect_uri = GOOGLE_OAUTH_REDIRECT_URI
+        app.logger.error(f"--- google_login: GoogleFlow object created. Scopes: {GOOGLE_OAUTH_SCOPES}, Redirect URI: {GOOGLE_OAUTH_REDIRECT_URI}, Initial state: {flask_session['oauth_state']} ---")
         
-        # Generate the authorization URL that the user will be redirected to.
-        authorization_url, _ = flow.authorization_url(
-            access_type='offline',  # Request a refresh token.
-            prompt='consent',       # Ensure user sees consent screen even if already granted, for dev/testing
-            include_granted_scopes='true' # Ensure all previously granted scopes are included.
+        authorization_url, generated_state_by_flow = flow.authorization_url(
+            access_type='offline',
+            prompt='consent',
+            include_granted_scopes='true'
         )
-        app.logger.info(f"Generated Google OAuth authorization URL for user {user_id}: {authorization_url}")
+        
+        # Verify that the state used by the flow matches the one we stored.
+        if generated_state_by_flow != flask_session['oauth_state']:
+            app.logger.error(f"--- google_login: CRITICAL STATE MISMATCH! State in session ('{flask_session['oauth_state']}') does not match state generated by flow.authorization_url() ('{generated_state_by_flow}'). Aborting.")
+            # This should ideally not happen if state is passed to from_client_config correctly.
+            return jsonify({"success": False, "error": "Internal server error during OAuth state generation."}), 500
+        
+        app.logger.error(f"--- google_login: Authorization URL generated: {authorization_url}. State used by flow: {generated_state_by_flow} (matches session state) ---")
+        
+        # The frontend will use this URL to redirect the user
         return jsonify({"success": True, "authorization_url": authorization_url})
+
     except Exception as e:
-        app.logger.error(f"Error creating Google OAuth flow for user {user_id}: {e}", exc_info=True)
+        app.logger.error(f"--- google_login: EXCEPTION creating Google OAuth flow for user {user_id}: {e} ---", exc_info=True)
         return jsonify({"success": False, "error": f"Failed to initiate Google login: {str(e)}"}), 500
 
 @app.route('/api/oauth2callback/google') 
