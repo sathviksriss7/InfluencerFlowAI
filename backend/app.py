@@ -17,6 +17,7 @@ from email.mime.text import MIMEText # Added for Gmail sending
 import base64 # Added for Gmail sending
 import secrets # Added for secrets
 import sys # <--- ADD THIS IMPORT
+from werkzeug.middleware.proxy_fix import ProxyFix # <--- ADD THIS IMPORT
 
 # Google OAuth specific imports
 from google_auth_oauthlib.flow import Flow as GoogleFlow
@@ -40,6 +41,11 @@ from urllib.parse import urlparse # Add this import
 load_dotenv()
 
 app = Flask(__name__)
+# Apply ProxyFix to handle X-Forwarded-* headers correctly
+# x_for=1, x_proto=1, x_host=1, x_prefix=1 are common defaults
+# This helps Flask understand it's behind a proxy and handle SSL/TLS termination correctly for session cookies.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+
 # It's important to set a secret key for session management in Flask, used by OAuth flow
 # Make sure to add FLASK_APP_SECRET_KEY to your backend/.env file with a strong, random string.
 app.secret_key = os.getenv("FLASK_APP_SECRET_KEY", "fallback-dev-secret-key-please-change")
@@ -63,10 +69,12 @@ if FLASK_APP_BASE_URL_FOR_SERVER_NAME:
 else:
     app.logger.warning("⚠️ FLASK_APP_BASE_URL not set, cannot configure app.config['SERVER_NAME'] optimally.")
 
-# NEW @after_request hook to log Set-Cookie headers for /api/auth/google/login
+# MODIFIED @after_request hook to log Set-Cookie headers for multiple paths
 @app.after_request
-def log_set_cookie_for_login(response):
-    if request.path == '/api/auth/google/login':
+def log_set_cookie_info(response): # Renamed function
+    # Add any other paths here if you need to debug their Set-Cookie headers
+    paths_to_log_cookies_for = ['/api/auth/google/login', '/api/test-session'] # Added /api/test-session
+    if request.path in paths_to_log_cookies_for:
         try:
             set_cookie_headers = response.headers.getlist('Set-Cookie')
             if set_cookie_headers:
