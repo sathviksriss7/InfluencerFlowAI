@@ -63,6 +63,20 @@ if FLASK_APP_BASE_URL_FOR_SERVER_NAME:
 else:
     app.logger.warning("⚠️ FLASK_APP_BASE_URL not set, cannot configure app.config['SERVER_NAME'] optimally.")
 
+# NEW @after_request hook to log Set-Cookie headers for /api/auth/google/login
+@app.after_request
+def log_set_cookie_for_login(response):
+    if request.path == '/api/auth/google/login':
+        try:
+            set_cookie_headers = response.headers.getlist('Set-Cookie')
+            if set_cookie_headers:
+                app.logger.info(f"--- @after_request for {request.path}: Set-Cookie headers being sent: {set_cookie_headers} ---")
+            else:
+                app.logger.info(f"--- @after_request for {request.path}: No Set-Cookie headers found in response. ---")
+        except Exception as e:
+            app.logger.error(f"--- @after_request for {request.path}: Error logging Set-Cookie headers: {e} ---")
+    return response
+
 # NEW DETAILED LOGGING FOR SECRET KEY
 if not app.secret_key:
     app.logger.error("🔴 CRITICAL: Flask app.secret_key is NOT SET (None or empty after os.getenv). Session management will FAIL.")
