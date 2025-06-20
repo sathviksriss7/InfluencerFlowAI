@@ -72,6 +72,8 @@ if FLASK_APP_BASE_URL_FOR_SERVER_NAME:
     server_name_hostname = parsed_url.hostname 
     if server_name_hostname:
         app.config['SERVER_NAME'] = server_name_hostname
+        # EXPLICITLY SET SESSION_COOKIE_DOMAIN
+        app.config['SESSION_COOKIE_DOMAIN'] = server_name_hostname
         app.logger.info(f"✅ Flask app.config['SERVER_NAME'] set to: {server_name_hostname}")
     else:
         app.logger.warning(f"⚠️ Could not parse hostname from FLASK_APP_BASE_URL: {FLASK_APP_BASE_URL_FOR_SERVER_NAME}")
