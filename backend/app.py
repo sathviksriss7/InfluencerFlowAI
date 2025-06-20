@@ -765,6 +765,29 @@ def hello_world():
         "supabase_url_loaded": bool(supabase_url),
         "groq_api_key_loaded": bool(groq_api_key)
     })
+# ... (after your /api/hello route) ...
+
+# SIMPLE SESSION TEST ROUTE
+@app.route('/api/test-session', methods=['GET'])
+def test_session():
+    app.logger.error("--- /api/test-session: ENTERING ---")
+    try:
+        # Attempt to set a simple value in the session
+        flask_session['test_data'] = 'Hello, Session!'
+        # Mark the session as modified
+        flask_session.modified = True
+        app.logger.error(f"--- /api/test-session: Set 'test_data'. Session content: {dict(flask_session)} ---")
+        
+        # Log security and host details, similar to google_login, for diagnostic comparison
+        app.logger.error(f"--- /api/test-session: Security check: request.is_secure={request.is_secure}, request.scheme={request.scheme}, request.host={request.host}, SERVER_NAME={app.config.get('SERVER_NAME')}, SESSION_COOKIE_DOMAIN={app.config.get('SESSION_COOKIE_DOMAIN')} ---")
+        
+        return jsonify(message="Session data set. Check logs for Set-Cookie header via @after_request hook."), 200
+    except Exception as e:
+        app.logger.error(f"--- /api/test-session: EXCEPTION: {e} ---", exc_info=True)
+        return jsonify(error=str(e)), 500
+
+# --- Google OAuth Helper Functions --- START ---
+# ... (rest of your file) ...
 
 # --- Helper: Build Personalized Outreach Prompt (Python version) ---
 def build_personalized_outreach_prompt(campaign_data, creator_match_data, requirements_data):
