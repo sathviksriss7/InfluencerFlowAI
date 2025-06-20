@@ -4173,6 +4173,88 @@ def create_new_campaign():
 def google_login():
     app.logger.error("--- google_login: ENTERING ---")
     user_id = None
+    
+    # CORRECTLY Get user_id from request.current_user (set by @token_required)
+    if hasattr(request, 'current_user') and request.current_user and 'id' in request.current_user:
+        user_id = request.current_user['id']
+        app.logger.error(f"--- google_login: User ID from request.current_user.id: {user_id} ---")
+    else:
+        # This block should ideally not be hit if @token_required ran successfully and set request.current_user
+        app.logger.error("--- google_login: User context NOT available from request.current_user or 'id' key is missing. @token_required might have an issue or was bypassed. ---")
+        error_resp = make_response(jsonify({"error": "User context not available for initiating Google OAuth. Auth token issue."}), 401)
+        return error_resp
+
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET or not GOOGLE_OAUTH_REDIRECT_URI:
+        app.logger.error("--- google_login: Google OAuth credentials or redirect URI are not configured on the server. ---")
+        error_resp = make_response(jsonify({"error": "Google OAuth not configured on server."}), 500)
+        return error_resp
+
+    state = secrets.token_urlsafe(32)
+    flask_session['oauth_state'] = state
+    flask_session['oauth_user_id'] = user_id 
+    flask_session.modified = True 
+    app.logger.error(f"--- google_login: Stored in flask_session: oauth_state='{state}', oauth_user_id='{user_id}'. Session modified: {flask_session.modified} ---")
+    app.logger.error(f"--- google_login: Current flask_session content: {dict(flask_session)} ---")
+
+    flow = GoogleFlow.from_client_config(
+        client_config={
+            "web": {
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": [GOOGLE_OAUTH_REDIRECT_URI],
+            }
+        },
+        scopes=GOOGLE_OAUTH_SCOPES,
+        state=state
+    )
+    flow.redirect_uri = GOOGLE_OAUTH_REDIRECT_URI
+
+    authorization_url, generated_state = flow.authorization_url(
+        access_type='offline',
+        prompt='consent',
+        include_granted_scopes='true'
+    )
+    
+    if generated_state != state:
+        app.logger.error(f"--- google_login: CRITICAL CSRF ALERT! State mismatch before redirect. Session state: '{state}', Flow generated state: '{generated_state}' ---")
+        error_resp = make_response(jsonify({"error": "CSRF state mismatch detected before authorization."}), 500)
+        return error_resp
+
+    app.logger.error(f"--- google_login: Authorization URL generated: {authorization_url}. State used by flow: {generated_state} (matches session state) ---")
+    
+    app.logger.error(f"--- google_login: Security check: request.is_secure={request.is_secure}, request.scheme={request.scheme}, request.host={request.host}, SERVER_NAME={app.config.get('SERVER_NAME')}, SESSION_COOKIE_DOMAIN={app.config.get('SESSION_COOKIE_DOMAIN')} ---")
+    app.logger.error(f"--- google_login: Value of app.config['SECRET_KEY'] before returning: '{app.config.get('SECRET_KEY')}' ---")
+
+    response_payload = {"authorization_url": authorization_url, "state": state}
+    resp = make_response(jsonify(response_payload), 200) 
+    app.logger.error(f"--- google_login: Created make_response object (id={id(resp)}) with status 200 ---")
+
+    app.logger.error("--- google_login: Attempting to MANUALLY call app.session_interface.save_session() on this response object ---")
+    try:
+        should_set_cookie_final_check = False
+        if flask_session is not None:
+            # Re-check modified and should_set_cookie right before the call for maximum certainty
+            app.logger.error(f"  (google_login) flask_session.modified just before save: {flask_session.modified}")
+            if app.session_interface.should_set_cookie(app, flask_session):
+                should_set_cookie_final_check = True
+        
+        if should_set_cookie_final_check:
+            app.logger.error(f"  (google_login) Proceeding with manual save_session call (should_set_cookie_final_check: True, flask_session.modified: {flask_session.modified})")
+            app.session_interface.save_session(app, flask_session, resp) 
+            app.logger.error(f"--- google_login: Manual save_session call completed. Cookies on resp (id={id(resp)}): {resp.headers.getlist('Set-Cookie')} ---")
+        elif flask_session is None:
+            app.logger.error("--- google_login: Manual save_session call SKIPPED (flask_session is None) ---")
+        else: 
+            app.logger.error(f"--- google_login: Manual save_session call SKIPPED (should_set_cookie_final_check: False, flask_session.modified: {flask_session.modified}, actual should_set_cookie: {app.session_interface.should_set_cookie(app, flask_session)}) ---")
+    except Exception as e_save:
+        app.logger.error(f"--- google_login: EXCEPTION during manual save_session: {e_save} ---", exc_info=True)
+    
+    app.logger.error(f"--- google_login: RETURNING response object (id={id(resp)}) ---")
+    return resp
+    app.logger.error("--- google_login: ENTERING ---")
+    user_id = None
     # Try to get user_id from request.current_user (set by @token_required)
     if hasattr(request, 'current_user') and request.current_user and 'id' in request.current_user:
         user_id = request.current_user['id']
